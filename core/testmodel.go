@@ -38,6 +38,11 @@ func (m *TestModel) ModelName() string {
 	return m.name
 }
 
+// SetName sets the model name (useful in tests that need distinct model names).
+func (m *TestModel) SetName(name string) {
+	m.name = name
+}
+
 func (m *TestModel) Request(ctx context.Context, messages []ModelMessage, settings *ModelSettings, params *ModelRequestParameters) (*ModelResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

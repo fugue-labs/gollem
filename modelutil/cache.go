@@ -1,4 +1,4 @@
-package core
+package modelutil
 
 import (
 	"context"
@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"sync"
 	"time"
+
+	"github.com/fugue-labs/gollem/core"
 )
 
 // CacheStore is the interface for a response cache backend.
 type CacheStore interface {
-	Get(key string) (*ModelResponse, bool)
-	Set(key string, response *ModelResponse)
+	Get(key string) (*core.ModelResponse, bool)
+	Set(key string, response *core.ModelResponse)
 }
 
 // MemoryCache is an in-memory CacheStore with optional TTL.
@@ -23,7 +25,7 @@ type MemoryCache struct {
 }
 
 type memoryCacheEntry struct {
-	response  *ModelResponse
+	response  *core.ModelResponse
 	createdAt time.Time
 }
 
@@ -42,7 +44,7 @@ func NewMemoryCacheWithTTL(ttl time.Duration) *MemoryCache {
 	}
 }
 
-func (c *MemoryCache) Get(key string) (*ModelResponse, bool) {
+func (c *MemoryCache) Get(key string) (*core.ModelResponse, bool) {
 	c.mu.RLock()
 	entry, ok := c.entries[key]
 	c.mu.RUnlock()
@@ -59,7 +61,7 @@ func (c *MemoryCache) Get(key string) (*ModelResponse, bool) {
 	return entry.response, true
 }
 
-func (c *MemoryCache) Set(key string, response *ModelResponse) {
+func (c *MemoryCache) Set(key string, response *core.ModelResponse) {
 	c.mu.Lock()
 	c.entries[key] = memoryCacheEntry{
 		response:  response,
@@ -72,22 +74,22 @@ func (c *MemoryCache) Set(key string, response *ModelResponse) {
 // Request() checks the cache first; on miss, calls the wrapped model and stores the result.
 // RequestStream() is NOT cached (streaming is inherently non-cacheable).
 type CachedModel struct {
-	model Model
+	model core.Model
 	store CacheStore
 }
 
 // NewCachedModel creates a response-cached model wrapper.
-func NewCachedModel(model Model, store CacheStore) *CachedModel {
+func NewCachedModel(model core.Model, store CacheStore) *CachedModel {
 	return &CachedModel{model: model, store: store}
 }
 
-var _ Model = (*CachedModel)(nil)
+var _ core.Model = (*CachedModel)(nil)
 
 func (c *CachedModel) ModelName() string {
 	return c.model.ModelName()
 }
 
-func (c *CachedModel) Request(ctx context.Context, messages []ModelMessage, settings *ModelSettings, params *ModelRequestParameters) (*ModelResponse, error) {
+func (c *CachedModel) Request(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 	key := cacheKey(messages, settings, params)
 
 	if resp, ok := c.store.Get(key); ok {
@@ -102,13 +104,13 @@ func (c *CachedModel) Request(ctx context.Context, messages []ModelMessage, sett
 	return resp, nil
 }
 
-func (c *CachedModel) RequestStream(ctx context.Context, messages []ModelMessage, settings *ModelSettings, params *ModelRequestParameters) (StreamedResponse, error) {
+func (c *CachedModel) RequestStream(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (core.StreamedResponse, error) {
 	// Streaming requests are not cached.
 	return c.model.RequestStream(ctx, messages, settings, params)
 }
 
 // cacheKey computes a SHA-256 hash of the request parameters.
-func cacheKey(messages []ModelMessage, settings *ModelSettings, params *ModelRequestParameters) string {
+func cacheKey(messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) string {
 	h := sha256.New()
 	enc := json.NewEncoder(h)
 	_ = enc.Encode(messages)

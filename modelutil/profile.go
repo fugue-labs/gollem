@@ -1,8 +1,10 @@
-package core
+package modelutil
 
 import (
 	"context"
 	"errors"
+
+	"github.com/fugue-labs/gollem/core"
 )
 
 // ModelProfile describes a model's capabilities.
@@ -23,7 +25,7 @@ type Profiled interface {
 
 // GetProfile returns the model's profile if it implements Profiled,
 // or a default profile assuming full capabilities.
-func GetProfile(model Model) ModelProfile {
+func GetProfile(model core.Model) ModelProfile {
 	if p, ok := model.(Profiled); ok {
 		return p.Profile()
 	}
@@ -38,17 +40,17 @@ func GetProfile(model Model) ModelProfile {
 
 // capabilityRouter routes to the first model matching required capabilities.
 type capabilityRouter struct {
-	models   []Model
+	models   []core.Model
 	required ModelProfile
 }
 
 // NewCapabilityRouter creates a router that selects the first model
 // matching the required capabilities.
-func NewCapabilityRouter(models []Model, required ModelProfile) ModelRouter {
+func NewCapabilityRouter(models []core.Model, required ModelProfile) ModelRouter {
 	return &capabilityRouter{models: models, required: required}
 }
 
-func (r *capabilityRouter) Route(_ context.Context, _ string) (Model, error) {
+func (r *capabilityRouter) Route(_ context.Context, _ string) (core.Model, error) {
 	for _, m := range r.models {
 		p := GetProfile(m)
 		if matchesProfile(p, r.required) {

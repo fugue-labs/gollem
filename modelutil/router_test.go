@@ -1,18 +1,20 @@
-package core
+package modelutil
 
 import (
 	"context"
 	"testing"
+
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestClassifierRouter(t *testing.T) {
-	simpleModel := NewTestModel(TextResponse("simple answer"))
-	simpleModel.name = "simple"
-	complexModel := NewTestModel(TextResponse("complex answer"))
-	complexModel.name = "complex"
+	simpleModel := core.NewTestModel(core.TextResponse("simple answer"))
+	simpleModel.SetName("simple")
+	complexModel := core.NewTestModel(core.TextResponse("complex answer"))
+	complexModel.SetName("complex")
 
 	router := ClassifierRouter(
-		map[string]Model{"simple": simpleModel, "complex": complexModel},
+		map[string]core.Model{"simple": simpleModel, "complex": complexModel},
 		func(ctx context.Context, prompt string) string {
 			if len(prompt) > 20 {
 				return "complex"
@@ -39,10 +41,10 @@ func TestClassifierRouter(t *testing.T) {
 }
 
 func TestThresholdRouter_Simple(t *testing.T) {
-	simpleModel := NewTestModel(TextResponse("simple"))
-	simpleModel.name = "simple"
-	complexModel := NewTestModel(TextResponse("complex"))
-	complexModel.name = "complex"
+	simpleModel := core.NewTestModel(core.TextResponse("simple"))
+	simpleModel.SetName("simple")
+	complexModel := core.NewTestModel(core.TextResponse("complex"))
+	complexModel.SetName("complex")
 
 	router := ThresholdRouter(simpleModel, complexModel, 20)
 
@@ -56,10 +58,10 @@ func TestThresholdRouter_Simple(t *testing.T) {
 }
 
 func TestThresholdRouter_Complex(t *testing.T) {
-	simpleModel := NewTestModel(TextResponse("simple"))
-	simpleModel.name = "simple"
-	complexModel := NewTestModel(TextResponse("complex"))
-	complexModel.name = "complex"
+	simpleModel := core.NewTestModel(core.TextResponse("simple"))
+	simpleModel.SetName("simple")
+	complexModel := core.NewTestModel(core.TextResponse("complex"))
+	complexModel.SetName("complex")
 
 	router := ThresholdRouter(simpleModel, complexModel, 10)
 
@@ -73,12 +75,12 @@ func TestThresholdRouter_Complex(t *testing.T) {
 }
 
 func TestRoundRobinRouter(t *testing.T) {
-	m1 := NewTestModel(TextResponse("a"))
-	m1.name = "m1"
-	m2 := NewTestModel(TextResponse("b"))
-	m2.name = "m2"
-	m3 := NewTestModel(TextResponse("c"))
-	m3.name = "m3"
+	m1 := core.NewTestModel(core.TextResponse("a"))
+	m1.SetName("m1")
+	m2 := core.NewTestModel(core.TextResponse("b"))
+	m2.SetName("m2")
+	m3 := core.NewTestModel(core.TextResponse("c"))
+	m3.SetName("m3")
 
 	router := RoundRobinRouter(m1, m2, m3)
 
@@ -95,15 +97,15 @@ func TestRoundRobinRouter(t *testing.T) {
 }
 
 func TestRouterModel_Request(t *testing.T) {
-	simpleModel := NewTestModel(TextResponse("simple answer"))
-	simpleModel.name = "simple"
-	complexModel := NewTestModel(TextResponse("complex answer"))
-	complexModel.name = "complex"
+	simpleModel := core.NewTestModel(core.TextResponse("simple answer"))
+	simpleModel.SetName("simple")
+	complexModel := core.NewTestModel(core.TextResponse("complex answer"))
+	complexModel.SetName("complex")
 
 	router := ThresholdRouter(simpleModel, complexModel, 10)
 	model := NewRouterModel(router)
 
-	agent := NewAgent[string](model)
+	agent := core.NewAgent[string](model)
 
 	result, err := agent.Run(context.Background(), "short")
 	if err != nil {
@@ -120,19 +122,19 @@ func TestRouterModel_Request(t *testing.T) {
 }
 
 func TestRouterModel_Streaming(t *testing.T) {
-	simpleModel := NewTestModel(TextResponse("streamed"))
-	simpleModel.name = "simple"
-	complexModel := NewTestModel(TextResponse("complex"))
-	complexModel.name = "complex"
+	simpleModel := core.NewTestModel(core.TextResponse("streamed"))
+	simpleModel.SetName("simple")
+	complexModel := core.NewTestModel(core.TextResponse("complex"))
+	complexModel.SetName("complex")
 
 	router := ThresholdRouter(simpleModel, complexModel, 10)
 	model := NewRouterModel(router)
 
 	// Test that RequestStream delegates correctly.
-	messages := []ModelMessage{
-		ModelRequest{Parts: []ModelRequestPart{UserPromptPart{Content: "short"}}},
+	messages := []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "short"}}},
 	}
-	stream, err := model.RequestStream(context.Background(), messages, nil, &ModelRequestParameters{AllowTextOutput: true})
+	stream, err := model.RequestStream(context.Background(), messages, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,15 +1,17 @@
-package core
+package modelutil
 
 import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/fugue-labs/gollem/core"
 )
 
 // RateLimitedModel wraps a Model with a token-bucket rate limiter.
 // Requests exceeding the rate are delayed, not rejected.
 type RateLimitedModel struct {
-	model    Model
+	model    core.Model
 	mu       sync.Mutex
 	tokens   float64
 	maxBurst float64
@@ -20,7 +22,7 @@ type RateLimitedModel struct {
 // NewRateLimitedModel creates a rate-limited model wrapper.
 // requestsPerSecond is the sustained request rate.
 // burst is the maximum number of concurrent requests allowed.
-func NewRateLimitedModel(model Model, requestsPerSecond float64, burst int) *RateLimitedModel {
+func NewRateLimitedModel(model core.Model, requestsPerSecond float64, burst int) *RateLimitedModel {
 	return &RateLimitedModel{
 		model:    model,
 		tokens:   float64(burst),
@@ -30,20 +32,20 @@ func NewRateLimitedModel(model Model, requestsPerSecond float64, burst int) *Rat
 	}
 }
 
-var _ Model = (*RateLimitedModel)(nil)
+var _ core.Model = (*RateLimitedModel)(nil)
 
 func (r *RateLimitedModel) ModelName() string {
 	return r.model.ModelName()
 }
 
-func (r *RateLimitedModel) Request(ctx context.Context, messages []ModelMessage, settings *ModelSettings, params *ModelRequestParameters) (*ModelResponse, error) {
+func (r *RateLimitedModel) Request(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 	if err := r.wait(ctx); err != nil {
 		return nil, err
 	}
 	return r.model.Request(ctx, messages, settings, params)
 }
 
-func (r *RateLimitedModel) RequestStream(ctx context.Context, messages []ModelMessage, settings *ModelSettings, params *ModelRequestParameters) (StreamedResponse, error) {
+func (r *RateLimitedModel) RequestStream(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (core.StreamedResponse, error) {
 	if err := r.wait(ctx); err != nil {
 		return nil, err
 	}

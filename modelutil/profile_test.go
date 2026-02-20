@@ -1,13 +1,15 @@
-package core
+package modelutil
 
 import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	"github.com/fugue-labs/gollem/core"
 )
 
 type profiledModel struct {
-	*TestModel
+	*core.TestModel
 	profile ModelProfile
 }
 
@@ -17,7 +19,7 @@ func (m *profiledModel) Profile() ModelProfile {
 
 func TestGetProfile_Profiled(t *testing.T) {
 	m := &profiledModel{
-		TestModel: NewTestModel(TextResponse("ok")),
+		TestModel: core.NewTestModel(core.TextResponse("ok")),
 		profile: ModelProfile{
 			SupportsToolCalls: true,
 			SupportsVision:    false,
@@ -37,7 +39,7 @@ func TestGetProfile_Profiled(t *testing.T) {
 }
 
 func TestGetProfile_Default(t *testing.T) {
-	m := NewTestModel(TextResponse("ok"))
+	m := core.NewTestModel(core.TextResponse("ok"))
 	p := GetProfile(m)
 	if !p.SupportsToolCalls {
 		t.Error("expected default SupportsToolCalls=true")
@@ -55,16 +57,16 @@ func TestGetProfile_Default(t *testing.T) {
 
 func TestCapabilityRouter_Match(t *testing.T) {
 	noVision := &profiledModel{
-		TestModel: NewTestModel(TextResponse("no-vision")),
+		TestModel: core.NewTestModel(core.TextResponse("no-vision")),
 		profile:   ModelProfile{SupportsToolCalls: true, SupportsVision: false},
 	}
 	withVision := &profiledModel{
-		TestModel: NewTestModel(TextResponse("with-vision")),
+		TestModel: core.NewTestModel(core.TextResponse("with-vision")),
 		profile:   ModelProfile{SupportsToolCalls: true, SupportsVision: true},
 	}
 
 	router := NewCapabilityRouter(
-		[]Model{noVision, withVision},
+		[]core.Model{noVision, withVision},
 		ModelProfile{SupportsVision: true},
 	)
 
@@ -79,12 +81,12 @@ func TestCapabilityRouter_Match(t *testing.T) {
 
 func TestCapabilityRouter_NoMatch(t *testing.T) {
 	m := &profiledModel{
-		TestModel: NewTestModel(TextResponse("basic")),
+		TestModel: core.NewTestModel(core.TextResponse("basic")),
 		profile:   ModelProfile{SupportsVision: false},
 	}
 
 	router := NewCapabilityRouter(
-		[]Model{m},
+		[]core.Model{m},
 		ModelProfile{SupportsVision: true},
 	)
 

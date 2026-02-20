@@ -1,11 +1,14 @@
-package core
+package modelutil
 
 import (
 	"context"
 	"errors"
+	"io"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/fugue-labs/gollem/core"
 )
 
 // retryFailingModel fails a specified number of times before succeeding.
@@ -18,26 +21,47 @@ type retryFailingModel struct {
 
 func (m *retryFailingModel) ModelName() string { return "failing-model" }
 
-func (m *retryFailingModel) Request(_ context.Context, _ []ModelMessage, _ *ModelSettings, _ *ModelRequestParameters) (*ModelResponse, error) {
+func (m *retryFailingModel) Request(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (*core.ModelResponse, error) {
 	n := int(m.attempts.Add(1))
 	if n <= m.failCount {
 		return nil, m.failErr
 	}
-	return TextResponse(m.successMsg), nil
+	return core.TextResponse(m.successMsg), nil
 }
 
-func (m *retryFailingModel) RequestStream(ctx context.Context, messages []ModelMessage, settings *ModelSettings, params *ModelRequestParameters) (StreamedResponse, error) {
+func (m *retryFailingModel) RequestStream(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (core.StreamedResponse, error) {
 	resp, err := m.Request(ctx, messages, settings, params)
 	if err != nil {
 		return nil, err
 	}
-	return &testStreamedResponse{response: resp}, nil
+	return &simpleStreamedResponse{response: resp}, nil
+}
+
+// simpleStreamedResponse wraps a ModelResponse as a StreamedResponse for tests.
+type simpleStreamedResponse struct {
+	response *core.ModelResponse
+}
+
+func (s *simpleStreamedResponse) Next() (core.ModelResponseStreamEvent, error) {
+	return nil, io.EOF
+}
+
+func (s *simpleStreamedResponse) Response() *core.ModelResponse {
+	return s.response
+}
+
+func (s *simpleStreamedResponse) Usage() core.Usage {
+	return s.response.Usage
+}
+
+func (s *simpleStreamedResponse) Close() error {
+	return nil
 }
 
 func TestRetryModel_SucceedsAfterRetry(t *testing.T) {
 	fm := &retryFailingModel{
 		failCount:  2,
-		failErr:    &ModelHTTPError{StatusCode: 429, Message: "rate limited"},
+		failErr:    &core.ModelHTTPError{StatusCode: 429, Message: "rate limited"},
 		successMsg: "success",
 	}
 
@@ -49,7 +73,7 @@ func TestRetryModel_SucceedsAfterRetry(t *testing.T) {
 		Jitter:         false,
 	})
 
-	resp, err := rm.Request(context.Background(), nil, nil, &ModelRequestParameters{AllowTextOutput: true})
+	resp, err := rm.Request(context.Background(), nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		t.Fatalf("expected success, got: %v", err)
 	}
@@ -64,7 +88,7 @@ func TestRetryModel_SucceedsAfterRetry(t *testing.T) {
 func TestRetryModel_ExhaustsRetries(t *testing.T) {
 	fm := &retryFailingModel{
 		failCount: 100,
-		failErr:   &ModelHTTPError{StatusCode: 500, Message: "server error"},
+		failErr:   &core.ModelHTTPError{StatusCode: 500, Message: "server error"},
 	}
 
 	rm := NewRetryModel(fm, RetryConfig{
@@ -108,7 +132,7 @@ func TestRetryModel_BackoffIncreases(t *testing.T) {
 	var timestamps []time.Time
 	fm := &retryFailingModel{
 		failCount: 3,
-		failErr:   &ModelHTTPError{StatusCode: 503, Message: "unavailable"},
+		failErr:   &core.ModelHTTPError{StatusCode: 503, Message: "unavailable"},
 	}
 
 	rm := NewRetryModel(fm, RetryConfig{
@@ -133,7 +157,7 @@ func TestRetryModel_BackoffIncreases(t *testing.T) {
 func TestRetryModel_ContextCancel(t *testing.T) {
 	fm := &retryFailingModel{
 		failCount: 100,
-		failErr:   &ModelHTTPError{StatusCode: 429, Message: "rate limited"},
+		failErr:   &core.ModelHTTPError{StatusCode: 429, Message: "rate limited"},
 	}
 
 	rm := NewRetryModel(fm, RetryConfig{
@@ -161,7 +185,7 @@ func TestRetryModel_ModelName(t *testing.T) {
 func TestRetryModel_StreamRetry(t *testing.T) {
 	fm := &retryFailingModel{
 		failCount:  1,
-		failErr:    &ModelHTTPError{StatusCode: 502, Message: "bad gateway"},
+		failErr:    &core.ModelHTTPError{StatusCode: 502, Message: "bad gateway"},
 		successMsg: "streamed",
 	}
 

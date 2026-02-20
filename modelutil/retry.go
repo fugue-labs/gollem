@@ -1,4 +1,4 @@
-package core
+package modelutil
 
 import (
 	"context"
@@ -6,6 +6,8 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"time"
+
+	"github.com/fugue-labs/gollem/core"
 )
 
 // RetryConfig configures retry behavior.
@@ -32,7 +34,7 @@ func DefaultRetryConfig() RetryConfig {
 
 // defaultIsRetryable checks for transient HTTP errors.
 func defaultIsRetryable(err error) bool {
-	var httpErr *ModelHTTPError
+	var httpErr *core.ModelHTTPError
 	if errors.As(err, &httpErr) {
 		switch httpErr.StatusCode {
 		case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable:
@@ -44,12 +46,12 @@ func defaultIsRetryable(err error) bool {
 
 // RetryModel wraps a Model with exponential backoff retry for transient failures.
 type RetryModel struct {
-	model  Model
+	model  core.Model
 	config RetryConfig
 }
 
 // NewRetryModel creates a Model that retries transient failures.
-func NewRetryModel(model Model, config RetryConfig) *RetryModel {
+func NewRetryModel(model core.Model, config RetryConfig) *RetryModel {
 	if config.IsRetryable == nil {
 		config.IsRetryable = defaultIsRetryable
 	}
@@ -65,20 +67,20 @@ func NewRetryModel(model Model, config RetryConfig) *RetryModel {
 	return &RetryModel{model: model, config: config}
 }
 
-var _ Model = (*RetryModel)(nil)
+var _ core.Model = (*RetryModel)(nil)
 
 func (r *RetryModel) ModelName() string {
 	return r.model.ModelName()
 }
 
-func (r *RetryModel) Request(ctx context.Context, messages []ModelMessage, settings *ModelSettings, params *ModelRequestParameters) (*ModelResponse, error) {
-	return retryLoop(ctx, r.config, func() (*ModelResponse, error) {
+func (r *RetryModel) Request(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
+	return retryLoop(ctx, r.config, func() (*core.ModelResponse, error) {
 		return r.model.Request(ctx, messages, settings, params)
 	})
 }
 
-func (r *RetryModel) RequestStream(ctx context.Context, messages []ModelMessage, settings *ModelSettings, params *ModelRequestParameters) (StreamedResponse, error) {
-	return retryLoop(ctx, r.config, func() (StreamedResponse, error) {
+func (r *RetryModel) RequestStream(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (core.StreamedResponse, error) {
+	return retryLoop(ctx, r.config, func() (core.StreamedResponse, error) {
 		return r.model.RequestStream(ctx, messages, settings, params)
 	})
 }

@@ -1,24 +1,26 @@
-package core
+package modelutil
 
 import (
 	"context"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestRateLimitedModel_Throttles(t *testing.T) {
-	model := NewTestModel(TextResponse("a"), TextResponse("b"), TextResponse("c"))
+	model := core.NewTestModel(core.TextResponse("a"), core.TextResponse("b"), core.TextResponse("c"))
 	// 2 requests per second, burst of 1. After the first request consumes the
 	// burst token, the second must wait ~500ms.
 	rl := NewRateLimitedModel(model, 2, 1)
 
 	start := time.Now()
-	_, err := rl.Request(context.Background(), nil, nil, &ModelRequestParameters{AllowTextOutput: true})
+	_, err := rl.Request(context.Background(), nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = rl.Request(context.Background(), nil, nil, &ModelRequestParameters{AllowTextOutput: true})
+	_, err = rl.Request(context.Background(), nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +33,7 @@ func TestRateLimitedModel_Throttles(t *testing.T) {
 }
 
 func TestRateLimitedModel_Burst(t *testing.T) {
-	model := NewTestModel(TextResponse("a"), TextResponse("b"), TextResponse("c"))
+	model := core.NewTestModel(core.TextResponse("a"), core.TextResponse("b"), core.TextResponse("c"))
 	// Allow burst of 3 so 3 requests fire immediately.
 	rl := NewRateLimitedModel(model, 1, 3)
 
@@ -41,7 +43,7 @@ func TestRateLimitedModel_Burst(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = rl.Request(context.Background(), nil, nil, &ModelRequestParameters{AllowTextOutput: true})
+			_, _ = rl.Request(context.Background(), nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 		}()
 	}
 	wg.Wait()
@@ -54,26 +56,26 @@ func TestRateLimitedModel_Burst(t *testing.T) {
 }
 
 func TestRateLimitedModel_ContextCancel(t *testing.T) {
-	model := NewTestModel(TextResponse("a"), TextResponse("b"))
+	model := core.NewTestModel(core.TextResponse("a"), core.TextResponse("b"))
 	// 1 rps, burst of 1. First consumes the token, second will wait.
 	rl := NewRateLimitedModel(model, 1, 1)
 
-	_, _ = rl.Request(context.Background(), nil, nil, &ModelRequestParameters{AllowTextOutput: true})
+	_, _ = rl.Request(context.Background(), nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	_, err := rl.Request(ctx, nil, nil, &ModelRequestParameters{AllowTextOutput: true})
+	_, err := rl.Request(ctx, nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err == nil {
 		t.Fatal("expected context error, got nil")
 	}
 }
 
 func TestRateLimitedModel_Delegates(t *testing.T) {
-	model := NewTestModel(TextResponse("hello"))
+	model := core.NewTestModel(core.TextResponse("hello"))
 	rl := NewRateLimitedModel(model, 100, 10)
 
-	resp, err := rl.Request(context.Background(), nil, nil, &ModelRequestParameters{AllowTextOutput: true})
+	resp, err := rl.Request(context.Background(), nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,10 +88,10 @@ func TestRateLimitedModel_Delegates(t *testing.T) {
 }
 
 func TestRateLimitedModel_Streaming(t *testing.T) {
-	model := NewTestModel(TextResponse("stream"))
+	model := core.NewTestModel(core.TextResponse("stream"))
 	rl := NewRateLimitedModel(model, 100, 10)
 
-	stream, err := rl.RequestStream(context.Background(), nil, nil, &ModelRequestParameters{AllowTextOutput: true})
+	stream, err := rl.RequestStream(context.Background(), nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		t.Fatal(err)
 	}

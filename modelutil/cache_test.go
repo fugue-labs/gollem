@@ -1,19 +1,21 @@
-package core
+package modelutil
 
 import (
 	"context"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestCachedModel_Hit(t *testing.T) {
-	model := NewTestModel(TextResponse("first"))
+	model := core.NewTestModel(core.TextResponse("first"))
 	cache := NewMemoryCache()
 	cached := NewCachedModel(model, cache)
 
 	// First call: cache miss.
-	resp1, err := cached.Request(context.Background(), nil, nil, &ModelRequestParameters{AllowTextOutput: true})
+	resp1, err := cached.Request(context.Background(), nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,10 +23,8 @@ func TestCachedModel_Hit(t *testing.T) {
 		t.Fatalf("expected 'first', got %q", resp1.TextContent())
 	}
 
-	// Second call with same args: cache hit — model should NOT be called again.
-	// Since TestModel only has one response and idx stays at 0 (last response),
-	// if the cache works, we get the cached response.
-	resp2, err := cached.Request(context.Background(), nil, nil, &ModelRequestParameters{AllowTextOutput: true})
+	// Second call with same args: cache hit -- model should NOT be called again.
+	resp2, err := cached.Request(context.Background(), nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,19 +39,19 @@ func TestCachedModel_Hit(t *testing.T) {
 }
 
 func TestCachedModel_Miss(t *testing.T) {
-	model := NewTestModel(TextResponse("a"), TextResponse("b"))
+	model := core.NewTestModel(core.TextResponse("a"), core.TextResponse("b"))
 	cache := NewMemoryCache()
 	cached := NewCachedModel(model, cache)
 
 	// Different messages produce different cache keys.
-	msg1 := []ModelMessage{ModelRequest{Parts: []ModelRequestPart{UserPromptPart{Content: "hello"}}}}
-	msg2 := []ModelMessage{ModelRequest{Parts: []ModelRequestPart{UserPromptPart{Content: "world"}}}}
+	msg1 := []core.ModelMessage{core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "hello"}}}}
+	msg2 := []core.ModelMessage{core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "world"}}}}
 
-	resp1, err := cached.Request(context.Background(), msg1, nil, &ModelRequestParameters{AllowTextOutput: true})
+	resp1, err := cached.Request(context.Background(), msg1, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp2, err := cached.Request(context.Background(), msg2, nil, &ModelRequestParameters{AllowTextOutput: true})
+	resp2, err := cached.Request(context.Background(), msg2, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,11 +65,11 @@ func TestCachedModel_Miss(t *testing.T) {
 }
 
 func TestCachedModel_TTL(t *testing.T) {
-	model := NewTestModel(TextResponse("fresh"), TextResponse("fresh2"))
+	model := core.NewTestModel(core.TextResponse("fresh"), core.TextResponse("fresh2"))
 	cache := NewMemoryCacheWithTTL(50 * time.Millisecond)
 	cached := NewCachedModel(model, cache)
 
-	_, err := cached.Request(context.Background(), nil, nil, &ModelRequestParameters{AllowTextOutput: true})
+	_, err := cached.Request(context.Background(), nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestCachedModel_TTL(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// This should be a cache miss due to TTL expiration.
-	_, err = cached.Request(context.Background(), nil, nil, &ModelRequestParameters{AllowTextOutput: true})
+	_, err = cached.Request(context.Background(), nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,15 +89,15 @@ func TestCachedModel_TTL(t *testing.T) {
 }
 
 func TestCachedModel_StreamingNotCached(t *testing.T) {
-	model := NewTestModel(TextResponse("stream1"), TextResponse("stream2"))
+	model := core.NewTestModel(core.TextResponse("stream1"), core.TextResponse("stream2"))
 	cache := NewMemoryCache()
 	cached := NewCachedModel(model, cache)
 
-	_, err := cached.RequestStream(context.Background(), nil, nil, &ModelRequestParameters{AllowTextOutput: true})
+	_, err := cached.RequestStream(context.Background(), nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = cached.RequestStream(context.Background(), nil, nil, &ModelRequestParameters{AllowTextOutput: true})
+	_, err = cached.RequestStream(context.Background(), nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestCachedModel_StreamingNotCached(t *testing.T) {
 }
 
 func TestCachedModel_ThreadSafe(t *testing.T) {
-	model := NewTestModel(TextResponse("safe"))
+	model := core.NewTestModel(core.TextResponse("safe"))
 	cache := NewMemoryCache()
 	cached := NewCachedModel(model, cache)
 
@@ -118,7 +118,7 @@ func TestCachedModel_ThreadSafe(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := cached.Request(context.Background(), nil, nil, &ModelRequestParameters{AllowTextOutput: true})
+			_, err := cached.Request(context.Background(), nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
 			if err != nil {
 				t.Error(err)
 			}
@@ -128,7 +128,7 @@ func TestCachedModel_ThreadSafe(t *testing.T) {
 }
 
 func TestCachedModel_ModelName(t *testing.T) {
-	model := NewTestModel(TextResponse("name"))
+	model := core.NewTestModel(core.TextResponse("name"))
 	cache := NewMemoryCache()
 	cached := NewCachedModel(model, cache)
 
@@ -138,18 +138,18 @@ func TestCachedModel_ModelName(t *testing.T) {
 }
 
 func TestCachedModel_DifferentSettings(t *testing.T) {
-	model := NewTestModel(TextResponse("low"), TextResponse("high"))
+	model := core.NewTestModel(core.TextResponse("low"), core.TextResponse("high"))
 	cache := NewMemoryCache()
 	cached := NewCachedModel(model, cache)
 
 	temp1 := 0.1
 	temp2 := 0.9
 
-	_, err := cached.Request(context.Background(), nil, &ModelSettings{Temperature: &temp1}, &ModelRequestParameters{AllowTextOutput: true})
+	_, err := cached.Request(context.Background(), nil, &core.ModelSettings{Temperature: &temp1}, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = cached.Request(context.Background(), nil, &ModelSettings{Temperature: &temp2}, &ModelRequestParameters{AllowTextOutput: true})
+	_, err = cached.Request(context.Background(), nil, &core.ModelSettings{Temperature: &temp2}, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		t.Fatal(err)
 	}
