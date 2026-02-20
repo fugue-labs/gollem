@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestPlanningTool_CreatePlan(t *testing.T) {
@@ -19,7 +19,7 @@ func TestPlanningTool_CreatePlan(t *testing.T) {
 		]
 	}`
 
-	result, err := tool.Handler(context.Background(), &gollem.RunContext{}, argsJSON)
+	result, err := tool.Handler(context.Background(), &core.RunContext{}, argsJSON)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -47,14 +47,14 @@ func TestPlanningTool_UpdateTask(t *testing.T) {
 			{"id": "t2", "description": "Task two", "status": "pending"}
 		]
 	}`
-	_, err := tool.Handler(context.Background(), &gollem.RunContext{}, createArgs)
+	_, err := tool.Handler(context.Background(), &core.RunContext{}, createArgs)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
 	// Update task status.
 	updateArgs := `{"command": "update", "task_id": "t1", "status": "in_progress", "notes": "Working on it"}`
-	result, err := tool.Handler(context.Background(), &gollem.RunContext{}, updateArgs)
+	result, err := tool.Handler(context.Background(), &core.RunContext{}, updateArgs)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -89,14 +89,14 @@ func TestPlanningTool_GetPlan(t *testing.T) {
 			{"id": "x2", "description": "Do Y", "status": "completed"}
 		]
 	}`
-	_, err := tool.Handler(context.Background(), &gollem.RunContext{}, createArgs)
+	_, err := tool.Handler(context.Background(), &core.RunContext{}, createArgs)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
 	// Get plan.
 	getArgs := `{"command": "get"}`
-	result, err := tool.Handler(context.Background(), &gollem.RunContext{}, getArgs)
+	result, err := tool.Handler(context.Background(), &core.RunContext{}, getArgs)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestPlanningTool_UpdateNotFound(t *testing.T) {
 	tool := PlanningTool()
 
 	// Create plan.
-	_, err := tool.Handler(context.Background(), &gollem.RunContext{}, `{
+	_, err := tool.Handler(context.Background(), &core.RunContext{}, `{
 		"command": "create",
 		"tasks": [{"id": "a", "description": "A", "status": "pending"}]
 	}`)
@@ -128,7 +128,7 @@ func TestPlanningTool_UpdateNotFound(t *testing.T) {
 	}
 
 	// Try to update non-existent task.
-	_, err = tool.Handler(context.Background(), &gollem.RunContext{}, `{"command": "update", "task_id": "z", "status": "done"}`)
+	_, err = tool.Handler(context.Background(), &core.RunContext{}, `{"command": "update", "task_id": "z", "status": "done"}`)
 	if err == nil {
 		t.Fatal("expected error for non-existent task")
 	}
@@ -136,7 +136,7 @@ func TestPlanningTool_UpdateNotFound(t *testing.T) {
 
 func TestPlanningTool_UnknownCommand(t *testing.T) {
 	tool := PlanningTool()
-	_, err := tool.Handler(context.Background(), &gollem.RunContext{}, `{"command": "delete"}`)
+	_, err := tool.Handler(context.Background(), &core.RunContext{}, `{"command": "delete"}`)
 	if err == nil {
 		t.Fatal("expected error for unknown command")
 	}
@@ -146,19 +146,19 @@ func TestPlanningTool_Integration(t *testing.T) {
 	// Simulate: model creates a plan, marks task in_progress, completes it.
 	tool := PlanningTool()
 
-	model := gollem.NewTestModel(
-		gollem.ToolCallResponseWithID("planning", `{
+	model := core.NewTestModel(
+		core.ToolCallResponseWithID("planning", `{
 			"command": "create",
 			"tasks": [
 				{"id": "step1", "description": "Research topic", "status": "pending"},
 				{"id": "step2", "description": "Write draft", "status": "pending"}
 			]
 		}`, "tc1"),
-		gollem.ToolCallResponseWithID("planning", `{"command": "update", "task_id": "step1", "status": "completed"}`, "tc2"),
-		gollem.TextResponse("Done with planning and execution."),
+		core.ToolCallResponseWithID("planning", `{"command": "update", "task_id": "step1", "status": "completed"}`, "tc2"),
+		core.TextResponse("Done with planning and execution."),
 	)
 
-	agent := gollem.NewAgent[string](model, gollem.WithTools[string](tool))
+	agent := core.NewAgent[string](model, core.WithTools[string](tool))
 	result, err := agent.Run(context.Background(), "Do the task")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

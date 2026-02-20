@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // Case represents a single evaluation test case.
@@ -28,12 +28,12 @@ type Evaluator[T any] interface {
 
 // StepEvaluator scores individual steps of an agent run.
 type StepEvaluator interface {
-	EvaluateStep(ctx context.Context, step *gollem.ModelResponse, stepIndex int, state *StepState) (*Score, error)
+	EvaluateStep(ctx context.Context, step *core.ModelResponse, stepIndex int, state *StepState) (*Score, error)
 }
 
 // StepState provides context about the run so far.
 type StepState struct {
-	Messages   []gollem.ModelMessage
+	Messages   []core.ModelMessage
 	TotalSteps int
 	ToolCalls  int
 }
@@ -52,7 +52,7 @@ type CaseResult struct {
 	StepScores []Score
 	Output     any
 	Duration   time.Duration
-	Usage      gollem.RunUsage
+	Usage      core.RunUsage
 	Error      error
 }
 
@@ -71,14 +71,14 @@ type Report struct {
 
 // Runner executes evaluation datasets against agents.
 type Runner[T any] struct {
-	agent          *gollem.Agent[T]
+	agent          *core.Agent[T]
 	evaluators     []Evaluator[T]
 	stepEvaluators []StepEvaluator
 	passScore      float64
 }
 
 // NewRunner creates an evaluation runner.
-func NewRunner[T any](agent *gollem.Agent[T], evaluators ...Evaluator[T]) *Runner[T] {
+func NewRunner[T any](agent *core.Agent[T], evaluators ...Evaluator[T]) *Runner[T] {
 	return &Runner[T]{
 		agent:      agent,
 		evaluators: evaluators,
@@ -185,14 +185,14 @@ func (r *Runner[T]) Run(ctx context.Context, dataset Dataset[T]) (*Report, error
 }
 
 // evaluateSteps runs step evaluators on each ModelResponse in the conversation history.
-func (r *Runner[T]) evaluateSteps(ctx context.Context, messages []gollem.ModelMessage) []Score {
+func (r *Runner[T]) evaluateSteps(ctx context.Context, messages []core.ModelMessage) []Score {
 	var stepScores []Score
 
 	// Count total responses and tool calls for StepState.
-	var responses []*gollem.ModelResponse
+	var responses []*core.ModelResponse
 	var totalToolCalls int
 	for i := range messages {
-		if resp, ok := messages[i].(gollem.ModelResponse); ok {
+		if resp, ok := messages[i].(core.ModelResponse); ok {
 			responses = append(responses, &resp)
 			totalToolCalls += len(resp.ToolCalls())
 		}

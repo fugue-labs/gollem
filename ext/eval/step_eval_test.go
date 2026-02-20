@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 type greetParams struct {
@@ -13,16 +13,16 @@ type greetParams struct {
 
 func TestStepEvaluator_MaxSteps(t *testing.T) {
 	// Create a model that requires multiple steps: tool call then text response.
-	model := gollem.NewTestModel(
-		gollem.ToolCallResponse("greet", `{"name":"Alice"}`),
-		gollem.TextResponse("Hello Alice!"),
+	model := core.NewTestModel(
+		core.ToolCallResponse("greet", `{"name":"Alice"}`),
+		core.TextResponse("Hello Alice!"),
 	)
 
-	greetTool := gollem.FuncTool[greetParams]("greet", "Greet a person", func(_ context.Context, _ *gollem.RunContext, params greetParams) (string, error) {
+	greetTool := core.FuncTool[greetParams]("greet", "Greet a person", func(_ context.Context, _ *core.RunContext, params greetParams) (string, error) {
 		return "Hi " + params.Name, nil
 	})
 
-	agent := gollem.NewAgent[string](model, gollem.WithTools[string](greetTool))
+	agent := core.NewAgent[string](model, core.WithTools[string](greetTool))
 
 	dataset := Dataset[string]{
 		Name: "max-steps-test",
@@ -59,16 +59,16 @@ func TestStepEvaluator_MaxSteps(t *testing.T) {
 
 func TestStepEvaluator_NoRetry(t *testing.T) {
 	// Create a model that first gives an empty response (triggers retry), then responds.
-	model := gollem.NewTestModel(
-		&gollem.ModelResponse{
-			Parts:        []gollem.ModelResponsePart{},
-			FinishReason: gollem.FinishReasonStop,
+	model := core.NewTestModel(
+		&core.ModelResponse{
+			Parts:        []core.ModelResponsePart{},
+			FinishReason: core.FinishReasonStop,
 			ModelName:    "test-model",
 		},
-		gollem.TextResponse("Hello!"),
+		core.TextResponse("Hello!"),
 	)
 
-	agent := gollem.NewAgent[string](model)
+	agent := core.NewAgent[string](model)
 
 	dataset := Dataset[string]{
 		Name: "no-retry-test",
@@ -108,8 +108,8 @@ func TestStepEvaluator_NoRetry(t *testing.T) {
 }
 
 func TestStepEvaluator_AllPass(t *testing.T) {
-	model := gollem.NewTestModel(gollem.TextResponse("Hello!"))
-	agent := gollem.NewAgent[string](model)
+	model := core.NewTestModel(core.TextResponse("Hello!"))
+	agent := core.NewAgent[string](model)
 
 	dataset := Dataset[string]{
 		Name: "all-pass-test",
@@ -140,8 +140,8 @@ func TestStepEvaluator_AllPass(t *testing.T) {
 
 func TestStepEvaluator_Integration(t *testing.T) {
 	// Step evaluator runs alongside output evaluator.
-	model := gollem.NewTestModel(gollem.TextResponse("Hello World"))
-	agent := gollem.NewAgent[string](model)
+	model := core.NewTestModel(core.TextResponse("Hello World"))
+	agent := core.NewAgent[string](model)
 
 	dataset := Dataset[string]{
 		Name: "integration-test",
@@ -181,18 +181,18 @@ func TestStepEvaluator_Integration(t *testing.T) {
 
 func TestStepReport_Aggregation(t *testing.T) {
 	// Two cases: one that passes step eval, one that fails.
-	model := gollem.NewTestModel(
-		gollem.TextResponse("Match"),
+	model := core.NewTestModel(
+		core.TextResponse("Match"),
 		// Second case: the model needs two responses (tool call + text).
-		gollem.ToolCallResponse("greet", `{"name":"Bob"}`),
-		gollem.TextResponse("NoMatch"),
+		core.ToolCallResponse("greet", `{"name":"Bob"}`),
+		core.TextResponse("NoMatch"),
 	)
 
-	greetTool := gollem.FuncTool[greetParams]("greet", "Greet", func(_ context.Context, _ *gollem.RunContext, params greetParams) (string, error) {
+	greetTool := core.FuncTool[greetParams]("greet", "Greet", func(_ context.Context, _ *core.RunContext, params greetParams) (string, error) {
 		return "Hi " + params.Name, nil
 	})
 
-	agent := gollem.NewAgent[string](model, gollem.WithTools[string](greetTool))
+	agent := core.NewAgent[string](model, core.WithTools[string](greetTool))
 
 	dataset := Dataset[string]{
 		Name: "aggregation-test",

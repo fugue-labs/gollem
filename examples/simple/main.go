@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 	"github.com/fugue-labs/gollem/provider/vertexai"
 )
 
@@ -30,8 +30,8 @@ func main() {
 	)
 
 	// Create an agent that returns structured CityInfo.
-	agent := gollem.NewAgent[CityInfo](model,
-		gollem.WithSystemPrompt[CityInfo]("You are a geography expert. Answer questions about cities with accurate data."),
+	agent := core.NewAgent[CityInfo](model,
+		core.WithSystemPrompt[CityInfo]("You are a geography expert. Answer questions about cities with accurate data."),
 	)
 
 	// Run the agent with a prompt.

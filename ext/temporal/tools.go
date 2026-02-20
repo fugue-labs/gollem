@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // toolParams is the serializable parameter for tool call activities.
@@ -21,13 +21,13 @@ type toolResult struct {
 	Message string          `json:"message,omitempty"`
 }
 
-// TemporalizeTool wraps a gollem.Tool's handler to execute as a Temporal activity.
+// TemporalizeTool wraps a core.Tool's handler to execute as a Temporal activity.
 // The returned tool has an activity function that can be registered with a worker.
-func TemporalizeTool(agentName string, tool gollem.Tool, config ActivityConfig) TemporalTool {
+func TemporalizeTool(agentName string, tool core.Tool, config ActivityConfig) TemporalTool {
 	actName := fmt.Sprintf("agent__%s__tool__%s", agentName, tool.Definition.Name)
 
 	activityFn := func(ctx context.Context, params toolParams) (*toolResult, error) {
-		rc := &gollem.RunContext{
+		rc := &core.RunContext{
 			ToolName:   tool.Definition.Name,
 			ToolCallID: params.ToolCallID,
 		}
@@ -35,7 +35,7 @@ func TemporalizeTool(agentName string, tool gollem.Tool, config ActivityConfig) 
 		result, err := tool.Handler(ctx, rc, params.ArgsJSON)
 		if err != nil {
 			// Check if it's a retry error.
-			if retryErr, ok := err.(*gollem.ModelRetryError); ok { //nolint:errorlint // type switch on concrete error type
+			if retryErr, ok := err.(*core.ModelRetryError); ok { //nolint:errorlint // type switch on concrete error type
 				return &toolResult{
 					Kind:    "retry",
 					Message: retryErr.Error(),
@@ -67,14 +67,14 @@ func TemporalizeTool(agentName string, tool gollem.Tool, config ActivityConfig) 
 
 // TemporalTool wraps a tool with its Temporal activity function.
 type TemporalTool struct {
-	Tool         gollem.Tool
+	Tool         core.Tool
 	ActivityName string
 	ActivityFn   func(ctx context.Context, params toolParams) (*toolResult, error)
 	Config       ActivityConfig
 }
 
 // TemporalizeTools wraps multiple tools.
-func TemporalizeTools(agentName string, tools []gollem.Tool, config ActivityConfig) []TemporalTool {
+func TemporalizeTools(agentName string, tools []core.Tool, config ActivityConfig) []TemporalTool {
 	result := make([]TemporalTool, len(tools))
 	for i, tool := range tools {
 		result[i] = TemporalizeTool(agentName, tool, config)

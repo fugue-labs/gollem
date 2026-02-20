@@ -11,15 +11,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestBuildRequestBasic(t *testing.T) {
-	messages := []gollem.ModelMessage{
-		gollem.ModelRequest{
-			Parts: []gollem.ModelRequestPart{
-				gollem.SystemPromptPart{Content: "You are helpful."},
-				gollem.UserPromptPart{Content: "Hello"},
+	messages := []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.SystemPromptPart{Content: "You are helpful."},
+				core.UserPromptPart{Content: "Hello"},
 			},
 		},
 	}
@@ -59,7 +59,7 @@ func TestBuildRequestWithSettings(t *testing.T) {
 	maxTokens := 1000
 	temp := 0.7
 	topP := 0.9
-	settings := &gollem.ModelSettings{
+	settings := &core.ModelSettings{
 		MaxTokens:   &maxTokens,
 		Temperature: &temp,
 		TopP:        &topP,
@@ -80,12 +80,12 @@ func TestBuildRequestWithSettings(t *testing.T) {
 }
 
 func TestBuildRequestWithTools(t *testing.T) {
-	params := &gollem.ModelRequestParameters{
-		FunctionTools: []gollem.ToolDefinition{
+	params := &core.ModelRequestParameters{
+		FunctionTools: []core.ToolDefinition{
 			{
 				Name:        "get_weather",
 				Description: "Get weather for a city",
-				ParametersSchema: gollem.Schema{
+				ParametersSchema: core.Schema{
 					"type": "object",
 					"properties": map[string]any{
 						"city": map[string]any{"type": "string"},
@@ -110,11 +110,11 @@ func TestBuildRequestWithTools(t *testing.T) {
 }
 
 func TestBuildRequestWithResponseFormat(t *testing.T) {
-	params := &gollem.ModelRequestParameters{
-		OutputMode: gollem.OutputModeNative,
-		OutputObject: &gollem.OutputObjectDefinition{
+	params := &core.ModelRequestParameters{
+		OutputMode: core.OutputModeNative,
+		OutputObject: &core.OutputObjectDefinition{
 			Name: "result",
-			JSONSchema: gollem.Schema{
+			JSONSchema: core.Schema{
 				"type": "object",
 				"properties": map[string]any{
 					"answer": map[string]any{"type": "string"},
@@ -144,10 +144,10 @@ func TestBuildRequestWithResponseFormat(t *testing.T) {
 }
 
 func TestBuildRequestToolReturn(t *testing.T) {
-	messages := []gollem.ModelMessage{
-		gollem.ModelRequest{
-			Parts: []gollem.ModelRequestPart{
-				gollem.ToolReturnPart{
+	messages := []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.ToolReturnPart{
 					ToolName:   "get_weather",
 					Content:    "sunny, 72°F",
 					ToolCallID: "call_123",
@@ -175,10 +175,10 @@ func TestBuildRequestToolReturn(t *testing.T) {
 }
 
 func TestBuildRequestRetryPrompt(t *testing.T) {
-	messages := []gollem.ModelMessage{
-		gollem.ModelRequest{
-			Parts: []gollem.ModelRequestPart{
-				gollem.RetryPromptPart{
+	messages := []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.RetryPromptPart{
 					Content:    "Invalid JSON",
 					ToolCallID: "call_456",
 				},
@@ -202,10 +202,10 @@ func TestBuildRequestRetryPrompt(t *testing.T) {
 }
 
 func TestBuildRequestRetryPromptWithoutToolID(t *testing.T) {
-	messages := []gollem.ModelMessage{
-		gollem.ModelRequest{
-			Parts: []gollem.ModelRequestPart{
-				gollem.RetryPromptPart{
+	messages := []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.RetryPromptPart{
 					Content: "Please try again",
 				},
 			},
@@ -225,11 +225,11 @@ func TestBuildRequestRetryPromptWithoutToolID(t *testing.T) {
 }
 
 func TestBuildRequestAssistantMessage(t *testing.T) {
-	messages := []gollem.ModelMessage{
-		gollem.ModelResponse{
-			Parts: []gollem.ModelResponsePart{
-				gollem.TextPart{Content: "Hello!"},
-				gollem.ToolCallPart{
+	messages := []core.ModelMessage{
+		core.ModelResponse{
+			Parts: []core.ModelResponsePart{
+				core.TextPart{Content: "Hello!"},
+				core.ToolCallPart{
 					ToolName:   "search",
 					ArgsJSON:   `{"query":"test"}`,
 					ToolCallID: "call_789",
@@ -302,14 +302,14 @@ func TestParseResponse(t *testing.T) {
 	if len(result.Parts) != 1 {
 		t.Fatalf("expected 1 part, got %d", len(result.Parts))
 	}
-	tp, ok := result.Parts[0].(gollem.TextPart)
+	tp, ok := result.Parts[0].(core.TextPart)
 	if !ok {
 		t.Fatal("expected TextPart")
 	}
 	if tp.Content != "Hello there!" {
 		t.Errorf("unexpected content: %s", tp.Content)
 	}
-	if result.FinishReason != gollem.FinishReasonStop {
+	if result.FinishReason != core.FinishReasonStop {
 		t.Errorf("expected FinishReasonStop, got %s", result.FinishReason)
 	}
 	if result.Usage.InputTokens != 10 {
@@ -345,7 +345,7 @@ func TestParseResponseToolCall(t *testing.T) {
 	if len(result.Parts) != 1 {
 		t.Fatalf("expected 1 part, got %d", len(result.Parts))
 	}
-	tc, ok := result.Parts[0].(gollem.ToolCallPart)
+	tc, ok := result.Parts[0].(core.ToolCallPart)
 	if !ok {
 		t.Fatal("expected ToolCallPart")
 	}
@@ -358,7 +358,7 @@ func TestParseResponseToolCall(t *testing.T) {
 	if tc.ToolCallID != "call_abc" {
 		t.Errorf("expected call_abc, got %s", tc.ToolCallID)
 	}
-	if result.FinishReason != gollem.FinishReasonToolCall {
+	if result.FinishReason != core.FinishReasonToolCall {
 		t.Errorf("expected FinishReasonToolCall, got %s", result.FinishReason)
 	}
 }
@@ -366,13 +366,13 @@ func TestParseResponseToolCall(t *testing.T) {
 func TestParseResponseStopReasons(t *testing.T) {
 	tests := []struct {
 		reason   string
-		expected gollem.FinishReason
+		expected core.FinishReason
 	}{
-		{"stop", gollem.FinishReasonStop},
-		{"length", gollem.FinishReasonLength},
-		{"tool_calls", gollem.FinishReasonToolCall},
-		{"content_filter", gollem.FinishReasonContentFilter},
-		{"unknown", gollem.FinishReasonStop},
+		{"stop", core.FinishReasonStop},
+		{"length", core.FinishReasonLength},
+		{"tool_calls", core.FinishReasonToolCall},
+		{"content_filter", core.FinishReasonContentFilter},
+		{"unknown", core.FinishReasonStop},
 	}
 
 	for _, tt := range tests {
@@ -416,11 +416,11 @@ data: [DONE]
 	if err != nil {
 		t.Fatal(err)
 	}
-	start, ok := event1.(gollem.PartStartEvent)
+	start, ok := event1.(core.PartStartEvent)
 	if !ok {
 		t.Fatalf("expected PartStartEvent, got %T", event1)
 	}
-	tp, ok := start.Part.(gollem.TextPart)
+	tp, ok := start.Part.(core.TextPart)
 	if !ok {
 		t.Fatal("expected TextPart")
 	}
@@ -433,11 +433,11 @@ data: [DONE]
 	if err != nil {
 		t.Fatal(err)
 	}
-	delta, ok := event2.(gollem.PartDeltaEvent)
+	delta, ok := event2.(core.PartDeltaEvent)
 	if !ok {
 		t.Fatalf("expected PartDeltaEvent, got %T", event2)
 	}
-	td, ok := delta.Delta.(gollem.TextPartDelta)
+	td, ok := delta.Delta.(core.TextPartDelta)
 	if !ok {
 		t.Fatal("expected TextPartDelta")
 	}
@@ -456,7 +456,7 @@ data: [DONE]
 	if len(resp.Parts) != 1 {
 		t.Fatalf("expected 1 part, got %d", len(resp.Parts))
 	}
-	finalTp, ok := resp.Parts[0].(gollem.TextPart)
+	finalTp, ok := resp.Parts[0].(core.TextPart)
 	if !ok {
 		t.Fatal("expected TextPart in final response")
 	}
@@ -494,11 +494,11 @@ data: [DONE]
 	if err != nil {
 		t.Fatal(err)
 	}
-	start, ok := event1.(gollem.PartStartEvent)
+	start, ok := event1.(core.PartStartEvent)
 	if !ok {
 		t.Fatalf("expected PartStartEvent, got %T", event1)
 	}
-	tc, ok := start.Part.(gollem.ToolCallPart)
+	tc, ok := start.Part.(core.ToolCallPart)
 	if !ok {
 		t.Fatal("expected ToolCallPart")
 	}
@@ -516,11 +516,11 @@ data: [DONE]
 		if err != nil {
 			t.Fatalf("delta %d: %v", i, err)
 		}
-		delta, ok := event.(gollem.PartDeltaEvent)
+		delta, ok := event.(core.PartDeltaEvent)
 		if !ok {
 			t.Fatalf("delta %d: expected PartDeltaEvent, got %T", i, event)
 		}
-		tcd, ok := delta.Delta.(gollem.ToolCallPartDelta)
+		tcd, ok := delta.Delta.(core.ToolCallPartDelta)
 		if !ok {
 			t.Fatalf("delta %d: expected ToolCallPartDelta, got %T", i, delta.Delta)
 		}
@@ -540,14 +540,14 @@ data: [DONE]
 	if len(resp.Parts) != 1 {
 		t.Fatalf("expected 1 part, got %d", len(resp.Parts))
 	}
-	finalTc, ok := resp.Parts[0].(gollem.ToolCallPart)
+	finalTc, ok := resp.Parts[0].(core.ToolCallPart)
 	if !ok {
 		t.Fatal("expected ToolCallPart in final response")
 	}
 	if finalTc.ArgsJSON != `{"city":"NYC"}` {
 		t.Errorf("expected accumulated args, got '%s'", finalTc.ArgsJSON)
 	}
-	if resp.FinishReason != gollem.FinishReasonToolCall {
+	if resp.FinishReason != core.FinishReasonToolCall {
 		t.Errorf("expected FinishReasonToolCall, got %s", resp.FinishReason)
 	}
 }
@@ -646,9 +646,9 @@ func TestRequestIntegration(t *testing.T) {
 	defer server.Close()
 
 	p := New(WithAPIKey("test-key"), WithBaseURL(server.URL))
-	result, err := p.Request(context.Background(), []gollem.ModelMessage{
-		gollem.ModelRequest{
-			Parts:     []gollem.ModelRequestPart{gollem.UserPromptPart{Content: "Hello"}},
+	result, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{
+			Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "Hello"}},
 			Timestamp: time.Now(),
 		},
 	}, nil, nil)
@@ -681,9 +681,9 @@ func TestRequestStreamIntegration(t *testing.T) {
 	defer server.Close()
 
 	p := New(WithAPIKey("test-key"), WithBaseURL(server.URL))
-	stream, err := p.RequestStream(context.Background(), []gollem.ModelMessage{
-		gollem.ModelRequest{
-			Parts:     []gollem.ModelRequestPart{gollem.UserPromptPart{Content: "Hello"}},
+	stream, err := p.RequestStream(context.Background(), []core.ModelMessage{
+		core.ModelRequest{
+			Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "Hello"}},
 			Timestamp: time.Now(),
 		},
 	}, nil, nil)
@@ -703,12 +703,12 @@ func TestRequestStreamIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		switch e := event.(type) {
-		case gollem.PartStartEvent:
-			if tp, ok := e.Part.(gollem.TextPart); ok {
+		case core.PartStartEvent:
+			if tp, ok := e.Part.(core.TextPart); ok {
 				text.WriteString(tp.Content)
 			}
-		case gollem.PartDeltaEvent:
-			if td, ok := e.Delta.(gollem.TextPartDelta); ok {
+		case core.PartDeltaEvent:
+			if td, ok := e.Delta.(core.TextPartDelta); ok {
 				text.WriteString(td.ContentDelta)
 			}
 		}
@@ -732,16 +732,16 @@ func TestRequestHTTPError(t *testing.T) {
 	defer server.Close()
 
 	p := New(WithAPIKey("test-key"), WithBaseURL(server.URL))
-	_, err := p.Request(context.Background(), []gollem.ModelMessage{
-		gollem.ModelRequest{
-			Parts: []gollem.ModelRequestPart{gollem.UserPromptPart{Content: "Hello"}},
+	_, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "Hello"}},
 		},
 	}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
 
-	var httpErr *gollem.ModelHTTPError
+	var httpErr *core.ModelHTTPError
 	if !isHTTPError(err, &httpErr) {
 		t.Fatalf("expected ModelHTTPError, got %T: %v", err, err)
 	}
@@ -751,9 +751,9 @@ func TestRequestHTTPError(t *testing.T) {
 }
 
 // isHTTPError extracts a ModelHTTPError from an error.
-func isHTTPError(err error, target **gollem.ModelHTTPError) bool {
+func isHTTPError(err error, target **core.ModelHTTPError) bool {
 	for {
-		if e, ok := err.(*gollem.ModelHTTPError); ok {
+		if e, ok := err.(*core.ModelHTTPError); ok {
 			*target = e
 			return true
 		}

@@ -1,4 +1,4 @@
-// Package openai provides a gollem.Model implementation for OpenAI's
+// Package openai provides a core.Model implementation for OpenAI's
 // Chat Completions API, supporting GPT and O-series models with function
 // calling, native structured output, and server-sent event streaming.
 //

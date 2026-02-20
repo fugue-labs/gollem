@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // --- API request types ---
@@ -97,7 +97,7 @@ type apiUsage struct {
 }
 
 // buildRequest converts gollem messages into an OpenAI Chat Completions API request.
-func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters, model string, defaultMaxTokens int, stream bool) (*apiRequest, error) {
+func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters, model string, defaultMaxTokens int, stream bool) (*apiRequest, error) {
 	req := &apiRequest{
 		Model:     model,
 		MaxTokens: defaultMaxTokens,
@@ -140,7 +140,7 @@ func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings
 		}
 
 		// Handle native structured output via response_format.
-		if params.OutputMode == gollem.OutputModeNative && params.OutputObject != nil {
+		if params.OutputMode == core.OutputModeNative && params.OutputObject != nil {
 			schemaJSON, err := json.Marshal(params.OutputObject.JSONSchema)
 			if err != nil {
 				return nil, err
@@ -165,20 +165,20 @@ func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings
 
 	for _, msg := range messages {
 		switch m := msg.(type) {
-		case gollem.ModelRequest:
+		case core.ModelRequest:
 			for _, part := range m.Parts {
 				switch p := part.(type) {
-				case gollem.SystemPromptPart:
+				case core.SystemPromptPart:
 					apiMsgs = append(apiMsgs, apiMessage{
 						Role:    "system",
 						Content: p.Content,
 					})
-				case gollem.UserPromptPart:
+				case core.UserPromptPart:
 					apiMsgs = append(apiMsgs, apiMessage{
 						Role:    "user",
 						Content: p.Content,
 					})
-				case gollem.ToolReturnPart:
+				case core.ToolReturnPart:
 					content := ""
 					switch v := p.Content.(type) {
 					case string:
@@ -192,7 +192,7 @@ func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings
 						Content:    content,
 						ToolCallID: p.ToolCallID,
 					})
-				case gollem.RetryPromptPart:
+				case core.RetryPromptPart:
 					if p.ToolCallID != "" {
 						apiMsgs = append(apiMsgs, apiMessage{
 							Role:       "tool",
@@ -208,13 +208,13 @@ func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings
 				}
 			}
 
-		case gollem.ModelResponse:
+		case core.ModelResponse:
 			assistantMsg := apiMessage{Role: "assistant"}
 			for _, part := range m.Parts {
 				switch p := part.(type) {
-				case gollem.TextPart:
+				case core.TextPart:
 					assistantMsg.Content += p.Content
-				case gollem.ToolCallPart:
+				case core.ToolCallPart:
 					assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, apiToolCall{
 						ID:   p.ToolCallID,
 						Type: "function",
@@ -233,17 +233,17 @@ func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings
 	return req, nil
 }
 
-// parseResponse converts an OpenAI API response to a gollem.ModelResponse.
-func parseResponse(resp *apiResponse, modelName string) *gollem.ModelResponse {
-	var parts []gollem.ModelResponsePart
+// parseResponse converts an OpenAI API response to a core.ModelResponse.
+func parseResponse(resp *apiResponse, modelName string) *core.ModelResponse {
+	var parts []core.ModelResponsePart
 
 	if len(resp.Choices) > 0 {
 		choice := resp.Choices[0]
 
 		if choice.Message.Refusal != "" {
-			parts = append(parts, gollem.TextPart{Content: choice.Message.Refusal})
+			parts = append(parts, core.TextPart{Content: choice.Message.Refusal})
 		} else if choice.Message.Content != "" {
-			parts = append(parts, gollem.TextPart{Content: choice.Message.Content})
+			parts = append(parts, core.TextPart{Content: choice.Message.Content})
 		}
 
 		for _, tc := range choice.Message.ToolCalls {
@@ -251,7 +251,7 @@ func parseResponse(resp *apiResponse, modelName string) *gollem.ModelResponse {
 			if argsJSON == "" {
 				argsJSON = "{}"
 			}
-			parts = append(parts, gollem.ToolCallPart{
+			parts = append(parts, core.ToolCallPart{
 				ToolName:   tc.Function.Name,
 				ArgsJSON:   argsJSON,
 				ToolCallID: tc.ID,
@@ -259,7 +259,7 @@ func parseResponse(resp *apiResponse, modelName string) *gollem.ModelResponse {
 		}
 	}
 
-	return &gollem.ModelResponse{
+	return &core.ModelResponse{
 		Parts:        parts,
 		Usage:        mapUsage(resp.Usage),
 		ModelName:    modelName,
@@ -269,27 +269,27 @@ func parseResponse(resp *apiResponse, modelName string) *gollem.ModelResponse {
 }
 
 // mapFinishReason maps OpenAI finish reasons to gollem FinishReasons.
-func mapFinishReason(resp *apiResponse) gollem.FinishReason {
+func mapFinishReason(resp *apiResponse) core.FinishReason {
 	if len(resp.Choices) == 0 {
-		return gollem.FinishReasonStop
+		return core.FinishReasonStop
 	}
 	switch resp.Choices[0].FinishReason {
 	case "stop":
-		return gollem.FinishReasonStop
+		return core.FinishReasonStop
 	case "length":
-		return gollem.FinishReasonLength
+		return core.FinishReasonLength
 	case "tool_calls":
-		return gollem.FinishReasonToolCall
+		return core.FinishReasonToolCall
 	case "content_filter":
-		return gollem.FinishReasonContentFilter
+		return core.FinishReasonContentFilter
 	default:
-		return gollem.FinishReasonStop
+		return core.FinishReasonStop
 	}
 }
 
 // mapUsage converts OpenAI usage to gollem Usage.
-func mapUsage(u apiUsage) gollem.Usage {
-	return gollem.Usage{
+func mapUsage(u apiUsage) core.Usage {
+	return core.Usage{
 		InputTokens:  u.PromptTokens,
 		OutputTokens: u.CompletionTokens,
 	}

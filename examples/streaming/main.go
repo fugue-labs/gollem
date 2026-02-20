@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 	"github.com/fugue-labs/gollem/provider/anthropic"
 )
 
@@ -15,8 +15,8 @@ func main() {
 	model := anthropic.New()
 
 	// Create a string agent for free-form text output.
-	agent := gollem.NewAgent[string](model,
-		gollem.WithSystemPrompt[string]("You are a creative storyteller. Write engaging short stories."),
+	agent := core.NewAgent[string](model,
+		core.WithSystemPrompt[string]("You are a creative storyteller. Write engaging short stories."),
 	)
 
 	// Start a streaming run.

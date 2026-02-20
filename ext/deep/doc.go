@@ -12,12 +12,12 @@
 //   - Tier 2: Offload large tool call inputs when approaching context limits
 //   - Tier 3: Summarize older conversation turns via LLM
 //
-// The ContextManager satisfies the gollem.HistoryProcessor interface, so it
+// The ContextManager satisfies the core.HistoryProcessor interface, so it
 // integrates directly with agents:
 //
 //	cm := deep.NewContextManager(model, deep.WithMaxContextTokens(100000))
-//	agent := gollem.NewAgent[string](model,
-//	    gollem.WithHistoryProcessor(cm.AsHistoryProcessor()),
+//	agent := core.NewAgent[string](model,
+//	    core.WithHistoryProcessor(cm.AsHistoryProcessor()),
 //	)
 //
 // Context Store:

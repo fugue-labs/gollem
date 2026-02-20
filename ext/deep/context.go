@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // ContextManager manages conversation context for long-running agents.
@@ -18,7 +18,7 @@ import (
 //   - Tier 2: Offload large tool call inputs at compression threshold
 //   - Tier 3: Summarize older conversation turns via LLM
 type ContextManager struct {
-	model                gollem.Model
+	model                core.Model
 	tokenCounter         TokenCounter
 	store                ContextStore
 	maxContextTokens     int
@@ -32,7 +32,7 @@ type ContextManager struct {
 type ContextOption func(*ContextManager)
 
 // NewContextManager creates a context manager with the given options.
-func NewContextManager(model gollem.Model, opts ...ContextOption) *ContextManager {
+func NewContextManager(model core.Model, opts ...ContextOption) *ContextManager {
 	cm := &ContextManager{
 		model:                model,
 		tokenCounter:         DefaultTokenCounter(),
@@ -86,13 +86,13 @@ func WithContextStore(store ContextStore) ContextOption {
 // Tier 1: Offload large tool results (>threshold tokens) to filesystem, replace with summary.
 // Tier 2: At compression threshold, offload large tool call inputs.
 // Tier 3: Summarize older conversation turns via LLM.
-func (cm *ContextManager) ProcessMessages(ctx context.Context, messages []gollem.ModelMessage) ([]gollem.ModelMessage, error) {
+func (cm *ContextManager) ProcessMessages(ctx context.Context, messages []core.ModelMessage) ([]core.ModelMessage, error) {
 	if len(messages) == 0 {
 		return messages, nil
 	}
 
 	// Make a copy so we don't mutate the original.
-	result := make([]gollem.ModelMessage, len(messages))
+	result := make([]core.ModelMessage, len(messages))
 	copy(result, messages)
 
 	// Tier 1: Offload large tool results.
@@ -123,25 +123,25 @@ func (cm *ContextManager) ProcessMessages(ctx context.Context, messages []gollem
 	return summarized, nil
 }
 
-// AsHistoryProcessor returns a function compatible with gollem.WithHistoryProcessor.
-func (cm *ContextManager) AsHistoryProcessor() func(ctx context.Context, messages []gollem.ModelMessage) ([]gollem.ModelMessage, error) {
+// AsHistoryProcessor returns a function compatible with core.WithHistoryProcessor.
+func (cm *ContextManager) AsHistoryProcessor() func(ctx context.Context, messages []core.ModelMessage) ([]core.ModelMessage, error) {
 	return cm.ProcessMessages
 }
 
 // tier1OffloadResults offloads large tool result content.
-func (cm *ContextManager) tier1OffloadResults(messages []gollem.ModelMessage) []gollem.ModelMessage {
-	result := make([]gollem.ModelMessage, len(messages))
+func (cm *ContextManager) tier1OffloadResults(messages []core.ModelMessage) []core.ModelMessage {
+	result := make([]core.ModelMessage, len(messages))
 	for i, msg := range messages {
-		req, ok := msg.(gollem.ModelRequest)
+		req, ok := msg.(core.ModelRequest)
 		if !ok {
 			result[i] = msg
 			continue
 		}
 
 		modified := false
-		parts := make([]gollem.ModelRequestPart, len(req.Parts))
+		parts := make([]core.ModelRequestPart, len(req.Parts))
 		for j, part := range req.Parts {
-			trp, ok := part.(gollem.ToolReturnPart)
+			trp, ok := part.(core.ToolReturnPart)
 			if !ok {
 				parts[j] = part
 				continue
@@ -157,7 +157,7 @@ func (cm *ContextManager) tier1OffloadResults(messages []gollem.ModelMessage) []
 			// Offload this content.
 			summary := cm.offloadContent(content, tokens)
 			modified = true
-			parts[j] = gollem.ToolReturnPart{
+			parts[j] = core.ToolReturnPart{
 				ToolName:   trp.ToolName,
 				Content:    summary,
 				ToolCallID: trp.ToolCallID,
@@ -166,7 +166,7 @@ func (cm *ContextManager) tier1OffloadResults(messages []gollem.ModelMessage) []
 		}
 
 		if modified {
-			result[i] = gollem.ModelRequest{Parts: parts, Timestamp: req.Timestamp}
+			result[i] = core.ModelRequest{Parts: parts, Timestamp: req.Timestamp}
 		} else {
 			result[i] = msg
 		}
@@ -175,19 +175,19 @@ func (cm *ContextManager) tier1OffloadResults(messages []gollem.ModelMessage) []
 }
 
 // tier2OffloadInputs offloads large tool call argument content.
-func (cm *ContextManager) tier2OffloadInputs(messages []gollem.ModelMessage) []gollem.ModelMessage {
-	result := make([]gollem.ModelMessage, len(messages))
+func (cm *ContextManager) tier2OffloadInputs(messages []core.ModelMessage) []core.ModelMessage {
+	result := make([]core.ModelMessage, len(messages))
 	for i, msg := range messages {
-		resp, ok := msg.(gollem.ModelResponse)
+		resp, ok := msg.(core.ModelResponse)
 		if !ok {
 			result[i] = msg
 			continue
 		}
 
 		modified := false
-		parts := make([]gollem.ModelResponsePart, len(resp.Parts))
+		parts := make([]core.ModelResponsePart, len(resp.Parts))
 		for j, part := range resp.Parts {
-			tcp, ok := part.(gollem.ToolCallPart)
+			tcp, ok := part.(core.ToolCallPart)
 			if !ok {
 				parts[j] = part
 				continue
@@ -201,7 +201,7 @@ func (cm *ContextManager) tier2OffloadInputs(messages []gollem.ModelMessage) []g
 
 			summary := cm.offloadContent(tcp.ArgsJSON, tokens)
 			modified = true
-			parts[j] = gollem.ToolCallPart{
+			parts[j] = core.ToolCallPart{
 				ToolName:   tcp.ToolName,
 				ArgsJSON:   fmt.Sprintf(`{"_offloaded": %q}`, summary),
 				ToolCallID: tcp.ToolCallID,
@@ -209,7 +209,7 @@ func (cm *ContextManager) tier2OffloadInputs(messages []gollem.ModelMessage) []g
 		}
 
 		if modified {
-			result[i] = gollem.ModelResponse{
+			result[i] = core.ModelResponse{
 				Parts:        parts,
 				Usage:        resp.Usage,
 				ModelName:    resp.ModelName,
@@ -224,7 +224,7 @@ func (cm *ContextManager) tier2OffloadInputs(messages []gollem.ModelMessage) []g
 }
 
 // tier3Summarize summarizes older messages via LLM.
-func (cm *ContextManager) tier3Summarize(ctx context.Context, messages []gollem.ModelMessage) ([]gollem.ModelMessage, error) {
+func (cm *ContextManager) tier3Summarize(ctx context.Context, messages []core.ModelMessage) ([]core.ModelMessage, error) {
 	if len(messages) <= 2 {
 		return messages, nil
 	}
@@ -239,18 +239,18 @@ func (cm *ContextManager) tier3Summarize(ctx context.Context, messages []gollem.
 	var sb strings.Builder
 	for _, msg := range messages[:splitIdx] {
 		switch m := msg.(type) {
-		case gollem.ModelRequest:
+		case core.ModelRequest:
 			for _, part := range m.Parts {
 				switch p := part.(type) {
-				case gollem.SystemPromptPart:
+				case core.SystemPromptPart:
 					sb.WriteString("System: ")
 					sb.WriteString(p.Content)
 					sb.WriteString("\n")
-				case gollem.UserPromptPart:
+				case core.UserPromptPart:
 					sb.WriteString("User: ")
 					sb.WriteString(p.Content)
 					sb.WriteString("\n")
-				case gollem.ToolReturnPart:
+				case core.ToolReturnPart:
 					sb.WriteString("Tool ")
 					sb.WriteString(p.ToolName)
 					sb.WriteString(": ")
@@ -258,7 +258,7 @@ func (cm *ContextManager) tier3Summarize(ctx context.Context, messages []gollem.
 					sb.WriteString("\n")
 				}
 			}
-		case gollem.ModelResponse:
+		case core.ModelResponse:
 			sb.WriteString("Assistant: ")
 			sb.WriteString(m.TextContent())
 			sb.WriteString("\n")
@@ -266,15 +266,15 @@ func (cm *ContextManager) tier3Summarize(ctx context.Context, messages []gollem.
 	}
 
 	// Ask the model to summarize.
-	summaryReq := gollem.ModelRequest{
-		Parts: []gollem.ModelRequestPart{
-			gollem.SystemPromptPart{Content: "Summarize the following conversation concisely, preserving key information, decisions, and context needed for continuation."},
-			gollem.UserPromptPart{Content: sb.String()},
+	summaryReq := core.ModelRequest{
+		Parts: []core.ModelRequestPart{
+			core.SystemPromptPart{Content: "Summarize the following conversation concisely, preserving key information, decisions, and context needed for continuation."},
+			core.UserPromptPart{Content: sb.String()},
 		},
 		Timestamp: time.Now(),
 	}
 
-	resp, err := cm.model.Request(ctx, []gollem.ModelMessage{summaryReq}, nil, &gollem.ModelRequestParameters{
+	resp, err := cm.model.Request(ctx, []core.ModelMessage{summaryReq}, nil, &core.ModelRequestParameters{
 		AllowTextOutput: true,
 	})
 	if err != nil {
@@ -287,10 +287,10 @@ func (cm *ContextManager) tier3Summarize(ctx context.Context, messages []gollem.
 	}
 
 	// Build new message list: summary + recent messages.
-	newMessages := make([]gollem.ModelMessage, 0, 1+len(messages)-splitIdx)
-	newMessages = append(newMessages, gollem.ModelRequest{
-		Parts: []gollem.ModelRequestPart{
-			gollem.SystemPromptPart{
+	newMessages := make([]core.ModelMessage, 0, 1+len(messages)-splitIdx)
+	newMessages = append(newMessages, core.ModelRequest{
+		Parts: []core.ModelRequestPart{
+			core.SystemPromptPart{
 				Content:   "[Conversation Summary]\n" + summaryText,
 				Timestamp: time.Now(),
 			},

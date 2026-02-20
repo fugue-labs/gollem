@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 	"github.com/fugue-labs/gollem/ext/tui"
 )
 
@@ -69,8 +69,8 @@ func main() {
 	}
 
 	// Create and run agent with TUI.
-	agent := gollem.NewAgent[string](model,
-		gollem.WithSystemPrompt[string]("You are a helpful assistant."),
+	agent := core.NewAgent[string](model,
+		core.WithSystemPrompt[string]("You are a helpful assistant."),
 	)
 
 	result, err := tui.DebugUI(agent, prompt)
@@ -86,12 +86,12 @@ func main() {
 	}
 }
 
-func createModel(provider, modelName string) (gollem.Model, error) {
+func createModel(provider, modelName string) (core.Model, error) {
 	switch provider {
 	case "test":
 		// Use the test model for demonstration/testing.
-		return gollem.NewTestModel(
-			gollem.TextResponse("Hello! I'm a test model. This is a demonstration of the TUI debugger."),
+		return core.NewTestModel(
+			core.TextResponse("Hello! I'm a test model. This is a demonstration of the TUI debugger."),
 		), nil
 	default:
 		return nil, fmt.Errorf("provider %q not supported in CLI (use 'test' for demo, or import a real provider in your own code)", provider)

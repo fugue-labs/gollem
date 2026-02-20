@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestRetryMiddleware_SucceedsFirst(t *testing.T) {
@@ -19,15 +19,15 @@ func TestRetryMiddleware_SucceedsFirst(t *testing.T) {
 	defer func() { sleepFunc = origSleep }()
 
 	var callCount atomic.Int32
-	model := &mockModel{response: &gollem.ModelResponse{
-		Parts:     []gollem.ModelResponsePart{gollem.TextPart{Content: "ok"}},
+	model := &mockModel{response: &core.ModelResponse{
+		Parts:     []core.ModelResponsePart{core.TextPart{Content: "ok"}},
 		ModelName: "test-model",
 	}}
 
 	retry := RetryMiddleware(3, WithInitialDelay(time.Millisecond))
 
 	// Wrap the request manually to track call count.
-	handler := retry.WrapRequest(func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+	handler := retry.WrapRequest(func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 		callCount.Add(1)
 		return model.Request(ctx, messages, settings, params)
 	})
@@ -54,14 +54,14 @@ func TestRetryMiddleware_RetriesOnFailure(t *testing.T) {
 
 	var callCount atomic.Int32
 	transientErr := errors.New("temporary failure")
-	successResp := &gollem.ModelResponse{
-		Parts:     []gollem.ModelResponsePart{gollem.TextPart{Content: "ok"}},
+	successResp := &core.ModelResponse{
+		Parts:     []core.ModelResponsePart{core.TextPart{Content: "ok"}},
 		ModelName: "test-model",
 	}
 
 	retry := RetryMiddleware(3, WithInitialDelay(time.Millisecond))
 
-	handler := retry.WrapRequest(func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+	handler := retry.WrapRequest(func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 		count := callCount.Add(1)
 		// Fail first 2 times, succeed on 3rd.
 		if count <= 2 {
@@ -95,7 +95,7 @@ func TestRetryMiddleware_MaxRetriesExceeded(t *testing.T) {
 
 	retry := RetryMiddleware(2, WithInitialDelay(time.Millisecond))
 
-	handler := retry.WrapRequest(func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+	handler := retry.WrapRequest(func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 		callCount.Add(1)
 		return nil, persistentErr
 	})
@@ -134,7 +134,7 @@ func TestRetryMiddleware_RetryIf(t *testing.T) {
 
 	// Test: non-retryable error should not be retried.
 	callCount.Store(0)
-	handler := retry.WrapRequest(func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+	handler := retry.WrapRequest(func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 		callCount.Add(1)
 		return nil, nonRetryableErr
 	})
@@ -149,11 +149,11 @@ func TestRetryMiddleware_RetryIf(t *testing.T) {
 
 	// Test: retryable error should be retried.
 	callCount.Store(0)
-	successResp := &gollem.ModelResponse{
-		Parts:     []gollem.ModelResponsePart{gollem.TextPart{Content: "ok"}},
+	successResp := &core.ModelResponse{
+		Parts:     []core.ModelResponsePart{core.TextPart{Content: "ok"}},
 		ModelName: "test-model",
 	}
-	handler = retry.WrapRequest(func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+	handler = retry.WrapRequest(func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 		count := callCount.Add(1)
 		if count <= 2 {
 			return nil, retryableErr
@@ -197,7 +197,7 @@ func TestRetryMiddleware_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	handler := retry.WrapRequest(func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+	handler := retry.WrapRequest(func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 		callCount.Add(1)
 		return nil, persistentErr
 	})
@@ -232,7 +232,7 @@ func TestRetryMiddleware_ExponentialBackoff(t *testing.T) {
 		WithMaxDelay(500*time.Millisecond),
 	)
 
-	handler := retry.WrapRequest(func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+	handler := retry.WrapRequest(func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 		return nil, persistentErr
 	})
 
@@ -269,7 +269,7 @@ func TestRetryMiddleware_StreamRequest(t *testing.T) {
 
 	retry := RetryMiddleware(2, WithInitialDelay(time.Millisecond))
 
-	handler := retry.WrapStreamRequest(func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (gollem.StreamedResponse, error) {
+	handler := retry.WrapStreamRequest(func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (core.StreamedResponse, error) {
 		count := callCount.Add(1)
 		if count <= 1 {
 			return nil, transientErr

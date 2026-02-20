@@ -7,14 +7,14 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/worker"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
-// TemporalAgent wraps a gollem.Agent for durable execution via Temporal.
+// TemporalAgent wraps a core.Agent for durable execution via Temporal.
 // Model requests and tool calls are executed as Temporal activities,
 // providing automatic checkpointing and fault tolerance.
 type TemporalAgent[T any] struct {
-	wrapped      *gollem.Agent[T]
+	wrapped      *core.Agent[T]
 	name         string
 	model        *TemporalModel
 	tools        []TemporalTool
@@ -81,8 +81,8 @@ func WithEventHandler(handler EventHandler) Option {
 	}
 }
 
-// NewTemporalAgent wraps a gollem.Agent for Temporal durable execution.
-func NewTemporalAgent[T any](agent *gollem.Agent[T], opts ...Option) *TemporalAgent[T] {
+// NewTemporalAgent wraps a core.Agent for Temporal durable execution.
+func NewTemporalAgent[T any](agent *core.Agent[T], opts ...Option) *TemporalAgent[T] {
 	cfg := &agentConfig{
 		defaultConfig: DefaultActivityConfig(),
 	}
@@ -127,7 +127,7 @@ func NewTemporalAgent[T any](agent *gollem.Agent[T], opts ...Option) *TemporalAg
 }
 
 // Run executes the agent. Outside a Temporal workflow, runs normally.
-func (ta *TemporalAgent[T]) Run(ctx context.Context, prompt string, opts ...gollem.RunOption) (*gollem.RunResult[T], error) {
+func (ta *TemporalAgent[T]) Run(ctx context.Context, prompt string, opts ...core.RunOption) (*core.RunResult[T], error) {
 	return ta.wrapped.Run(ctx, prompt, opts...)
 }
 
@@ -176,7 +176,7 @@ func RegisterActivities(w worker.Worker, agents ...any) error {
 }
 
 // EventHandler receives streaming events during a Temporal workflow run.
-type EventHandler func(ctx context.Context, event gollem.ModelResponseStreamEvent) error
+type EventHandler func(ctx context.Context, event core.ModelResponseStreamEvent) error
 
 // GetModel returns the wrapped model (needed for activity registration).
 func (ta *TemporalAgent[T]) GetModel() *TemporalModel {
@@ -203,7 +203,7 @@ func init() {
 
 // Compile-time check that Agent exposes GetModel and GetTools.
 var _ = func() {
-	var a *gollem.Agent[string]
+	var a *core.Agent[string]
 	_ = a.GetModel()
 	_ = a.GetTools()
 }

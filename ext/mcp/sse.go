@@ -13,7 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // SSEClient communicates with an MCP server over HTTP Server-Sent Events
@@ -367,16 +367,16 @@ func (c *SSEClient) CallTool(ctx context.Context, name string, args map[string]a
 	return &toolResult, nil
 }
 
-// Tools converts MCP tools into gollem.Tool instances that call back to the
+// Tools converts MCP tools into core.Tool instances that call back to the
 // MCP server. This method has the same signature as Client.Tools for
 // interchangeable usage.
-func (c *SSEClient) Tools(ctx context.Context) ([]gollem.Tool, error) {
+func (c *SSEClient) Tools(ctx context.Context) ([]core.Tool, error) {
 	tools, err := c.ListTools(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	var result []gollem.Tool
+	var result []core.Tool
 	for _, mt := range tools {
 		tool := convertSSETool(c, mt)
 		result = append(result, tool)
@@ -384,27 +384,27 @@ func (c *SSEClient) Tools(ctx context.Context) ([]gollem.Tool, error) {
 	return result, nil
 }
 
-// convertSSETool converts a single MCP tool definition to a gollem.Tool
+// convertSSETool converts a single MCP tool definition to a core.Tool
 // backed by the SSE client.
-func convertSSETool(client *SSEClient, mt Tool) gollem.Tool {
-	var schema gollem.Schema
+func convertSSETool(client *SSEClient, mt Tool) core.Tool {
+	var schema core.Schema
 	if mt.InputSchema != nil {
 		if err := json.Unmarshal(mt.InputSchema, &schema); err != nil {
 			schema = nil
 		}
 	}
 	if schema == nil {
-		schema = gollem.Schema{"type": "object"}
+		schema = core.Schema{"type": "object"}
 	}
 
-	def := gollem.ToolDefinition{
+	def := core.ToolDefinition{
 		Name:             mt.Name,
 		Description:      mt.Description,
 		ParametersSchema: schema,
-		Kind:             gollem.ToolKindFunction,
+		Kind:             core.ToolKindFunction,
 	}
 
-	handler := func(ctx context.Context, _ *gollem.RunContext, argsJSON string) (any, error) {
+	handler := func(ctx context.Context, _ *core.RunContext, argsJSON string) (any, error) {
 		var args map[string]any
 		if argsJSON != "" && argsJSON != "{}" {
 			if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
@@ -421,13 +421,13 @@ func convertSSETool(client *SSEClient, mt Tool) gollem.Tool {
 		}
 
 		if result.IsError {
-			return nil, &gollem.ModelRetryError{Message: result.TextContent()}
+			return nil, &core.ModelRetryError{Message: result.TextContent()}
 		}
 
 		return result.TextContent(), nil
 	}
 
-	return gollem.Tool{
+	return core.Tool{
 		Definition: def,
 		Handler:    handler,
 	}

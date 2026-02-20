@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestJSONRPCRequestSerialization(t *testing.T) {
@@ -164,7 +164,7 @@ func TestConvertTool(t *testing.T) {
 	if tool.Definition.Description != "Get weather for a city" {
 		t.Errorf("unexpected description: %s", tool.Definition.Description)
 	}
-	if tool.Definition.Kind != gollem.ToolKindFunction {
+	if tool.Definition.Kind != core.ToolKindFunction {
 		t.Errorf("expected ToolKindFunction, got %s", tool.Definition.Kind)
 	}
 	if tool.Handler == nil {

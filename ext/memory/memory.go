@@ -6,16 +6,16 @@ import (
 	"context"
 	"sync"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // Memory is the interface for conversation memory stores.
 type Memory interface {
 	// Get returns stored messages.
-	Get(ctx context.Context) ([]gollem.ModelMessage, error)
+	Get(ctx context.Context) ([]core.ModelMessage, error)
 
 	// Add appends messages to the store.
-	Add(ctx context.Context, messages ...gollem.ModelMessage) error
+	Add(ctx context.Context, messages ...core.ModelMessage) error
 
 	// Clear removes all stored messages.
 	Clear(ctx context.Context) error
@@ -24,7 +24,7 @@ type Memory interface {
 // BufferMemory is an in-memory circular buffer that stores a fixed number of messages.
 type BufferMemory struct {
 	mu       sync.RWMutex
-	messages []gollem.ModelMessage
+	messages []core.ModelMessage
 	maxSize  int
 }
 
@@ -51,17 +51,17 @@ func NewBuffer(opts ...BufferOption) *BufferMemory {
 }
 
 // Get returns a copy of all stored messages.
-func (b *BufferMemory) Get(_ context.Context) ([]gollem.ModelMessage, error) {
+func (b *BufferMemory) Get(_ context.Context) ([]core.ModelMessage, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	result := make([]gollem.ModelMessage, len(b.messages))
+	result := make([]core.ModelMessage, len(b.messages))
 	copy(result, b.messages)
 	return result, nil
 }
 
 // Add appends messages, dropping oldest if buffer exceeds max size.
-func (b *BufferMemory) Add(_ context.Context, messages ...gollem.ModelMessage) error {
+func (b *BufferMemory) Add(_ context.Context, messages ...core.ModelMessage) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

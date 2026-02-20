@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // Plan represents the agent's current plan.
@@ -40,10 +40,10 @@ type planState struct {
 
 // PlanningTool creates a tool that maintains a persistent todo list.
 // The model uses this tool to plan, track progress, and manage tasks.
-func PlanningTool() gollem.Tool {
+func PlanningTool() core.Tool {
 	state := &planState{}
 
-	return gollem.FuncTool[planCommand](
+	return core.FuncTool[planCommand](
 		"planning",
 		"Manage a persistent todo list. Commands: 'create' (create a new plan with tasks), 'update' (update a task's status or notes), 'get' (retrieve the current plan).",
 		func(_ context.Context, cmd planCommand) (any, error) {

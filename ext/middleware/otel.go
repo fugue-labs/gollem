@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -66,35 +66,35 @@ func NewOTel(opts ...OTelOption) (*OTelMiddleware, error) {
 	tracer := cfg.tracerProvider.Tracer(instrumentationName)
 	meter := cfg.meterProvider.Meter(instrumentationName)
 
-	requestCounter, err := meter.Int64Counter("gollem.requests",
+	requestCounter, err := meter.Int64Counter("core.requests",
 		metric.WithDescription("Total number of model requests"),
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	errorCounter, err := meter.Int64Counter("gollem.errors",
+	errorCounter, err := meter.Int64Counter("core.errors",
 		metric.WithDescription("Total number of failed model requests"),
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	inputTokens, err := meter.Int64Counter("gollem.tokens.input",
+	inputTokens, err := meter.Int64Counter("core.tokens.input",
 		metric.WithDescription("Total input tokens consumed"),
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	outputTokens, err := meter.Int64Counter("gollem.tokens.output",
+	outputTokens, err := meter.Int64Counter("core.tokens.output",
 		metric.WithDescription("Total output tokens consumed"),
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	requestDuration, err := meter.Float64Histogram("gollem.request.duration",
+	requestDuration, err := meter.Float64Histogram("core.request.duration",
 		metric.WithDescription("Duration of model requests in seconds"),
 		metric.WithUnit("s"),
 	)
@@ -102,7 +102,7 @@ func NewOTel(opts ...OTelOption) (*OTelMiddleware, error) {
 		return nil, err
 	}
 
-	toolCallCounter, err := meter.Int64Counter("gollem.tool_calls",
+	toolCallCounter, err := meter.Int64Counter("core.tool_calls",
 		metric.WithDescription("Total number of tool calls in responses"),
 	)
 	if err != nil {
@@ -123,11 +123,11 @@ func NewOTel(opts ...OTelOption) (*OTelMiddleware, error) {
 
 // WrapRequest implements Middleware.
 func (o *OTelMiddleware) WrapRequest(next RequestFunc) RequestFunc {
-	return func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
-		ctx, span := o.tracer.Start(ctx, "gollem.request",
+	return func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
+		ctx, span := o.tracer.Start(ctx, "core.request",
 			trace.WithSpanKind(trace.SpanKindClient),
 			trace.WithAttributes(
-				attribute.Int("gollem.message_count", len(messages)),
+				attribute.Int("core.message_count", len(messages)),
 			),
 		)
 		defer span.End()
@@ -148,10 +148,10 @@ func (o *OTelMiddleware) WrapRequest(next RequestFunc) RequestFunc {
 		}
 
 		span.SetAttributes(
-			attribute.String("gollem.model", resp.ModelName),
-			attribute.Int("gollem.input_tokens", resp.Usage.InputTokens),
-			attribute.Int("gollem.output_tokens", resp.Usage.OutputTokens),
-			attribute.String("gollem.finish_reason", string(resp.FinishReason)),
+			attribute.String("core.model", resp.ModelName),
+			attribute.Int("core.input_tokens", resp.Usage.InputTokens),
+			attribute.Int("core.output_tokens", resp.Usage.OutputTokens),
+			attribute.String("core.finish_reason", string(resp.FinishReason)),
 		)
 		span.SetStatus(codes.Ok, "")
 
@@ -165,7 +165,7 @@ func (o *OTelMiddleware) WrapRequest(next RequestFunc) RequestFunc {
 			for i, tc := range toolCalls {
 				toolNames[i] = tc.ToolName
 			}
-			span.SetAttributes(attribute.StringSlice("gollem.tool_calls", toolNames))
+			span.SetAttributes(attribute.StringSlice("core.tool_calls", toolNames))
 		}
 
 		return resp, nil
@@ -174,11 +174,11 @@ func (o *OTelMiddleware) WrapRequest(next RequestFunc) RequestFunc {
 
 // WrapStreamRequest implements StreamMiddleware.
 func (o *OTelMiddleware) WrapStreamRequest(next StreamRequestFunc) StreamRequestFunc {
-	return func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (gollem.StreamedResponse, error) {
-		ctx, span := o.tracer.Start(ctx, "gollem.stream_request",
+	return func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (core.StreamedResponse, error) {
+		ctx, span := o.tracer.Start(ctx, "core.stream_request",
 			trace.WithSpanKind(trace.SpanKindClient),
 			trace.WithAttributes(
-				attribute.Int("gollem.message_count", len(messages)),
+				attribute.Int("core.message_count", len(messages)),
 			),
 		)
 
@@ -212,7 +212,7 @@ var _ StreamMiddleware = (*OTelMiddleware)(nil)
 // trackedStreamResponse wraps a StreamedResponse to finalize the span when
 // the stream is closed or fully consumed.
 type trackedStreamResponse struct {
-	inner  gollem.StreamedResponse
+	inner  core.StreamedResponse
 	span   trace.Span
 	start  time.Time
 	otel   *OTelMiddleware
@@ -220,7 +220,7 @@ type trackedStreamResponse struct {
 	ended  bool
 }
 
-func (t *trackedStreamResponse) Next() (gollem.ModelResponseStreamEvent, error) {
+func (t *trackedStreamResponse) Next() (core.ModelResponseStreamEvent, error) {
 	event, err := t.inner.Next()
 	if err != nil {
 		t.finalize(err)
@@ -228,11 +228,11 @@ func (t *trackedStreamResponse) Next() (gollem.ModelResponseStreamEvent, error) 
 	return event, err
 }
 
-func (t *trackedStreamResponse) Response() *gollem.ModelResponse {
+func (t *trackedStreamResponse) Response() *core.ModelResponse {
 	return t.inner.Response()
 }
 
-func (t *trackedStreamResponse) Usage() gollem.Usage {
+func (t *trackedStreamResponse) Usage() core.Usage {
 	return t.inner.Usage()
 }
 
@@ -256,14 +256,14 @@ func (t *trackedStreamResponse) finalize(streamErr error) {
 	t.otel.outputTokens.Add(t.ctx, int64(usage.OutputTokens))
 
 	t.span.SetAttributes(
-		attribute.Int("gollem.input_tokens", usage.InputTokens),
-		attribute.Int("gollem.output_tokens", usage.OutputTokens),
+		attribute.Int("core.input_tokens", usage.InputTokens),
+		attribute.Int("core.output_tokens", usage.OutputTokens),
 	)
 
 	if resp := t.inner.Response(); resp != nil {
 		t.span.SetAttributes(
-			attribute.String("gollem.model", resp.ModelName),
-			attribute.String("gollem.finish_reason", string(resp.FinishReason)),
+			attribute.String("core.model", resp.ModelName),
+			attribute.String("core.finish_reason", string(resp.FinishReason)),
 		)
 		toolCalls := resp.ToolCalls()
 		if len(toolCalls) > 0 {

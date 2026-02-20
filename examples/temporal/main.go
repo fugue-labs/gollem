@@ -13,7 +13,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 	"github.com/fugue-labs/gollem/ext/temporal"
 )
 
@@ -26,15 +26,15 @@ type TaskResult struct {
 func main() {
 	// Create a TestModel with canned responses simulating a tool call followed
 	// by a final result.
-	model := gollem.NewTestModel(
+	model := core.NewTestModel(
 		// First response: model calls the "lookup" tool.
-		gollem.ToolCallResponse("lookup", `{"query":"project status"}`),
+		core.ToolCallResponse("lookup", `{"query":"project status"}`),
 		// Second response: model returns the final structured result.
-		gollem.ToolCallResponse("final_result", `{"summary":"Project is on track with 90% completion","status":"success"}`),
+		core.ToolCallResponse("final_result", `{"summary":"Project is on track with 90% completion","status":"success"}`),
 	)
 
 	// Create a tool that the agent can use.
-	lookupTool := gollem.FuncTool[struct {
+	lookupTool := core.FuncTool[struct {
 		Query string `json:"query" jsonschema:"description=The query to look up"`
 	}](
 		"lookup",
@@ -47,9 +47,9 @@ func main() {
 	)
 
 	// Create a standard gollem agent.
-	agent := gollem.NewAgent[TaskResult](model,
-		gollem.WithSystemPrompt[TaskResult]("You are a project management assistant."),
-		gollem.WithTools[TaskResult](lookupTool),
+	agent := core.NewAgent[TaskResult](model,
+		core.WithSystemPrompt[TaskResult]("You are a project management assistant."),
+		core.WithTools[TaskResult](lookupTool),
 	)
 
 	// Wrap the agent for Temporal durable execution.

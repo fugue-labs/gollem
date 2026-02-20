@@ -12,13 +12,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // Checkpoint captures the state of an agent run at a point in time.
 type Checkpoint struct {
-	Messages   []gollem.ModelMessage `json:"-"`
-	Usage      gollem.RunUsage      `json:"usage"`
+	Messages   []core.ModelMessage `json:"-"`
+	Usage      core.RunUsage      `json:"usage"`
 	RunID      string               `json:"run_id"`
 	StepIndex  int                  `json:"step_index"`
 	Timestamp  time.Time            `json:"timestamp"`
@@ -29,7 +29,7 @@ type Checkpoint struct {
 // checkpointJSON is the serializable form of Checkpoint.
 type checkpointJSON struct {
 	Messages   []messageEnvelope `json:"messages"`
-	Usage      gollem.RunUsage   `json:"usage"`
+	Usage      core.RunUsage   `json:"usage"`
 	RunID      string            `json:"run_id"`
 	StepIndex  int               `json:"step_index"`
 	Timestamp  time.Time         `json:"timestamp"`
@@ -253,18 +253,18 @@ func (s *FileCheckpointStore) GetHistory(ctx context.Context, runID string) ([]*
 
 // ResumeFromCheckpoint loads a checkpoint and returns a RunOption that
 // initializes the agent run with the checkpoint's message history.
-func ResumeFromCheckpoint(store CheckpointStore, runID string) (gollem.RunOption, error) {
+func ResumeFromCheckpoint(store CheckpointStore, runID string) (core.RunOption, error) {
 	cp, err := store.Load(context.Background(), runID)
 	if err != nil {
 		return nil, fmt.Errorf("loading checkpoint: %w", err)
 	}
-	return gollem.WithMessages(cp.Messages...), nil
+	return core.WithMessages(cp.Messages...), nil
 }
 
 // ReplayFrom creates a RunOption that resumes from a specific checkpoint step.
 // It loads the checkpoint at the given stepIndex and returns a RunOption that
 // initializes the agent run with that checkpoint's message history.
-func ReplayFrom(store CheckpointStore, runID string, stepIndex int) (gollem.RunOption, error) {
+func ReplayFrom(store CheckpointStore, runID string, stepIndex int) (core.RunOption, error) {
 	fcs, ok := store.(*FileCheckpointStore)
 	if !ok {
 		return nil, errors.New("ReplayFrom requires a *FileCheckpointStore")
@@ -280,9 +280,9 @@ func ReplayFrom(store CheckpointStore, runID string, stepIndex int) (gollem.RunO
 
 	for _, cp := range checkpoints {
 		if cp.StepIndex == stepIndex {
-			msgs := make([]gollem.ModelMessage, len(cp.Messages))
+			msgs := make([]core.ModelMessage, len(cp.Messages))
 			copy(msgs, cp.Messages)
-			return gollem.WithMessages(msgs...), nil
+			return core.WithMessages(msgs...), nil
 		}
 	}
 
@@ -292,7 +292,7 @@ func ReplayFrom(store CheckpointStore, runID string, stepIndex int) (gollem.RunO
 // ForkFrom creates a RunOption that starts from a checkpoint with modified state.
 // The modifier function receives a copy of the checkpoint and can alter its
 // Messages, Metadata, ToolStates, or any other fields before the run begins.
-func ForkFrom(store CheckpointStore, runID string, stepIndex int, modifier func(*Checkpoint)) (gollem.RunOption, error) {
+func ForkFrom(store CheckpointStore, runID string, stepIndex int, modifier func(*Checkpoint)) (core.RunOption, error) {
 	fcs, ok := store.(*FileCheckpointStore)
 	if !ok {
 		return nil, errors.New("ForkFrom requires a *FileCheckpointStore")
@@ -310,7 +310,7 @@ func ForkFrom(store CheckpointStore, runID string, stepIndex int, modifier func(
 		if cp.StepIndex == stepIndex {
 			// Create a copy of the checkpoint so the modifier doesn't affect the original.
 			forked := &Checkpoint{
-				Messages:   make([]gollem.ModelMessage, len(cp.Messages)),
+				Messages:   make([]core.ModelMessage, len(cp.Messages)),
 				Usage:      cp.Usage,
 				RunID:      cp.RunID,
 				StepIndex:  cp.StepIndex,
@@ -324,7 +324,7 @@ func ForkFrom(store CheckpointStore, runID string, stepIndex int, modifier func(
 				modifier(forked)
 			}
 
-			return gollem.WithMessages(forked.Messages...), nil
+			return core.WithMessages(forked.Messages...), nil
 		}
 	}
 
@@ -333,7 +333,7 @@ func ForkFrom(store CheckpointStore, runID string, stepIndex int, modifier func(
 
 // ExportToolStates polls all tools for the StatefulTool interface and exports
 // their state into a map keyed by tool name.
-func ExportToolStates(tools []gollem.Tool) (map[string]any, error) {
+func ExportToolStates(tools []core.Tool) (map[string]any, error) {
 	states := make(map[string]any)
 	for _, t := range tools {
 		if t.Stateful != nil {
@@ -348,7 +348,7 @@ func ExportToolStates(tools []gollem.Tool) (map[string]any, error) {
 }
 
 // RestoreToolStates restores tool state from a checkpoint's ToolStates map.
-func RestoreToolStates(tools []gollem.Tool, states map[string]any) error {
+func RestoreToolStates(tools []core.Tool, states map[string]any) error {
 	if len(states) == 0 {
 		return nil
 	}

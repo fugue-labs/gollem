@@ -1,4 +1,4 @@
-// Package vertexai provides a gollem.Model implementation for Google's
+// Package vertexai provides a core.Model implementation for Google's
 // Vertex AI Gemini API, supporting Gemini models with function calling,
 // streaming, and GCP authentication via Application Default Credentials
 // or service accounts.

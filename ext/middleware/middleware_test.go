@@ -9,26 +9,26 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // mockModel is a simple test model.
 type mockModel struct {
-	response *gollem.ModelResponse
+	response *core.ModelResponse
 	err      error
 }
 
 func (m *mockModel) ModelName() string { return "test-model" }
-func (m *mockModel) Request(_ context.Context, _ []gollem.ModelMessage, _ *gollem.ModelSettings, _ *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+func (m *mockModel) Request(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (*core.ModelResponse, error) {
 	return m.response, m.err
 }
-func (m *mockModel) RequestStream(_ context.Context, _ []gollem.ModelMessage, _ *gollem.ModelSettings, _ *gollem.ModelRequestParameters) (gollem.StreamedResponse, error) {
+func (m *mockModel) RequestStream(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (core.StreamedResponse, error) {
 	return nil, errors.New("not implemented")
 }
 
 func TestWrapNoMiddleware(t *testing.T) {
-	model := &mockModel{response: &gollem.ModelResponse{
-		Parts:     []gollem.ModelResponsePart{gollem.TextPart{Content: "hello"}},
+	model := &mockModel{response: &core.ModelResponse{
+		Parts:     []core.ModelResponsePart{core.TextPart{Content: "hello"}},
 		ModelName: "test-model",
 	}}
 	wrapped := Wrap(model)
@@ -39,7 +39,7 @@ func TestWrapNoMiddleware(t *testing.T) {
 }
 
 func TestWrapModelName(t *testing.T) {
-	model := &mockModel{response: &gollem.ModelResponse{ModelName: "test-model"}}
+	model := &mockModel{response: &core.ModelResponse{ModelName: "test-model"}}
 	noop := Func(func(next RequestFunc) RequestFunc {
 		return next
 	})
@@ -51,13 +51,13 @@ func TestWrapModelName(t *testing.T) {
 
 func TestMiddlewareChainOrder(t *testing.T) {
 	var order []string
-	model := &mockModel{response: &gollem.ModelResponse{
-		Parts:     []gollem.ModelResponsePart{gollem.TextPart{Content: "result"}},
+	model := &mockModel{response: &core.ModelResponse{
+		Parts:     []core.ModelResponsePart{core.TextPart{Content: "result"}},
 		ModelName: "test",
 	}}
 
 	mw1 := Func(func(next RequestFunc) RequestFunc {
-		return func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+		return func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 			order = append(order, "mw1-before")
 			resp, err := next(ctx, messages, settings, params)
 			order = append(order, "mw1-after")
@@ -65,7 +65,7 @@ func TestMiddlewareChainOrder(t *testing.T) {
 		}
 	})
 	mw2 := Func(func(next RequestFunc) RequestFunc {
-		return func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+		return func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 			order = append(order, "mw2-before")
 			resp, err := next(ctx, messages, settings, params)
 			order = append(order, "mw2-after")
@@ -91,18 +91,18 @@ func TestLoggingMiddleware(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	model := &mockModel{response: &gollem.ModelResponse{
-		Parts:        []gollem.ModelResponsePart{gollem.TextPart{Content: "hello"}},
+	model := &mockModel{response: &core.ModelResponse{
+		Parts:        []core.ModelResponsePart{core.TextPart{Content: "hello"}},
 		ModelName:    "test-model",
-		Usage:        gollem.Usage{InputTokens: 10, OutputTokens: 5},
-		FinishReason: gollem.FinishReasonStop,
+		Usage:        core.Usage{InputTokens: 10, OutputTokens: 5},
+		FinishReason: core.FinishReasonStop,
 	}}
 
 	logging := NewLogging(logger, slog.LevelInfo)
 	wrapped := Wrap(model, logging)
 
-	_, err := wrapped.Request(context.Background(), []gollem.ModelMessage{
-		gollem.ModelRequest{Parts: []gollem.ModelRequestPart{gollem.UserPromptPart{Content: "test"}}},
+	_, err := wrapped.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "test"}}},
 	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -146,12 +146,12 @@ func TestLoggingMiddlewareToolCalls(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	model := &mockModel{response: &gollem.ModelResponse{
-		Parts: []gollem.ModelResponsePart{
-			gollem.ToolCallPart{ToolName: "get_weather", ToolCallID: "call_1", ArgsJSON: "{}"},
+	model := &mockModel{response: &core.ModelResponse{
+		Parts: []core.ModelResponsePart{
+			core.ToolCallPart{ToolName: "get_weather", ToolCallID: "call_1", ArgsJSON: "{}"},
 		},
 		ModelName:    "test-model",
-		FinishReason: gollem.FinishReasonToolCall,
+		FinishReason: core.FinishReasonToolCall,
 	}}
 
 	logging := NewLogging(logger, slog.LevelInfo)
@@ -166,14 +166,14 @@ func TestLoggingMiddlewareToolCalls(t *testing.T) {
 
 func TestMetricsMiddleware(t *testing.T) {
 	metrics := &Metrics{}
-	model := &mockModel{response: &gollem.ModelResponse{
-		Parts: []gollem.ModelResponsePart{
-			gollem.TextPart{Content: "hello"},
-			gollem.ToolCallPart{ToolName: "tool1", ToolCallID: "c1", ArgsJSON: "{}"},
+	model := &mockModel{response: &core.ModelResponse{
+		Parts: []core.ModelResponsePart{
+			core.TextPart{Content: "hello"},
+			core.ToolCallPart{ToolName: "tool1", ToolCallID: "c1", ArgsJSON: "{}"},
 		},
 		ModelName:    "test-model",
-		Usage:        gollem.Usage{InputTokens: 100, OutputTokens: 50},
-		FinishReason: gollem.FinishReasonStop,
+		Usage:        core.Usage{InputTokens: 100, OutputTokens: 50},
+		FinishReason: core.FinishReasonStop,
 	}}
 
 	mw := NewMetrics(metrics)

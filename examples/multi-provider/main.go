@@ -8,7 +8,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 	"github.com/fugue-labs/gollem/provider/anthropic"
 	"github.com/fugue-labs/gollem/provider/openai"
 )
@@ -21,7 +21,7 @@ type Answer struct {
 
 func main() {
 	// Select provider based on command line or environment.
-	var model gollem.Model
+	var model core.Model
 	provider := "anthropic"
 	if len(os.Args) > 1 {
 		provider = os.Args[1]
@@ -39,8 +39,8 @@ func main() {
 	fmt.Printf("Using provider: %s (model: %s)\n\n", provider, model.ModelName())
 
 	// The same agent definition works with any provider.
-	agent := gollem.NewAgent[Answer](model,
-		gollem.WithSystemPrompt[Answer]("You are a knowledgeable assistant. Answer questions concisely and indicate your confidence level."),
+	agent := core.NewAgent[Answer](model,
+		core.WithSystemPrompt[Answer]("You are a knowledgeable assistant. Answer questions concisely and indicate your confidence level."),
 	)
 
 	result, err := agent.Run(context.Background(), "What is the speed of light in a vacuum?")

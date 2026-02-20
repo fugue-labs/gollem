@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // cacheEntry holds a cached response along with its creation time.
 type cacheEntry struct {
-	response  *gollem.ModelResponse
+	response  *core.ModelResponse
 	createdAt time.Time
 }
 
@@ -71,7 +71,7 @@ func CacheMiddlewareWithStats(ttl time.Duration) (Middleware, *CacheStats) {
 
 // hashRequest computes a SHA-256 hash of the request parameters for use as
 // a cache key. The hash covers messages, settings, and parameters.
-func hashRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (string, error) {
+func hashRequest(messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (string, error) {
 	h := sha256.New()
 	enc := json.NewEncoder(h)
 	if err := enc.Encode(messages); err != nil {
@@ -90,7 +90,7 @@ func hashRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings,
 // the request. On cache hit, the stored response is returned without calling
 // the model. Expired entries are evicted lazily on access.
 func (c *cacheMiddleware) WrapRequest(next RequestFunc) RequestFunc {
-	return func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+	return func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 		key, err := hashRequest(messages, settings, params)
 		if err != nil {
 			// If hashing fails, fall through to the model.

@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // retryConfig holds configuration for the retry middleware.
@@ -63,7 +63,7 @@ func RetryMiddleware(maxRetries int, opts ...RetryOption) StreamFunc {
 
 	return StreamFunc{
 		Request: func(next RequestFunc) RequestFunc {
-			return func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+			return func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 				var lastErr error
 				delay := cfg.initialDelay
 
@@ -95,7 +95,7 @@ func RetryMiddleware(maxRetries int, opts ...RetryOption) StreamFunc {
 			}
 		},
 		Stream: func(next StreamRequestFunc) StreamRequestFunc {
-			return func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (gollem.StreamedResponse, error) {
+			return func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (core.StreamedResponse, error) {
 				var lastErr error
 				delay := cfg.initialDelay
 

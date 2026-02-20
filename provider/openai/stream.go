@@ -8,21 +8,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
-// streamedResponse implements gollem.StreamedResponse for OpenAI SSE streams.
+// streamedResponse implements core.StreamedResponse for OpenAI SSE streams.
 type streamedResponse struct {
 	reader     *bufio.Reader
 	body       io.ReadCloser
 	model      string
-	usage      gollem.Usage
-	parts      []gollem.ModelResponsePart
-	stopReason gollem.FinishReason
+	usage      core.Usage
+	parts      []core.ModelResponsePart
+	stopReason core.FinishReason
 	done       bool
 
 	// State for tracking tool calls being built across deltas.
-	currentParts map[int]gollem.ModelResponsePart
+	currentParts map[int]core.ModelResponsePart
 	argsBuffers  map[int]*strings.Builder
 	// Map tool call index to the next part index.
 	toolCallPartIndex map[int]int
@@ -34,10 +34,10 @@ func newStreamedResponse(body io.ReadCloser, model string) *streamedResponse {
 		reader:            bufio.NewReader(body),
 		body:              body,
 		model:             model,
-		currentParts:      make(map[int]gollem.ModelResponsePart),
+		currentParts:      make(map[int]core.ModelResponsePart),
 		argsBuffers:       make(map[int]*strings.Builder),
 		toolCallPartIndex: make(map[int]int),
-		stopReason:        gollem.FinishReasonStop,
+		stopReason:        core.FinishReasonStop,
 	}
 }
 
@@ -74,7 +74,7 @@ type apiChunkFunction struct {
 }
 
 // Next returns the next stream event.
-func (s *streamedResponse) Next() (gollem.ModelResponseStreamEvent, error) {
+func (s *streamedResponse) Next() (core.ModelResponseStreamEvent, error) {
 	for {
 		if s.done {
 			return nil, io.EOF
@@ -149,11 +149,11 @@ func (s *streamedResponse) Next() (gollem.ModelResponseStreamEvent, error) {
 }
 
 // handleTextDelta processes a text content delta.
-func (s *streamedResponse) handleTextDelta(content string) gollem.ModelResponseStreamEvent {
+func (s *streamedResponse) handleTextDelta(content string) core.ModelResponseStreamEvent {
 	// Check if text part already started.
 	textIdx := -1
 	for idx, part := range s.currentParts {
-		if _, ok := part.(gollem.TextPart); ok {
+		if _, ok := part.(core.TextPart); ok {
 			textIdx = idx
 			break
 		}
@@ -163,34 +163,34 @@ func (s *streamedResponse) handleTextDelta(content string) gollem.ModelResponseS
 		// Start a new text part.
 		textIdx = s.nextPartIndex
 		s.nextPartIndex++
-		s.currentParts[textIdx] = gollem.TextPart{Content: content}
-		return gollem.PartStartEvent{
+		s.currentParts[textIdx] = core.TextPart{Content: content}
+		return core.PartStartEvent{
 			Index: textIdx,
-			Part:  gollem.TextPart{Content: content},
+			Part:  core.TextPart{Content: content},
 		}
 	}
 
 	// Append to existing text part.
-	if tp, ok := s.currentParts[textIdx].(gollem.TextPart); ok {
+	if tp, ok := s.currentParts[textIdx].(core.TextPart); ok {
 		tp.Content += content
 		s.currentParts[textIdx] = tp
 	}
-	return gollem.PartDeltaEvent{
+	return core.PartDeltaEvent{
 		Index: textIdx,
-		Delta: gollem.TextPartDelta{ContentDelta: content},
+		Delta: core.TextPartDelta{ContentDelta: content},
 	}
 }
 
 // handleToolCallDeltas processes tool call deltas from a chunk.
-func (s *streamedResponse) handleToolCallDeltas(toolCalls []apiChunkToolCall) []gollem.ModelResponseStreamEvent {
-	var events []gollem.ModelResponseStreamEvent
+func (s *streamedResponse) handleToolCallDeltas(toolCalls []apiChunkToolCall) []core.ModelResponseStreamEvent {
+	var events []core.ModelResponseStreamEvent
 
 	for _, tc := range toolCalls {
 		partIdx, isNew := s.getToolCallPartIndex(tc.Index)
 
 		if isNew || tc.ID != "" {
 			// Start a new tool call part.
-			part := gollem.ToolCallPart{
+			part := core.ToolCallPart{
 				ToolName:   tc.Function.Name,
 				ToolCallID: tc.ID,
 			}
@@ -199,7 +199,7 @@ func (s *streamedResponse) handleToolCallDeltas(toolCalls []apiChunkToolCall) []
 			if tc.Function.Arguments != "" {
 				s.argsBuffers[tc.Index].WriteString(tc.Function.Arguments)
 			}
-			events = append(events, gollem.PartStartEvent{
+			events = append(events, core.PartStartEvent{
 				Index: partIdx,
 				Part:  part,
 			})
@@ -208,9 +208,9 @@ func (s *streamedResponse) handleToolCallDeltas(toolCalls []apiChunkToolCall) []
 			if buf, ok := s.argsBuffers[tc.Index]; ok {
 				buf.WriteString(tc.Function.Arguments)
 			}
-			events = append(events, gollem.PartDeltaEvent{
+			events = append(events, core.PartDeltaEvent{
 				Index: partIdx,
-				Delta: gollem.ToolCallPartDelta{ArgsJSONDelta: tc.Function.Arguments},
+				Delta: core.ToolCallPartDelta{ArgsJSONDelta: tc.Function.Arguments},
 			})
 		}
 	}
@@ -232,7 +232,7 @@ func (s *streamedResponse) getToolCallPartIndex(tcIndex int) (int, bool) {
 // finalizeAll finalizes all remaining parts.
 func (s *streamedResponse) finalizeAll() {
 	for idx, part := range s.currentParts {
-		if tc, ok := part.(gollem.ToolCallPart); ok {
+		if tc, ok := part.(core.ToolCallPart); ok {
 			// Find the tool call index for this part.
 			for tcIdx, partIdx := range s.toolCallPartIndex {
 				if partIdx == idx {
@@ -249,12 +249,12 @@ func (s *streamedResponse) finalizeAll() {
 		}
 		s.parts = append(s.parts, part)
 	}
-	s.currentParts = make(map[int]gollem.ModelResponsePart)
+	s.currentParts = make(map[int]core.ModelResponsePart)
 }
 
 // Response returns the complete ModelResponse built from the stream.
-func (s *streamedResponse) Response() *gollem.ModelResponse {
-	return &gollem.ModelResponse{
+func (s *streamedResponse) Response() *core.ModelResponse {
+	return &core.ModelResponse{
 		Parts:        s.parts,
 		Usage:        s.usage,
 		ModelName:    s.model,
@@ -264,7 +264,7 @@ func (s *streamedResponse) Response() *gollem.ModelResponse {
 }
 
 // Usage returns the current usage information.
-func (s *streamedResponse) Usage() gollem.Usage {
+func (s *streamedResponse) Usage() core.Usage {
 	return s.usage
 }
 
@@ -274,23 +274,23 @@ func (s *streamedResponse) Close() error {
 }
 
 // mapFinishReasonStr maps a finish reason string to gollem FinishReason.
-func mapFinishReasonStr(reason string) gollem.FinishReason {
+func mapFinishReasonStr(reason string) core.FinishReason {
 	switch reason {
 	case "stop":
-		return gollem.FinishReasonStop
+		return core.FinishReasonStop
 	case "length":
-		return gollem.FinishReasonLength
+		return core.FinishReasonLength
 	case "tool_calls":
-		return gollem.FinishReasonToolCall
+		return core.FinishReasonToolCall
 	case "content_filter":
-		return gollem.FinishReasonContentFilter
+		return core.FinishReasonContentFilter
 	default:
-		return gollem.FinishReasonStop
+		return core.FinishReasonStop
 	}
 }
 
-// Verify streamedResponse implements gollem.StreamedResponse.
-var _ gollem.StreamedResponse = (*streamedResponse)(nil)
+// Verify streamedResponse implements core.StreamedResponse.
+var _ core.StreamedResponse = (*streamedResponse)(nil)
 
 // Ensure fmt is used.
 var _ = fmt.Sprintf

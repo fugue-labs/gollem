@@ -8,5 +8,5 @@
 //	defer client.Close()
 //
 //	tools, err := client.Tools(ctx)
-//	agent := gollem.NewAgent[string](model, gollem.WithTools[string](tools...))
+//	agent := core.NewAgent[string](model, core.WithTools[string](tools...))
 package mcp

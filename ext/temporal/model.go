@@ -5,19 +5,19 @@ import (
 	"io"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
-// TemporalModel wraps a gollem.Model, providing activity functions for Temporal.
+// TemporalModel wraps a core.Model, providing activity functions for Temporal.
 // When used outside a workflow, it passes through directly to the wrapped model.
 type TemporalModel struct {
-	wrapped gollem.Model
+	wrapped core.Model
 	name    string
 	config  ActivityConfig
 }
 
 // NewTemporalModel wraps a model for Temporal execution.
-func NewTemporalModel(wrapped gollem.Model, name string, config ActivityConfig) *TemporalModel {
+func NewTemporalModel(wrapped core.Model, name string, config ActivityConfig) *TemporalModel {
 	return &TemporalModel{
 		wrapped: wrapped,
 		name:    name,
@@ -27,18 +27,18 @@ func NewTemporalModel(wrapped gollem.Model, name string, config ActivityConfig) 
 
 // requestParams is the serializable parameter for model request activities.
 type requestParams struct {
-	Messages   []gollem.ModelMessage          `json:"messages"`
-	Settings   *gollem.ModelSettings          `json:"settings,omitempty"`
-	Parameters *gollem.ModelRequestParameters `json:"parameters,omitempty"`
+	Messages   []core.ModelMessage          `json:"messages"`
+	Settings   *core.ModelSettings          `json:"settings,omitempty"`
+	Parameters *core.ModelRequestParameters `json:"parameters,omitempty"`
 }
 
 // Request delegates directly to the wrapped model (used in activities).
-func (m *TemporalModel) Request(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+func (m *TemporalModel) Request(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 	return m.wrapped.Request(ctx, messages, settings, params)
 }
 
 // RequestStream delegates directly to the wrapped model.
-func (m *TemporalModel) RequestStream(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (gollem.StreamedResponse, error) {
+func (m *TemporalModel) RequestStream(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (core.StreamedResponse, error) {
 	return m.wrapped.RequestStream(ctx, messages, settings, params)
 }
 
@@ -58,13 +58,13 @@ func (m *TemporalModel) ModelRequestStreamActivityName() string {
 }
 
 // ModelRequestActivity is the Temporal activity function for model requests.
-func (m *TemporalModel) ModelRequestActivity(ctx context.Context, params requestParams) (*gollem.ModelResponse, error) {
+func (m *TemporalModel) ModelRequestActivity(ctx context.Context, params requestParams) (*core.ModelResponse, error) {
 	return m.wrapped.Request(ctx, params.Messages, params.Settings, params.Parameters)
 }
 
 // ModelRequestStreamActivity is the Temporal activity for streaming requests.
 // It collects the stream into a complete response.
-func (m *TemporalModel) ModelRequestStreamActivity(ctx context.Context, params requestParams) (*gollem.ModelResponse, error) {
+func (m *TemporalModel) ModelRequestStreamActivity(ctx context.Context, params requestParams) (*core.ModelResponse, error) {
 	stream, err := m.wrapped.RequestStream(ctx, params.Messages, params.Settings, params.Parameters)
 	if err != nil {
 		// Fallback to non-streaming.
@@ -100,11 +100,11 @@ func DefaultActivityConfig() ActivityConfig {
 
 // completedStream wraps a completed ModelResponse as a StreamedResponse.
 type completedStream struct {
-	response *gollem.ModelResponse
+	response *core.ModelResponse
 	done     bool
 }
 
-func (s *completedStream) Next() (gollem.ModelResponseStreamEvent, error) {
+func (s *completedStream) Next() (core.ModelResponseStreamEvent, error) {
 	if s.done {
 		return nil, io.EOF
 	}
@@ -112,11 +112,11 @@ func (s *completedStream) Next() (gollem.ModelResponseStreamEvent, error) {
 	return nil, io.EOF
 }
 
-func (s *completedStream) Response() *gollem.ModelResponse {
+func (s *completedStream) Response() *core.ModelResponse {
 	return s.response
 }
 
-func (s *completedStream) Usage() gollem.Usage {
+func (s *completedStream) Usage() core.Usage {
 	return s.response.Usage
 }
 

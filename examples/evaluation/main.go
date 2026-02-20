@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 	"github.com/fugue-labs/gollem/ext/eval"
 )
 
@@ -19,14 +19,14 @@ func main() {
 	// Create a TestModel that returns the final_result tool call.
 	// Each response corresponds to one evaluation case.
 	// The TestModel reuses the last response for any extra calls.
-	model := gollem.NewTestModel(
+	model := core.NewTestModel(
 		// Response for "capital of France" - correct.
-		gollem.ToolCallResponse("final_result", `"Paris"`),
+		core.ToolCallResponse("final_result", `"Paris"`),
 	)
 
 	// Create a simple string agent.
-	agent := gollem.NewAgent[string](model,
-		gollem.WithSystemPrompt[string]("You are a geography quiz assistant. Answer with just the city name."),
+	agent := core.NewAgent[string](model,
+		core.WithSystemPrompt[string]("You are a geography quiz assistant. Answer with just the city name."),
 	)
 
 	// Define an evaluation dataset.

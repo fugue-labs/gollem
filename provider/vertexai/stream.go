@@ -8,21 +8,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
-// streamedResponse implements gollem.StreamedResponse for Vertex AI Gemini SSE streams.
+// streamedResponse implements core.StreamedResponse for Vertex AI Gemini SSE streams.
 type streamedResponse struct {
 	reader     *bufio.Reader
 	body       io.ReadCloser
 	model      string
-	usage      gollem.Usage
-	parts      []gollem.ModelResponsePart
-	stopReason gollem.FinishReason
+	usage      core.Usage
+	parts      []core.ModelResponsePart
+	stopReason core.FinishReason
 	done       bool
 
 	// State for tracking current parts being built.
-	currentParts  map[int]gollem.ModelResponsePart
+	currentParts  map[int]core.ModelResponsePart
 	nextPartIndex int
 }
 
@@ -31,13 +31,13 @@ func newStreamedResponse(body io.ReadCloser, model string) *streamedResponse {
 		reader:       bufio.NewReader(body),
 		body:         body,
 		model:        model,
-		currentParts: make(map[int]gollem.ModelResponsePart),
-		stopReason:   gollem.FinishReasonStop,
+		currentParts: make(map[int]core.ModelResponsePart),
+		stopReason:   core.FinishReasonStop,
 	}
 }
 
 // Next returns the next stream event.
-func (s *streamedResponse) Next() (gollem.ModelResponseStreamEvent, error) {
+func (s *streamedResponse) Next() (core.ModelResponseStreamEvent, error) {
 	for {
 		if s.done {
 			return nil, io.EOF
@@ -102,11 +102,11 @@ func (s *streamedResponse) Next() (gollem.ModelResponseStreamEvent, error) {
 }
 
 // handleTextDelta processes a text delta from a streaming chunk.
-func (s *streamedResponse) handleTextDelta(content string) gollem.ModelResponseStreamEvent {
+func (s *streamedResponse) handleTextDelta(content string) core.ModelResponseStreamEvent {
 	// Check if text part already started.
 	textIdx := -1
 	for idx, part := range s.currentParts {
-		if _, ok := part.(gollem.TextPart); ok {
+		if _, ok := part.(core.TextPart); ok {
 			textIdx = idx
 			break
 		}
@@ -115,25 +115,25 @@ func (s *streamedResponse) handleTextDelta(content string) gollem.ModelResponseS
 	if textIdx == -1 {
 		textIdx = s.nextPartIndex
 		s.nextPartIndex++
-		s.currentParts[textIdx] = gollem.TextPart{Content: content}
-		return gollem.PartStartEvent{
+		s.currentParts[textIdx] = core.TextPart{Content: content}
+		return core.PartStartEvent{
 			Index: textIdx,
-			Part:  gollem.TextPart{Content: content},
+			Part:  core.TextPart{Content: content},
 		}
 	}
 
-	if tp, ok := s.currentParts[textIdx].(gollem.TextPart); ok {
+	if tp, ok := s.currentParts[textIdx].(core.TextPart); ok {
 		tp.Content += content
 		s.currentParts[textIdx] = tp
 	}
-	return gollem.PartDeltaEvent{
+	return core.PartDeltaEvent{
 		Index: textIdx,
-		Delta: gollem.TextPartDelta{ContentDelta: content},
+		Delta: core.TextPartDelta{ContentDelta: content},
 	}
 }
 
 // handleFunctionCall processes a function call from a streaming chunk.
-func (s *streamedResponse) handleFunctionCall(fc *geminiFunctionCall) gollem.ModelResponseStreamEvent {
+func (s *streamedResponse) handleFunctionCall(fc *geminiFunctionCall) core.ModelResponseStreamEvent {
 	idx := s.nextPartIndex
 	s.nextPartIndex++
 
@@ -143,14 +143,14 @@ func (s *streamedResponse) handleFunctionCall(fc *geminiFunctionCall) gollem.Mod
 		argsJSON = string(b)
 	}
 
-	part := gollem.ToolCallPart{
+	part := core.ToolCallPart{
 		ToolName:   fc.Name,
 		ArgsJSON:   argsJSON,
 		ToolCallID: fc.Name,
 	}
 	s.currentParts[idx] = part
 
-	return gollem.PartStartEvent{
+	return core.PartStartEvent{
 		Index: idx,
 		Part:  part,
 	}
@@ -161,12 +161,12 @@ func (s *streamedResponse) finalizeAll() {
 	for _, part := range s.currentParts {
 		s.parts = append(s.parts, part)
 	}
-	s.currentParts = make(map[int]gollem.ModelResponsePart)
+	s.currentParts = make(map[int]core.ModelResponsePart)
 }
 
 // Response returns the complete ModelResponse built from the stream.
-func (s *streamedResponse) Response() *gollem.ModelResponse {
-	return &gollem.ModelResponse{
+func (s *streamedResponse) Response() *core.ModelResponse {
+	return &core.ModelResponse{
 		Parts:        s.parts,
 		Usage:        s.usage,
 		ModelName:    s.model,
@@ -176,7 +176,7 @@ func (s *streamedResponse) Response() *gollem.ModelResponse {
 }
 
 // Usage returns the current usage information.
-func (s *streamedResponse) Usage() gollem.Usage {
+func (s *streamedResponse) Usage() core.Usage {
 	return s.usage
 }
 
@@ -186,21 +186,21 @@ func (s *streamedResponse) Close() error {
 }
 
 // mapFinishReasonStr maps a Gemini finish reason string to gollem FinishReason.
-func mapFinishReasonStr(reason string) gollem.FinishReason {
+func mapFinishReasonStr(reason string) core.FinishReason {
 	switch reason {
 	case "STOP":
-		return gollem.FinishReasonStop
+		return core.FinishReasonStop
 	case "MAX_TOKENS":
-		return gollem.FinishReasonLength
+		return core.FinishReasonLength
 	case "SAFETY", "RECITATION":
-		return gollem.FinishReasonContentFilter
+		return core.FinishReasonContentFilter
 	default:
-		return gollem.FinishReasonStop
+		return core.FinishReasonStop
 	}
 }
 
-// Verify streamedResponse implements gollem.StreamedResponse.
-var _ gollem.StreamedResponse = (*streamedResponse)(nil)
+// Verify streamedResponse implements core.StreamedResponse.
+var _ core.StreamedResponse = (*streamedResponse)(nil)
 
 // Ensure fmt is used.
 var _ = fmt.Sprintf

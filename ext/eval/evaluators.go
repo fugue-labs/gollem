@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // exactMatch checks if output equals expected (using reflect.DeepEqual).
@@ -99,12 +99,12 @@ func (e *custom[T]) Evaluate(ctx context.Context, output T, expected T) (*Score,
 
 // llmJudge uses an LLM to evaluate output quality against criteria.
 type llmJudge[T any] struct {
-	model    gollem.Model
+	model    core.Model
 	criteria string
 }
 
 // LLMJudge uses an LLM to evaluate output quality against criteria.
-func LLMJudge[T any](model gollem.Model, criteria string) Evaluator[T] {
+func LLMJudge[T any](model core.Model, criteria string) Evaluator[T] {
 	return &llmJudge[T]{
 		model:    model,
 		criteria: criteria,
@@ -121,15 +121,15 @@ func (e *llmJudge[T]) Evaluate(ctx context.Context, output T, expected T) (*Scor
 		e.criteria, expected, output,
 	)
 
-	req := gollem.ModelRequest{
-		Parts: []gollem.ModelRequestPart{
-			gollem.SystemPromptPart{Content: "You are an evaluation judge. Score outputs on a 0.0 to 1.0 scale."},
-			gollem.UserPromptPart{Content: prompt},
+	req := core.ModelRequest{
+		Parts: []core.ModelRequestPart{
+			core.SystemPromptPart{Content: "You are an evaluation judge. Score outputs on a 0.0 to 1.0 scale."},
+			core.UserPromptPart{Content: prompt},
 		},
 		Timestamp: time.Now(),
 	}
 
-	resp, err := e.model.Request(ctx, []gollem.ModelMessage{req}, nil, &gollem.ModelRequestParameters{
+	resp, err := e.model.Request(ctx, []core.ModelMessage{req}, nil, &core.ModelRequestParameters{
 		AllowTextOutput: true,
 	})
 	if err != nil {

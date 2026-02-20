@@ -9,7 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // Option configures the TUI.
@@ -68,7 +68,7 @@ type doneMsg struct {
 type model struct {
 	theme    Theme
 	steps    []step
-	usage    gollem.RunUsage
+	usage    core.RunUsage
 	stepMode bool
 	scroll   int // scroll offset from bottom
 	width    int
@@ -213,7 +213,7 @@ func (m model) renderStatusBar() string {
 }
 
 // FormatUsage formats usage statistics for display.
-func FormatUsage(usage gollem.RunUsage, mode string) string {
+func FormatUsage(usage core.RunUsage, mode string) string {
 	return fmt.Sprintf(
 		"tokens: %d in / %d out | requests: %d | tools: %d | mode: %s | q:quit s:step a:auto",
 		usage.InputTokens, usage.OutputTokens,
@@ -233,30 +233,30 @@ func FormatToolCall(name string, argsJSON string) string {
 }
 
 // ExtractSteps extracts displayable steps from a list of model messages.
-func ExtractSteps(messages []gollem.ModelMessage) []step {
+func ExtractSteps(messages []core.ModelMessage) []step {
 	var steps []step
 	for _, msg := range messages {
 		switch m := msg.(type) {
-		case gollem.ModelRequest:
+		case core.ModelRequest:
 			for _, part := range m.Parts {
 				switch p := part.(type) {
-				case gollem.SystemPromptPart:
+				case core.SystemPromptPart:
 					steps = append(steps, step{kind: "system", content: p.Content})
-				case gollem.UserPromptPart:
+				case core.UserPromptPart:
 					steps = append(steps, step{kind: "user", content: p.Content})
-				case gollem.ToolReturnPart:
+				case core.ToolReturnPart:
 					content := fmt.Sprintf("%v", p.Content)
 					steps = append(steps, step{kind: "tool-result", content: fmt.Sprintf("%s: %s", p.ToolName, content)})
-				case gollem.RetryPromptPart:
+				case core.RetryPromptPart:
 					steps = append(steps, step{kind: "error", content: p.Content})
 				}
 			}
-		case gollem.ModelResponse:
+		case core.ModelResponse:
 			for _, part := range m.Parts {
 				switch p := part.(type) {
-				case gollem.TextPart:
+				case core.TextPart:
 					steps = append(steps, step{kind: "model", content: p.Content})
-				case gollem.ToolCallPart:
+				case core.ToolCallPart:
 					steps = append(steps, step{kind: "tool-call", content: FormatToolCall(p.ToolName, p.ArgsJSON)})
 				}
 			}
@@ -267,7 +267,7 @@ func ExtractSteps(messages []gollem.ModelMessage) []step {
 
 // DebugUI creates and runs a TUI that wraps an agent run, displaying messages
 // as they happen with color-coded formatting and a status bar.
-func DebugUI[T any](agent *gollem.Agent[T], prompt string, opts ...Option) (*gollem.RunResult[T], error) {
+func DebugUI[T any](agent *core.Agent[T], prompt string, opts ...Option) (*core.RunResult[T], error) {
 	cfg := &config{
 		theme: DefaultTheme(),
 	}
@@ -285,7 +285,7 @@ func DebugUI[T any](agent *gollem.Agent[T], prompt string, opts ...Option) (*gol
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	// Run the agent in a goroutine.
-	var agentResult *gollem.RunResult[T]
+	var agentResult *core.RunResult[T]
 	var agentErr error
 
 	go func() {
@@ -309,9 +309,9 @@ func DebugUI[T any](agent *gollem.Agent[T], prompt string, opts ...Option) (*gol
 			if resp != nil {
 				for _, part := range resp.Parts {
 					switch rp := part.(type) {
-					case gollem.TextPart:
+					case core.TextPart:
 						p.Send(stepMsg{step: step{kind: "model", content: rp.Content}})
-					case gollem.ToolCallPart:
+					case core.ToolCallPart:
 						p.Send(stepMsg{step: step{kind: "tool-call", content: FormatToolCall(rp.ToolName, rp.ArgsJSON)}})
 					}
 				}

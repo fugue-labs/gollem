@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // --- API request types ---
@@ -73,7 +73,7 @@ type apiUsage struct {
 }
 
 // buildRequest converts gollem messages into an Anthropic API request.
-func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters, model string, defaultMaxTokens int, stream bool) (*apiRequest, error) {
+func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters, model string, defaultMaxTokens int, stream bool) (*apiRequest, error) {
 	req := &apiRequest{
 		Model:     model,
 		MaxTokens: defaultMaxTokens,
@@ -110,21 +110,21 @@ func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings
 
 	for _, msg := range messages {
 		switch m := msg.(type) {
-		case gollem.ModelRequest:
+		case core.ModelRequest:
 			var userBlocks []apiContentBlock
 			for _, part := range m.Parts {
 				switch p := part.(type) {
-				case gollem.SystemPromptPart:
+				case core.SystemPromptPart:
 					systemBlocks = append(systemBlocks, apiSystemBlock{
 						Type: "text",
 						Text: p.Content,
 					})
-				case gollem.UserPromptPart:
+				case core.UserPromptPart:
 					userBlocks = append(userBlocks, apiContentBlock{
 						Type: "text",
 						Text: p.Content,
 					})
-				case gollem.ToolReturnPart:
+				case core.ToolReturnPart:
 					content := ""
 					switch v := p.Content.(type) {
 					case string:
@@ -138,7 +138,7 @@ func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings
 						ToolUseID: p.ToolCallID,
 						Content:   content,
 					})
-				case gollem.RetryPromptPart:
+				case core.RetryPromptPart:
 					if p.ToolCallID != "" {
 						userBlocks = append(userBlocks, apiContentBlock{
 							Type:      "tool_result",
@@ -161,23 +161,23 @@ func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings
 				})
 			}
 
-		case gollem.ModelResponse:
+		case core.ModelResponse:
 			var assistantBlocks []apiContentBlock
 			for _, part := range m.Parts {
 				switch p := part.(type) {
-				case gollem.TextPart:
+				case core.TextPart:
 					assistantBlocks = append(assistantBlocks, apiContentBlock{
 						Type: "text",
 						Text: p.Content,
 					})
-				case gollem.ToolCallPart:
+				case core.ToolCallPart:
 					assistantBlocks = append(assistantBlocks, apiContentBlock{
 						Type:  "tool_use",
 						ID:    p.ToolCallID,
 						Name:  p.ToolName,
 						Input: json.RawMessage(p.ArgsJSON),
 					})
-				case gollem.ThinkingPart:
+				case core.ThinkingPart:
 					assistantBlocks = append(assistantBlocks, apiContentBlock{
 						Type:      "thinking",
 						Thinking:  p.Content,
@@ -199,33 +199,33 @@ func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings
 	return req, nil
 }
 
-// parseResponse converts an Anthropic API response to a gollem.ModelResponse.
-func parseResponse(resp *apiResponse, modelName string) *gollem.ModelResponse {
-	var parts []gollem.ModelResponsePart
+// parseResponse converts an Anthropic API response to a core.ModelResponse.
+func parseResponse(resp *apiResponse, modelName string) *core.ModelResponse {
+	var parts []core.ModelResponsePart
 
 	for _, block := range resp.Content {
 		switch block.Type {
 		case "text":
-			parts = append(parts, gollem.TextPart{Content: block.Text})
+			parts = append(parts, core.TextPart{Content: block.Text})
 		case "tool_use":
 			argsJSON := "{}"
 			if block.Input != nil {
 				argsJSON = string(block.Input)
 			}
-			parts = append(parts, gollem.ToolCallPart{
+			parts = append(parts, core.ToolCallPart{
 				ToolName:   block.Name,
 				ArgsJSON:   argsJSON,
 				ToolCallID: block.ID,
 			})
 		case "thinking":
-			parts = append(parts, gollem.ThinkingPart{
+			parts = append(parts, core.ThinkingPart{
 				Content:   block.Thinking,
 				Signature: block.Signature,
 			})
 		}
 	}
 
-	return &gollem.ModelResponse{
+	return &core.ModelResponse{
 		Parts:        parts,
 		Usage:        mapUsage(resp.Usage),
 		ModelName:    modelName,
@@ -235,24 +235,24 @@ func parseResponse(resp *apiResponse, modelName string) *gollem.ModelResponse {
 }
 
 // mapStopReason maps Anthropic stop reasons to gollem FinishReasons.
-func mapStopReason(reason string) gollem.FinishReason {
+func mapStopReason(reason string) core.FinishReason {
 	switch reason {
 	case "end_turn", "stop_sequence":
-		return gollem.FinishReasonStop
+		return core.FinishReasonStop
 	case "max_tokens":
-		return gollem.FinishReasonLength
+		return core.FinishReasonLength
 	case "tool_use":
-		return gollem.FinishReasonToolCall
+		return core.FinishReasonToolCall
 	case "refusal":
-		return gollem.FinishReasonContentFilter
+		return core.FinishReasonContentFilter
 	default:
-		return gollem.FinishReasonStop
+		return core.FinishReasonStop
 	}
 }
 
 // mapUsage converts Anthropic usage to gollem Usage.
-func mapUsage(u apiUsage) gollem.Usage {
-	return gollem.Usage{
+func mapUsage(u apiUsage) core.Usage {
+	return core.Usage{
 		InputTokens:      u.InputTokens,
 		OutputTokens:     u.OutputTokens,
 		CacheWriteTokens: u.CacheCreationInputTokens,

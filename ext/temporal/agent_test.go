@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestTemporalAgent_Construction(t *testing.T) {
@@ -12,14 +12,14 @@ func TestTemporalAgent_Construction(t *testing.T) {
 		Q string `json:"q"`
 	}
 
-	model := gollem.NewTestModel(gollem.TextResponse("Hello!"))
-	tool := gollem.FuncTool[Params]("search", "Search",
+	model := core.NewTestModel(core.TextResponse("Hello!"))
+	tool := core.FuncTool[Params]("search", "Search",
 		func(_ context.Context, p Params) (string, error) {
 			return "result", nil
 		},
 	)
 
-	agent := gollem.NewAgent[string](model, gollem.WithTools[string](tool))
+	agent := core.NewAgent[string](model, core.WithTools[string](tool))
 	ta := NewTemporalAgent(agent, WithName("test-agent"))
 
 	if ta.Name() != "test-agent" {
@@ -40,8 +40,8 @@ func TestTemporalAgent_Construction(t *testing.T) {
 }
 
 func TestTemporalAgent_RunOutsideWorkflow(t *testing.T) {
-	model := gollem.NewTestModel(gollem.TextResponse("Direct response"))
-	agent := gollem.NewAgent[string](model)
+	model := core.NewTestModel(core.TextResponse("Direct response"))
+	agent := core.NewAgent[string](model)
 	ta := NewTemporalAgent(agent, WithName("direct-agent"))
 
 	result, err := ta.Run(context.Background(), "Hello")
@@ -54,17 +54,17 @@ func TestTemporalAgent_RunOutsideWorkflow(t *testing.T) {
 }
 
 func TestTemporalAgent_Activities(t *testing.T) {
-	model := gollem.NewTestModel(gollem.TextResponse("Hi"))
+	model := core.NewTestModel(core.TextResponse("Hi"))
 
 	type P1 struct{ Q string `json:"q"` }
 	type P2 struct{ N int `json:"n"` }
 
-	tool1 := gollem.FuncTool[P1]("tool1", "Tool 1",
+	tool1 := core.FuncTool[P1]("tool1", "Tool 1",
 		func(_ context.Context, p P1) (string, error) { return p.Q, nil })
-	tool2 := gollem.FuncTool[P2]("tool2", "Tool 2",
+	tool2 := core.FuncTool[P2]("tool2", "Tool 2",
 		func(_ context.Context, p P2) (int, error) { return p.N * 2, nil })
 
-	agent := gollem.NewAgent[string](model, gollem.WithTools[string](tool1, tool2))
+	agent := core.NewAgent[string](model, core.WithTools[string](tool1, tool2))
 	ta := NewTemporalAgent(agent, WithName("multi-tool"))
 
 	activities := ta.Activities()
@@ -82,21 +82,21 @@ func TestTemporalAgent_NameRequired(t *testing.T) {
 		}
 	}()
 
-	model := gollem.NewTestModel(gollem.TextResponse("Hi"))
-	agent := gollem.NewAgent[string](model)
+	model := core.NewTestModel(core.TextResponse("Hi"))
+	agent := core.NewAgent[string](model)
 	_ = NewTemporalAgent(agent) // Should panic.
 }
 
 func TestTemporalAgent_WithPassthrough(t *testing.T) {
 	type P struct{}
 
-	model := gollem.NewTestModel(gollem.TextResponse("Hi"))
-	tool1 := gollem.FuncTool[P]("fast_tool", "Fast",
+	model := core.NewTestModel(core.TextResponse("Hi"))
+	tool1 := core.FuncTool[P]("fast_tool", "Fast",
 		func(_ context.Context, _ P) (string, error) { return "fast", nil })
-	tool2 := gollem.FuncTool[P]("slow_tool", "Slow",
+	tool2 := core.FuncTool[P]("slow_tool", "Slow",
 		func(_ context.Context, _ P) (string, error) { return "slow", nil })
 
-	agent := gollem.NewAgent[string](model, gollem.WithTools[string](tool1, tool2))
+	agent := core.NewAgent[string](model, core.WithTools[string](tool1, tool2))
 	ta := NewTemporalAgent(agent,
 		WithName("passthrough-test"),
 		WithToolPassthrough("fast_tool"),
@@ -114,8 +114,8 @@ func TestTemporalAgent_WithPassthrough(t *testing.T) {
 }
 
 func TestTemporalAgent_WithActivityConfig(t *testing.T) {
-	model := gollem.NewTestModel(gollem.TextResponse("Hi"))
-	agent := gollem.NewAgent[string](model)
+	model := core.NewTestModel(core.TextResponse("Hi"))
+	agent := core.NewAgent[string](model)
 
 	config := ActivityConfig{
 		StartToCloseTimeout: 120000000000, // 2 minutes

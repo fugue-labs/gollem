@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestDefaultTokenCounter(t *testing.T) {
@@ -35,17 +35,17 @@ func TestDefaultTokenCounter(t *testing.T) {
 func TestCountMessageTokens(t *testing.T) {
 	tc := DefaultTokenCounter()
 
-	messages := []gollem.ModelMessage{
-		gollem.ModelRequest{
-			Parts: []gollem.ModelRequestPart{
-				gollem.SystemPromptPart{Content: "You are a helpful assistant."},
-				gollem.UserPromptPart{Content: "What is the weather?"},
+	messages := []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.SystemPromptPart{Content: "You are a helpful assistant."},
+				core.UserPromptPart{Content: "What is the weather?"},
 			},
 			Timestamp: time.Now(),
 		},
-		gollem.ModelResponse{
-			Parts: []gollem.ModelResponsePart{
-				gollem.TextPart{Content: "The weather is sunny today."},
+		core.ModelResponse{
+			Parts: []core.ModelResponsePart{
+				core.TextPart{Content: "The weather is sunny today."},
 			},
 		},
 	}
@@ -63,19 +63,19 @@ func TestCountMessageTokens(t *testing.T) {
 func TestCountMessageTokens_ToolParts(t *testing.T) {
 	tc := DefaultTokenCounter()
 
-	messages := []gollem.ModelMessage{
-		gollem.ModelResponse{
-			Parts: []gollem.ModelResponsePart{
-				gollem.ToolCallPart{
+	messages := []core.ModelMessage{
+		core.ModelResponse{
+			Parts: []core.ModelResponsePart{
+				core.ToolCallPart{
 					ToolName:   "search",
 					ArgsJSON:   `{"query": "test search query"}`,
 					ToolCallID: "tc1",
 				},
 			},
 		},
-		gollem.ModelRequest{
-			Parts: []gollem.ModelRequestPart{
-				gollem.ToolReturnPart{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.ToolReturnPart{
 					ToolName:   "search",
 					Content:    "Search results here with some content",
 					ToolCallID: "tc1",
@@ -95,11 +95,11 @@ func TestCountMessageTokens_ToolParts(t *testing.T) {
 func TestCountMessageTokens_ThinkingParts(t *testing.T) {
 	tc := DefaultTokenCounter()
 
-	messages := []gollem.ModelMessage{
-		gollem.ModelResponse{
-			Parts: []gollem.ModelResponsePart{
-				gollem.ThinkingPart{Content: "Let me think about this step by step..."},
-				gollem.TextPart{Content: "Here's my answer."},
+	messages := []core.ModelMessage{
+		core.ModelResponse{
+			Parts: []core.ModelResponsePart{
+				core.ThinkingPart{Content: "Let me think about this step by step..."},
+				core.TextPart{Content: "Here's my answer."},
 			},
 		},
 	}

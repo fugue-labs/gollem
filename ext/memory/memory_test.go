@@ -6,19 +6,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestBufferMemoryAddGet(t *testing.T) {
 	buf := NewBuffer()
 	ctx := context.Background()
 
-	msg1 := gollem.ModelRequest{
-		Parts:     []gollem.ModelRequestPart{gollem.UserPromptPart{Content: "Hello"}},
+	msg1 := core.ModelRequest{
+		Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "Hello"}},
 		Timestamp: time.Now(),
 	}
-	msg2 := gollem.ModelResponse{
-		Parts:     []gollem.ModelResponsePart{gollem.TextPart{Content: "Hi there"}},
+	msg2 := core.ModelResponse{
+		Parts:     []core.ModelResponsePart{core.TextPart{Content: "Hi there"}},
 		ModelName: "test",
 	}
 
@@ -35,11 +35,11 @@ func TestBufferMemoryAddGet(t *testing.T) {
 	}
 
 	// Verify first message.
-	req, ok := messages[0].(gollem.ModelRequest)
+	req, ok := messages[0].(core.ModelRequest)
 	if !ok {
 		t.Fatal("expected ModelRequest")
 	}
-	up, ok := req.Parts[0].(gollem.UserPromptPart)
+	up, ok := req.Parts[0].(core.UserPromptPart)
 	if !ok {
 		t.Fatal("expected UserPromptPart")
 	}
@@ -48,11 +48,11 @@ func TestBufferMemoryAddGet(t *testing.T) {
 	}
 
 	// Verify second message.
-	resp, ok := messages[1].(gollem.ModelResponse)
+	resp, ok := messages[1].(core.ModelResponse)
 	if !ok {
 		t.Fatal("expected ModelResponse")
 	}
-	tp, ok := resp.Parts[0].(gollem.TextPart)
+	tp, ok := resp.Parts[0].(core.TextPart)
 	if !ok {
 		t.Fatal("expected TextPart")
 	}
@@ -65,8 +65,8 @@ func TestBufferMemoryClear(t *testing.T) {
 	buf := NewBuffer()
 	ctx := context.Background()
 
-	buf.Add(ctx, gollem.ModelRequest{
-		Parts: []gollem.ModelRequestPart{gollem.UserPromptPart{Content: "test"}},
+	buf.Add(ctx, core.ModelRequest{
+		Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "test"}},
 	})
 
 	if buf.Len() != 1 {
@@ -96,9 +96,9 @@ func TestBufferMemoryOverflow(t *testing.T) {
 
 	// Add 5 messages.
 	for i := range 5 {
-		buf.Add(ctx, gollem.ModelRequest{
-			Parts: []gollem.ModelRequestPart{
-				gollem.UserPromptPart{Content: string(rune('A' + i))},
+		buf.Add(ctx, core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.UserPromptPart{Content: string(rune('A' + i))},
 			},
 		})
 	}
@@ -115,8 +115,8 @@ func TestBufferMemoryOverflow(t *testing.T) {
 	// Should have the last 3 messages (C, D, E).
 	expected := []string{"C", "D", "E"}
 	for i, msg := range messages {
-		req := msg.(gollem.ModelRequest)
-		up := req.Parts[0].(gollem.UserPromptPart)
+		req := msg.(core.ModelRequest)
+		up := req.Parts[0].(core.UserPromptPart)
 		if up.Content != expected[i] {
 			t.Errorf("position %d: expected '%s', got '%s'", i, expected[i], up.Content)
 		}
@@ -127,20 +127,20 @@ func TestBufferMemoryGetReturnsCopy(t *testing.T) {
 	buf := NewBuffer()
 	ctx := context.Background()
 
-	buf.Add(ctx, gollem.ModelRequest{
-		Parts: []gollem.ModelRequestPart{gollem.UserPromptPart{Content: "original"}},
+	buf.Add(ctx, core.ModelRequest{
+		Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "original"}},
 	})
 
 	messages1, _ := buf.Get(ctx)
 	messages2, _ := buf.Get(ctx)
 
 	// Modifying one copy should not affect the other.
-	messages1[0] = gollem.ModelRequest{
-		Parts: []gollem.ModelRequestPart{gollem.UserPromptPart{Content: "modified"}},
+	messages1[0] = core.ModelRequest{
+		Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "modified"}},
 	}
 
-	req := messages2[0].(gollem.ModelRequest)
-	up := req.Parts[0].(gollem.UserPromptPart)
+	req := messages2[0].(core.ModelRequest)
+	up := req.Parts[0].(core.UserPromptPart)
 	if up.Content != "original" {
 		t.Errorf("expected 'original', got '%s' — Get returned shared slice", up.Content)
 	}
@@ -177,9 +177,9 @@ func TestBufferMemoryConcurrent(t *testing.T) {
 		go func(_ int) {
 			defer wg.Done()
 			for range 10 {
-				buf.Add(ctx, gollem.ModelRequest{
-					Parts: []gollem.ModelRequestPart{
-						gollem.UserPromptPart{Content: "msg"},
+				buf.Add(ctx, core.ModelRequest{
+					Parts: []core.ModelRequestPart{
+						core.UserPromptPart{Content: "msg"},
 					},
 				})
 			}
@@ -210,11 +210,11 @@ func TestBufferMemoryBatchAdd(t *testing.T) {
 	ctx := context.Background()
 
 	// Add a batch larger than maxSize.
-	msgs := make([]gollem.ModelMessage, 8)
+	msgs := make([]core.ModelMessage, 8)
 	for i := range msgs {
-		msgs[i] = gollem.ModelRequest{
-			Parts: []gollem.ModelRequestPart{
-				gollem.UserPromptPart{Content: string(rune('A' + i))},
+		msgs[i] = core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.UserPromptPart{Content: string(rune('A' + i))},
 			},
 		}
 	}
@@ -229,8 +229,8 @@ func TestBufferMemoryBatchAdd(t *testing.T) {
 	// Should have the last 5 (D, E, F, G, H).
 	expected := []string{"D", "E", "F", "G", "H"}
 	for i, msg := range messages {
-		req := msg.(gollem.ModelRequest)
-		up := req.Parts[0].(gollem.UserPromptPart)
+		req := msg.(core.ModelRequest)
+		up := req.Parts[0].(core.UserPromptPart)
 		if up.Content != expected[i] {
 			t.Errorf("position %d: expected '%s', got '%s'", i, expected[i], up.Content)
 		}

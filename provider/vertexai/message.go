@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // --- Gemini API request types ---
@@ -79,7 +79,7 @@ type geminiUsage struct {
 }
 
 // buildRequest converts gollem messages into a Gemini API request.
-func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*geminiRequest, error) {
+func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*geminiRequest, error) {
 	req := &geminiRequest{}
 
 	// Generation config.
@@ -102,7 +102,7 @@ func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings
 	}
 
 	// Handle native structured output.
-	if params != nil && params.OutputMode == gollem.OutputModeNative && params.OutputObject != nil {
+	if params != nil && params.OutputMode == core.OutputModeNative && params.OutputObject != nil {
 		genConfig.ResponseMimeType = "application/json"
 		genConfig.ResponseSchema = params.OutputObject.JSONSchema
 		hasGenConfig = true
@@ -135,19 +135,19 @@ func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings
 	// Convert messages.
 	for _, msg := range messages {
 		switch m := msg.(type) {
-		case gollem.ModelRequest:
+		case core.ModelRequest:
 			var userParts []geminiPart
 
 			for _, part := range m.Parts {
 				switch p := part.(type) {
-				case gollem.SystemPromptPart:
+				case core.SystemPromptPart:
 					req.SystemInstruction = &geminiContent{
 						Role:  "user",
 						Parts: []geminiPart{{Text: p.Content}},
 					}
-				case gollem.UserPromptPart:
+				case core.UserPromptPart:
 					userParts = append(userParts, geminiPart{Text: p.Content})
-				case gollem.ToolReturnPart:
+				case core.ToolReturnPart:
 					content := make(map[string]any)
 					switch v := p.Content.(type) {
 					case string:
@@ -162,7 +162,7 @@ func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings
 							Response: content,
 						},
 					})
-				case gollem.RetryPromptPart:
+				case core.RetryPromptPart:
 					if p.ToolName != "" {
 						userParts = append(userParts, geminiPart{
 							FunctionResponse: &geminiFunctionResponse{
@@ -183,13 +183,13 @@ func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings
 				})
 			}
 
-		case gollem.ModelResponse:
+		case core.ModelResponse:
 			var modelParts []geminiPart
 			for _, part := range m.Parts {
 				switch p := part.(type) {
-				case gollem.TextPart:
+				case core.TextPart:
 					modelParts = append(modelParts, geminiPart{Text: p.Content})
-				case gollem.ToolCallPart:
+				case core.ToolCallPart:
 					args := make(map[string]any)
 					if p.ArgsJSON != "" && p.ArgsJSON != "{}" {
 						_ = json.Unmarshal([]byte(p.ArgsJSON), &args)
@@ -214,15 +214,15 @@ func buildRequest(messages []gollem.ModelMessage, settings *gollem.ModelSettings
 	return req, nil
 }
 
-// parseResponse converts a Gemini API response to a gollem.ModelResponse.
-func parseResponse(resp *geminiResponse, modelName string) *gollem.ModelResponse {
-	var parts []gollem.ModelResponsePart
+// parseResponse converts a Gemini API response to a core.ModelResponse.
+func parseResponse(resp *geminiResponse, modelName string) *core.ModelResponse {
+	var parts []core.ModelResponsePart
 
 	if len(resp.Candidates) > 0 {
 		candidate := resp.Candidates[0]
 		for _, p := range candidate.Content.Parts {
 			if p.Text != "" {
-				parts = append(parts, gollem.TextPart{Content: p.Text})
+				parts = append(parts, core.TextPart{Content: p.Text})
 			}
 			if p.FunctionCall != nil {
 				argsJSON := "{}"
@@ -230,7 +230,7 @@ func parseResponse(resp *geminiResponse, modelName string) *gollem.ModelResponse
 					b, _ := json.Marshal(p.FunctionCall.Args)
 					argsJSON = string(b)
 				}
-				parts = append(parts, gollem.ToolCallPart{
+				parts = append(parts, core.ToolCallPart{
 					ToolName:   p.FunctionCall.Name,
 					ArgsJSON:   argsJSON,
 					ToolCallID: p.FunctionCall.Name, // Gemini doesn't use tool call IDs
@@ -239,7 +239,7 @@ func parseResponse(resp *geminiResponse, modelName string) *gollem.ModelResponse
 		}
 	}
 
-	return &gollem.ModelResponse{
+	return &core.ModelResponse{
 		Parts:        parts,
 		Usage:        mapUsage(resp.UsageMetadata),
 		ModelName:    modelName,
@@ -249,27 +249,27 @@ func parseResponse(resp *geminiResponse, modelName string) *gollem.ModelResponse
 }
 
 // mapFinishReason maps Gemini finish reasons to gollem FinishReasons.
-func mapFinishReason(resp *geminiResponse) gollem.FinishReason {
+func mapFinishReason(resp *geminiResponse) core.FinishReason {
 	if len(resp.Candidates) == 0 {
-		return gollem.FinishReasonStop
+		return core.FinishReasonStop
 	}
 	switch resp.Candidates[0].FinishReason {
 	case "STOP":
-		return gollem.FinishReasonStop
+		return core.FinishReasonStop
 	case "MAX_TOKENS":
-		return gollem.FinishReasonLength
+		return core.FinishReasonLength
 	case "SAFETY":
-		return gollem.FinishReasonContentFilter
+		return core.FinishReasonContentFilter
 	case "RECITATION":
-		return gollem.FinishReasonContentFilter
+		return core.FinishReasonContentFilter
 	default:
-		return gollem.FinishReasonStop
+		return core.FinishReasonStop
 	}
 }
 
 // mapUsage converts Gemini usage to gollem Usage.
-func mapUsage(u geminiUsage) gollem.Usage {
-	return gollem.Usage{
+func mapUsage(u geminiUsage) core.Usage {
+	return core.Usage{
 		InputTokens:  u.PromptTokenCount,
 		OutputTokens: u.CandidatesTokenCount,
 	}

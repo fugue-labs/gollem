@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestRateLimitMiddleware_AllowsBurst(t *testing.T) {
-	model := &mockModel{response: &gollem.ModelResponse{
-		Parts:     []gollem.ModelResponsePart{gollem.TextPart{Content: "ok"}},
+	model := &mockModel{response: &core.ModelResponse{
+		Parts:     []core.ModelResponsePart{core.TextPart{Content: "ok"}},
 		ModelName: "test-model",
 	}}
 
@@ -36,8 +36,8 @@ func TestRateLimitMiddleware_AllowsBurst(t *testing.T) {
 }
 
 func TestRateLimitMiddleware_ThrottlesExcess(t *testing.T) {
-	model := &mockModel{response: &gollem.ModelResponse{
-		Parts:     []gollem.ModelResponsePart{gollem.TextPart{Content: "ok"}},
+	model := &mockModel{response: &core.ModelResponse{
+		Parts:     []core.ModelResponsePart{core.TextPart{Content: "ok"}},
 		ModelName: "test-model",
 	}}
 
@@ -71,8 +71,8 @@ func TestRateLimitMiddleware_ThrottlesExcess(t *testing.T) {
 }
 
 func TestRateLimitMiddleware_ContextCancellation(t *testing.T) {
-	model := &mockModel{response: &gollem.ModelResponse{
-		Parts:     []gollem.ModelResponsePart{gollem.TextPart{Content: "ok"}},
+	model := &mockModel{response: &core.ModelResponse{
+		Parts:     []core.ModelResponsePart{core.TextPart{Content: "ok"}},
 		ModelName: "test-model",
 	}}
 
@@ -104,7 +104,7 @@ func TestRateLimitMiddleware_StreamRequest(t *testing.T) {
 	rl := RateLimitMiddleware(10, 5)
 
 	// Test via the stream middleware path directly.
-	handler := rl.WrapStreamRequest(func(_ context.Context, _ []gollem.ModelMessage, _ *gollem.ModelSettings, _ *gollem.ModelRequestParameters) (gollem.StreamedResponse, error) {
+	handler := rl.WrapStreamRequest(func(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (core.StreamedResponse, error) {
 		return nil, nil
 	})
 

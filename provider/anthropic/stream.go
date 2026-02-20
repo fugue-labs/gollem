@@ -7,21 +7,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
-// streamedResponse implements gollem.StreamedResponse for Anthropic SSE streams.
+// streamedResponse implements core.StreamedResponse for Anthropic SSE streams.
 type streamedResponse struct {
 	reader    *bufio.Reader
 	body      io.ReadCloser
 	model     string
-	usage     gollem.Usage
-	parts     []gollem.ModelResponsePart
-	stopReason gollem.FinishReason
+	usage     core.Usage
+	parts     []core.ModelResponsePart
+	stopReason core.FinishReason
 	done      bool
 
 	// State for tracking current blocks being built.
-	currentParts map[int]gollem.ModelResponsePart
+	currentParts map[int]core.ModelResponsePart
 	argsBuffers  map[int]*strings.Builder // accumulate tool call JSON across deltas
 }
 
@@ -30,9 +30,9 @@ func newStreamedResponse(body io.ReadCloser, model string) *streamedResponse {
 		reader:       bufio.NewReader(body),
 		body:         body,
 		model:        model,
-		currentParts: make(map[int]gollem.ModelResponsePart),
+		currentParts: make(map[int]core.ModelResponsePart),
 		argsBuffers:  make(map[int]*strings.Builder),
-		stopReason:   gollem.FinishReasonStop,
+		stopReason:   core.FinishReasonStop,
 	}
 }
 
@@ -43,7 +43,7 @@ type sseEvent struct {
 }
 
 // Next returns the next stream event.
-func (s *streamedResponse) Next() (gollem.ModelResponseStreamEvent, error) {
+func (s *streamedResponse) Next() (core.ModelResponseStreamEvent, error) {
 	for {
 		if s.done {
 			return nil, io.EOF
@@ -98,7 +98,7 @@ func (s *streamedResponse) readSSEEvent() (*sseEvent, error) {
 
 // processSSEEvent converts an SSE event into a gollem stream event.
 // Returns false if the event doesn't map to a gollem event.
-func (s *streamedResponse) processSSEEvent(event *sseEvent) (gollem.ModelResponseStreamEvent, bool) {
+func (s *streamedResponse) processSSEEvent(event *sseEvent) (core.ModelResponseStreamEvent, bool) {
 	switch event.Event {
 	case "message_start":
 		var msg struct {
@@ -132,18 +132,18 @@ func (s *streamedResponse) processSSEEvent(event *sseEvent) (gollem.ModelRespons
 			return nil, false
 		}
 
-		var part gollem.ModelResponsePart
+		var part core.ModelResponsePart
 		switch blockType.Type {
 		case "text":
-			part = gollem.TextPart{Content: blockType.Text}
+			part = core.TextPart{Content: blockType.Text}
 		case "tool_use":
-			part = gollem.ToolCallPart{
+			part = core.ToolCallPart{
 				ToolName:   blockType.Name,
 				ToolCallID: blockType.ID,
 			}
 			s.argsBuffers[block.Index] = &strings.Builder{}
 		case "thinking":
-			part = gollem.ThinkingPart{
+			part = core.ThinkingPart{
 				Content:   blockType.Thinking,
 				Signature: blockType.Signature,
 			}
@@ -152,7 +152,7 @@ func (s *streamedResponse) processSSEEvent(event *sseEvent) (gollem.ModelRespons
 		}
 
 		s.currentParts[block.Index] = part
-		return gollem.PartStartEvent{Index: block.Index, Part: part}, true
+		return core.PartStartEvent{Index: block.Index, Part: part}, true
 
 	case "content_block_delta":
 		var delta struct {
@@ -171,32 +171,32 @@ func (s *streamedResponse) processSSEEvent(event *sseEvent) (gollem.ModelRespons
 		switch delta.Delta.Type {
 		case "text_delta":
 			// Update current text part.
-			if tp, ok := s.currentParts[delta.Index].(gollem.TextPart); ok {
+			if tp, ok := s.currentParts[delta.Index].(core.TextPart); ok {
 				tp.Content += delta.Delta.Text
 				s.currentParts[delta.Index] = tp
 			}
-			return gollem.PartDeltaEvent{
+			return core.PartDeltaEvent{
 				Index: delta.Index,
-				Delta: gollem.TextPartDelta{ContentDelta: delta.Delta.Text},
+				Delta: core.TextPartDelta{ContentDelta: delta.Delta.Text},
 			}, true
 
 		case "input_json_delta":
 			if buf, ok := s.argsBuffers[delta.Index]; ok {
 				buf.WriteString(delta.Delta.PartialJSON)
 			}
-			return gollem.PartDeltaEvent{
+			return core.PartDeltaEvent{
 				Index: delta.Index,
-				Delta: gollem.ToolCallPartDelta{ArgsJSONDelta: delta.Delta.PartialJSON},
+				Delta: core.ToolCallPartDelta{ArgsJSONDelta: delta.Delta.PartialJSON},
 			}, true
 
 		case "thinking_delta":
-			if tp, ok := s.currentParts[delta.Index].(gollem.ThinkingPart); ok {
+			if tp, ok := s.currentParts[delta.Index].(core.ThinkingPart); ok {
 				tp.Content += delta.Delta.Thinking
 				s.currentParts[delta.Index] = tp
 			}
-			return gollem.PartDeltaEvent{
+			return core.PartDeltaEvent{
 				Index: delta.Index,
-				Delta: gollem.ThinkingPartDelta{ContentDelta: delta.Delta.Thinking},
+				Delta: core.ThinkingPartDelta{ContentDelta: delta.Delta.Thinking},
 			}, true
 		}
 		return nil, false
@@ -212,7 +212,7 @@ func (s *streamedResponse) processSSEEvent(event *sseEvent) (gollem.ModelRespons
 		// Finalize the part.
 		if part, ok := s.currentParts[block.Index]; ok {
 			// For tool calls, set the accumulated args JSON.
-			if tc, ok := part.(gollem.ToolCallPart); ok {
+			if tc, ok := part.(core.ToolCallPart); ok {
 				if buf, ok := s.argsBuffers[block.Index]; ok {
 					tc.ArgsJSON = buf.String()
 					if tc.ArgsJSON == "" {
@@ -226,7 +226,7 @@ func (s *streamedResponse) processSSEEvent(event *sseEvent) (gollem.ModelRespons
 			delete(s.currentParts, block.Index)
 		}
 
-		return gollem.PartEndEvent{Index: block.Index}, true
+		return core.PartEndEvent{Index: block.Index}, true
 
 	case "message_delta":
 		var md struct {
@@ -257,8 +257,8 @@ func (s *streamedResponse) processSSEEvent(event *sseEvent) (gollem.ModelRespons
 }
 
 // Response returns the complete ModelResponse built from the stream.
-func (s *streamedResponse) Response() *gollem.ModelResponse {
-	return &gollem.ModelResponse{
+func (s *streamedResponse) Response() *core.ModelResponse {
+	return &core.ModelResponse{
 		Parts:        s.parts,
 		Usage:        s.usage,
 		ModelName:    s.model,
@@ -268,7 +268,7 @@ func (s *streamedResponse) Response() *gollem.ModelResponse {
 }
 
 // Usage returns the current usage information.
-func (s *streamedResponse) Usage() gollem.Usage {
+func (s *streamedResponse) Usage() core.Usage {
 	return s.usage
 }
 
@@ -277,5 +277,5 @@ func (s *streamedResponse) Close() error {
 	return s.body.Close()
 }
 
-// Verify streamedResponse implements gollem.StreamedResponse.
-var _ gollem.StreamedResponse = (*streamedResponse)(nil)
+// Verify streamedResponse implements core.StreamedResponse.
+var _ core.StreamedResponse = (*streamedResponse)(nil)

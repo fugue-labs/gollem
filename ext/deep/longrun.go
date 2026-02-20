@@ -3,15 +3,15 @@ package deep
 import (
 	"context"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
-// LongRunAgent wraps a gollem.Agent with deep capabilities for long-running tasks.
+// LongRunAgent wraps a core.Agent with deep capabilities for long-running tasks.
 type LongRunAgent[T any] struct {
-	model          gollem.Model
-	agentOpts      []gollem.AgentOption[T]
+	model          core.Model
+	agentOpts      []core.AgentOption[T]
 	contextManager *ContextManager
-	planningTool   *gollem.Tool
+	planningTool   *core.Tool
 }
 
 // LongRunOption configures the long-running agent.
@@ -21,7 +21,7 @@ type longRunConfig[T any] struct {
 	contextWindow    int
 	planningEnabled  bool
 	contextOpts      []ContextOption
-	agentOpts        []gollem.AgentOption[T]
+	agentOpts        []core.AgentOption[T]
 }
 
 // WithContextWindow sets the max context window size for automatic compression.
@@ -46,14 +46,14 @@ func WithLongRunContextOptions[T any](opts ...ContextOption) LongRunOption[T] {
 }
 
 // WithLongRunAgentOptions passes additional agent options to the underlying agent.
-func WithLongRunAgentOptions[T any](opts ...gollem.AgentOption[T]) LongRunOption[T] {
+func WithLongRunAgentOptions[T any](opts ...core.AgentOption[T]) LongRunOption[T] {
 	return func(c *longRunConfig[T]) {
 		c.agentOpts = opts
 	}
 }
 
 // NewLongRunAgent creates an agent configured for long-running operations.
-func NewLongRunAgent[T any](model gollem.Model, opts ...LongRunOption[T]) *LongRunAgent[T] {
+func NewLongRunAgent[T any](model core.Model, opts ...LongRunOption[T]) *LongRunAgent[T] {
 	cfg := &longRunConfig[T]{
 		contextWindow: 100000,
 	}
@@ -80,19 +80,19 @@ func NewLongRunAgent[T any](model gollem.Model, opts ...LongRunOption[T]) *LongR
 }
 
 // Run executes the long-running agent with all deep capabilities active.
-func (a *LongRunAgent[T]) Run(ctx context.Context, prompt string, opts ...gollem.RunOption) (*gollem.RunResult[T], error) {
+func (a *LongRunAgent[T]) Run(ctx context.Context, prompt string, opts ...core.RunOption) (*core.RunResult[T], error) {
 	// Build agent options.
-	agentOpts := make([]gollem.AgentOption[T], 0, len(a.agentOpts)+3)
+	agentOpts := make([]core.AgentOption[T], 0, len(a.agentOpts)+3)
 	agentOpts = append(agentOpts, a.agentOpts...)
 
 	// Add context management as a history processor.
-	agentOpts = append(agentOpts, gollem.WithHistoryProcessor[T](a.contextManager.AsHistoryProcessor()))
+	agentOpts = append(agentOpts, core.WithHistoryProcessor[T](a.contextManager.AsHistoryProcessor()))
 
 	// Add planning tool if enabled.
 	if a.planningTool != nil {
-		agentOpts = append(agentOpts, gollem.WithTools[T](*a.planningTool))
+		agentOpts = append(agentOpts, core.WithTools[T](*a.planningTool))
 	}
 
-	agent := gollem.NewAgent[T](a.model, agentOpts...)
+	agent := core.NewAgent[T](a.model, agentOpts...)
 	return agent.Run(ctx, prompt, opts...)
 }

@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // rateLimiter implements a token bucket rate limiter using standard library primitives.
@@ -68,7 +68,7 @@ func RateLimitMiddleware(requestsPerSecond float64, burst int) StreamFunc {
 
 	return StreamFunc{
 		Request: func(next RequestFunc) RequestFunc {
-			return func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+			return func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 				if err := rl.wait(ctx); err != nil {
 					return nil, err
 				}
@@ -76,7 +76,7 @@ func RateLimitMiddleware(requestsPerSecond float64, burst int) StreamFunc {
 			}
 		},
 		Stream: func(next StreamRequestFunc) StreamRequestFunc {
-			return func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (gollem.StreamedResponse, error) {
+			return func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (core.StreamedResponse, error) {
 				if err := rl.wait(ctx); err != nil {
 					return nil, err
 				}

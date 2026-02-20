@@ -5,24 +5,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestTemporalModel_PassThrough(t *testing.T) {
-	model := gollem.NewTestModel(gollem.TextResponse("Hello!"))
+	model := core.NewTestModel(core.TextResponse("Hello!"))
 	tm := NewTemporalModel(model, "test-agent", DefaultActivityConfig())
 
-	messages := []gollem.ModelMessage{
-		gollem.ModelRequest{
-			Parts: []gollem.ModelRequestPart{
-				gollem.UserPromptPart{Content: "Hello"},
+	messages := []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.UserPromptPart{Content: "Hello"},
 			},
 			Timestamp: time.Now(),
 		},
 	}
 
 	// Outside a workflow, should delegate directly.
-	resp, err := tm.Request(context.Background(), messages, nil, &gollem.ModelRequestParameters{
+	resp, err := tm.Request(context.Background(), messages, nil, &core.ModelRequestParameters{
 		AllowTextOutput: true,
 	})
 	if err != nil {
@@ -34,7 +34,7 @@ func TestTemporalModel_PassThrough(t *testing.T) {
 }
 
 func TestTemporalModel_ModelName(t *testing.T) {
-	model := gollem.NewTestModel(gollem.TextResponse("Hi"))
+	model := core.NewTestModel(core.TextResponse("Hi"))
 	tm := NewTemporalModel(model, "my-agent", DefaultActivityConfig())
 
 	if name := tm.ModelName(); name != "test-model" {
@@ -43,7 +43,7 @@ func TestTemporalModel_ModelName(t *testing.T) {
 }
 
 func TestTemporalModel_ActivityNames(t *testing.T) {
-	model := gollem.NewTestModel(gollem.TextResponse("Hi"))
+	model := core.NewTestModel(core.TextResponse("Hi"))
 	tm := NewTemporalModel(model, "my-agent", DefaultActivityConfig())
 
 	reqName := tm.ModelRequestActivityName()
@@ -58,19 +58,19 @@ func TestTemporalModel_ActivityNames(t *testing.T) {
 }
 
 func TestTemporalModel_ModelRequestActivity(t *testing.T) {
-	model := gollem.NewTestModel(gollem.TextResponse("Activity response"))
+	model := core.NewTestModel(core.TextResponse("Activity response"))
 	tm := NewTemporalModel(model, "test-agent", DefaultActivityConfig())
 
 	params := requestParams{
-		Messages: []gollem.ModelMessage{
-			gollem.ModelRequest{
-				Parts: []gollem.ModelRequestPart{
-					gollem.UserPromptPart{Content: "Hello"},
+		Messages: []core.ModelMessage{
+			core.ModelRequest{
+				Parts: []core.ModelRequestPart{
+					core.UserPromptPart{Content: "Hello"},
 				},
 				Timestamp: time.Now(),
 			},
 		},
-		Parameters: &gollem.ModelRequestParameters{
+		Parameters: &core.ModelRequestParameters{
 			AllowTextOutput: true,
 		},
 	}
@@ -95,11 +95,11 @@ func TestDefaultActivityConfig(t *testing.T) {
 }
 
 func TestCompletedStream(t *testing.T) {
-	resp := &gollem.ModelResponse{
-		Parts: []gollem.ModelResponsePart{
-			gollem.TextPart{Content: "Completed"},
+	resp := &core.ModelResponse{
+		Parts: []core.ModelResponsePart{
+			core.TextPart{Content: "Completed"},
 		},
-		Usage: gollem.Usage{InputTokens: 10, OutputTokens: 5},
+		Usage: core.Usage{InputTokens: 10, OutputTokens: 5},
 	}
 
 	stream := &completedStream{response: resp}

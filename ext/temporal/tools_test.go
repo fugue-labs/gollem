@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestTemporalizeTool_Wrapping(t *testing.T) {
@@ -13,7 +13,7 @@ func TestTemporalizeTool_Wrapping(t *testing.T) {
 		Query string `json:"query"`
 	}
 
-	tool := gollem.FuncTool[Params]("search", "Search for things",
+	tool := core.FuncTool[Params]("search", "Search for things",
 		func(_ context.Context, p Params) (string, error) {
 			return "found: " + p.Query, nil
 		},
@@ -49,9 +49,9 @@ func TestTemporalizeTool_Wrapping(t *testing.T) {
 func TestTemporalizeTool_RetryError(t *testing.T) {
 	type Params struct{}
 
-	tool := gollem.FuncTool[Params]("risky", "A risky tool",
+	tool := core.FuncTool[Params]("risky", "A risky tool",
 		func(_ context.Context, _ Params) (string, error) {
-			return "", gollem.NewModelRetryError("try again with different input")
+			return "", core.NewModelRetryError("try again with different input")
 		},
 	)
 
@@ -75,7 +75,7 @@ func TestTemporalizeTool_RetryError(t *testing.T) {
 func TestTemporalizeTool_Error(t *testing.T) {
 	type Params struct{}
 
-	tool := gollem.FuncTool[Params]("failing", "A failing tool",
+	tool := core.FuncTool[Params]("failing", "A failing tool",
 		func(_ context.Context, _ Params) (string, error) {
 			return "", context.DeadlineExceeded
 		},
@@ -98,10 +98,10 @@ func TestTemporalizeTool_Error(t *testing.T) {
 func TestTemporalizeTools_Multiple(t *testing.T) {
 	type Params struct{}
 
-	tools := []gollem.Tool{
-		gollem.FuncTool[Params]("tool1", "Tool 1",
+	tools := []core.Tool{
+		core.FuncTool[Params]("tool1", "Tool 1",
 			func(_ context.Context, _ Params) (string, error) { return "1", nil }),
-		gollem.FuncTool[Params]("tool2", "Tool 2",
+		core.FuncTool[Params]("tool2", "Tool 2",
 			func(_ context.Context, _ Params) (string, error) { return "2", nil }),
 	}
 

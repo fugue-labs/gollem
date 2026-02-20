@@ -1,4 +1,4 @@
-// Package anthropic provides a gollem.Model implementation for Anthropic's
+// Package anthropic provides a core.Model implementation for Anthropic's
 // Messages API, supporting Claude models with tool use, extended thinking,
 // and server-sent event streaming.
 //

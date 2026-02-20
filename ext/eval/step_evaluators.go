@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // maxStepsEvaluator fails if the agent takes more than N steps.
@@ -17,7 +17,7 @@ func MaxStepsEvaluator(maxSteps int) StepEvaluator {
 	return &maxStepsEvaluator{maxSteps: maxSteps}
 }
 
-func (e *maxStepsEvaluator) EvaluateStep(_ context.Context, _ *gollem.ModelResponse, _ int, state *StepState) (*Score, error) {
+func (e *maxStepsEvaluator) EvaluateStep(_ context.Context, _ *core.ModelResponse, _ int, state *StepState) (*Score, error) {
 	if state.TotalSteps > e.maxSteps {
 		return &Score{
 			Value:  0.0,
@@ -39,11 +39,11 @@ func NoRetryEvaluator() StepEvaluator {
 	return &noRetryEvaluator{}
 }
 
-func (e *noRetryEvaluator) EvaluateStep(_ context.Context, _ *gollem.ModelResponse, _ int, state *StepState) (*Score, error) {
+func (e *noRetryEvaluator) EvaluateStep(_ context.Context, _ *core.ModelResponse, _ int, state *StepState) (*Score, error) {
 	for _, msg := range state.Messages {
-		if req, ok := msg.(gollem.ModelRequest); ok {
+		if req, ok := msg.(core.ModelRequest); ok {
 			for _, part := range req.Parts {
-				if _, isRetry := part.(gollem.RetryPromptPart); isRetry {
+				if _, isRetry := part.(core.RetryPromptPart); isRetry {
 					return &Score{
 						Value:  0.0,
 						Reason: "conversation contains a retry prompt",

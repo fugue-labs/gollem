@@ -6,15 +6,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestCacheMiddleware_CacheHit(t *testing.T) {
 	callCount := 0
-	handler := RequestFunc(func(_ context.Context, _ []gollem.ModelMessage, _ *gollem.ModelSettings, _ *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+	handler := RequestFunc(func(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (*core.ModelResponse, error) {
 		callCount++
-		return &gollem.ModelResponse{
-			Parts:     []gollem.ModelResponsePart{gollem.TextPart{Content: "hello"}},
+		return &core.ModelResponse{
+			Parts:     []core.ModelResponsePart{core.TextPart{Content: "hello"}},
 			ModelName: "test-model",
 		}, nil
 	})
@@ -22,9 +22,9 @@ func TestCacheMiddleware_CacheHit(t *testing.T) {
 	mw := CacheMiddleware(5 * time.Minute)
 	wrapped := mw.WrapRequest(handler)
 
-	messages := []gollem.ModelMessage{
-		gollem.ModelRequest{Parts: []gollem.ModelRequestPart{
-			gollem.UserPromptPart{Content: "say hello"},
+	messages := []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{
+			core.UserPromptPart{Content: "say hello"},
 		}},
 	}
 
@@ -54,11 +54,11 @@ func TestCacheMiddleware_CacheHit(t *testing.T) {
 
 func TestCacheMiddleware_CacheMiss(t *testing.T) {
 	callCount := 0
-	handler := RequestFunc(func(_ context.Context, messages []gollem.ModelMessage, _ *gollem.ModelSettings, _ *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+	handler := RequestFunc(func(_ context.Context, messages []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (*core.ModelResponse, error) {
 		callCount++
 		// Return different responses for different inputs.
-		return &gollem.ModelResponse{
-			Parts:     []gollem.ModelResponsePart{gollem.TextPart{Content: "response"}},
+		return &core.ModelResponse{
+			Parts:     []core.ModelResponsePart{core.TextPart{Content: "response"}},
 			ModelName: "test-model",
 		}, nil
 	})
@@ -66,14 +66,14 @@ func TestCacheMiddleware_CacheMiss(t *testing.T) {
 	mw := CacheMiddleware(5 * time.Minute)
 	wrapped := mw.WrapRequest(handler)
 
-	messages1 := []gollem.ModelMessage{
-		gollem.ModelRequest{Parts: []gollem.ModelRequestPart{
-			gollem.UserPromptPart{Content: "first request"},
+	messages1 := []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{
+			core.UserPromptPart{Content: "first request"},
 		}},
 	}
-	messages2 := []gollem.ModelMessage{
-		gollem.ModelRequest{Parts: []gollem.ModelRequestPart{
-			gollem.UserPromptPart{Content: "second request"},
+	messages2 := []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{
+			core.UserPromptPart{Content: "second request"},
 		}},
 	}
 
@@ -98,10 +98,10 @@ func TestCacheMiddleware_CacheMiss(t *testing.T) {
 
 func TestCacheMiddleware_Expiration(t *testing.T) {
 	callCount := 0
-	handler := RequestFunc(func(_ context.Context, _ []gollem.ModelMessage, _ *gollem.ModelSettings, _ *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+	handler := RequestFunc(func(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (*core.ModelResponse, error) {
 		callCount++
-		return &gollem.ModelResponse{
-			Parts:     []gollem.ModelResponsePart{gollem.TextPart{Content: "hello"}},
+		return &core.ModelResponse{
+			Parts:     []core.ModelResponsePart{core.TextPart{Content: "hello"}},
 			ModelName: "test-model",
 		}, nil
 	})
@@ -110,9 +110,9 @@ func TestCacheMiddleware_Expiration(t *testing.T) {
 	mw := CacheMiddleware(50 * time.Millisecond)
 	wrapped := mw.WrapRequest(handler)
 
-	messages := []gollem.ModelMessage{
-		gollem.ModelRequest{Parts: []gollem.ModelRequestPart{
-			gollem.UserPromptPart{Content: "say hello"},
+	messages := []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{
+			core.UserPromptPart{Content: "say hello"},
 		}},
 	}
 
@@ -139,9 +139,9 @@ func TestCacheMiddleware_Expiration(t *testing.T) {
 }
 
 func TestCacheMiddleware_Stats(t *testing.T) {
-	handler := RequestFunc(func(_ context.Context, _ []gollem.ModelMessage, _ *gollem.ModelSettings, _ *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
-		return &gollem.ModelResponse{
-			Parts:     []gollem.ModelResponsePart{gollem.TextPart{Content: "ok"}},
+	handler := RequestFunc(func(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (*core.ModelResponse, error) {
+		return &core.ModelResponse{
+			Parts:     []core.ModelResponsePart{core.TextPart{Content: "ok"}},
 			ModelName: "test-model",
 		}, nil
 	})
@@ -149,9 +149,9 @@ func TestCacheMiddleware_Stats(t *testing.T) {
 	mw, stats := CacheMiddlewareWithStats(5 * time.Minute)
 	wrapped := mw.WrapRequest(handler)
 
-	messages := []gollem.ModelMessage{
-		gollem.ModelRequest{Parts: []gollem.ModelRequestPart{
-			gollem.UserPromptPart{Content: "hello"},
+	messages := []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{
+			core.UserPromptPart{Content: "hello"},
 		}},
 	}
 
@@ -190,7 +190,7 @@ func TestCacheMiddleware_Stats(t *testing.T) {
 
 func TestCacheMiddleware_StreamPassthrough(t *testing.T) {
 	streamCallCount := 0
-	streamHandler := StreamRequestFunc(func(_ context.Context, _ []gollem.ModelMessage, _ *gollem.ModelSettings, _ *gollem.ModelRequestParameters) (gollem.StreamedResponse, error) {
+	streamHandler := StreamRequestFunc(func(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (core.StreamedResponse, error) {
 		streamCallCount++
 		return nil, errors.New("not implemented")
 	})
@@ -206,9 +206,9 @@ func TestCacheMiddleware_StreamPassthrough(t *testing.T) {
 
 	wrappedStream := sm.WrapStreamRequest(streamHandler)
 
-	messages := []gollem.ModelMessage{
-		gollem.ModelRequest{Parts: []gollem.ModelRequestPart{
-			gollem.UserPromptPart{Content: "stream this"},
+	messages := []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{
+			core.UserPromptPart{Content: "stream this"},
 		}},
 	}
 
@@ -223,13 +223,13 @@ func TestCacheMiddleware_StreamPassthrough(t *testing.T) {
 
 func TestCacheMiddleware_ErrorNotCached(t *testing.T) {
 	callCount := 0
-	handler := RequestFunc(func(_ context.Context, _ []gollem.ModelMessage, _ *gollem.ModelSettings, _ *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+	handler := RequestFunc(func(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (*core.ModelResponse, error) {
 		callCount++
 		if callCount == 1 {
 			return nil, errors.New("transient error")
 		}
-		return &gollem.ModelResponse{
-			Parts:     []gollem.ModelResponsePart{gollem.TextPart{Content: "ok"}},
+		return &core.ModelResponse{
+			Parts:     []core.ModelResponsePart{core.TextPart{Content: "ok"}},
 			ModelName: "test-model",
 		}, nil
 	})
@@ -237,9 +237,9 @@ func TestCacheMiddleware_ErrorNotCached(t *testing.T) {
 	mw := CacheMiddleware(5 * time.Minute)
 	wrapped := mw.WrapRequest(handler)
 
-	messages := []gollem.ModelMessage{
-		gollem.ModelRequest{Parts: []gollem.ModelRequestPart{
-			gollem.UserPromptPart{Content: "hello"},
+	messages := []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{
+			core.UserPromptPart{Content: "hello"},
 		}},
 	}
 

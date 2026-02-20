@@ -1,11 +1,11 @@
 // Package temporal provides Temporal durable execution for gollem agents.
-// It wraps standard gollem.Agent runs as Temporal workflows, with model requests
+// It wraps standard core.Agent runs as Temporal workflows, with model requests
 // and tool calls executed as Temporal activities for automatic checkpointing,
 // fault tolerance, and replay.
 //
 // Usage:
 //
-//	agent := gollem.NewAgent[string](model, gollem.WithTools(myTool))
+//	agent := core.NewAgent[string](model, core.WithTools(myTool))
 //	temporalAgent := temporal.NewTemporalAgent(agent, temporal.WithName("my-agent"))
 //
 //	// In a Temporal workflow:

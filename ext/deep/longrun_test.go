@@ -4,11 +4,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestLongRunAgent_Basic(t *testing.T) {
-	model := gollem.NewTestModel(gollem.TextResponse("Hello from long run!"))
+	model := core.NewTestModel(core.TextResponse("Hello from long run!"))
 	agent := NewLongRunAgent[string](model)
 
 	result, err := agent.Run(context.Background(), "Hello")
@@ -21,12 +21,12 @@ func TestLongRunAgent_Basic(t *testing.T) {
 }
 
 func TestLongRunAgent_WithPlanning(t *testing.T) {
-	model := gollem.NewTestModel(
-		gollem.ToolCallResponseWithID("planning", `{
+	model := core.NewTestModel(
+		core.ToolCallResponseWithID("planning", `{
 			"command": "create",
 			"tasks": [{"id": "1", "description": "Step 1", "status": "pending"}]
 		}`, "tc1"),
-		gollem.TextResponse("Plan created and executed."),
+		core.TextResponse("Plan created and executed."),
 	)
 
 	agent := NewLongRunAgent[string](model,
@@ -43,7 +43,7 @@ func TestLongRunAgent_WithPlanning(t *testing.T) {
 }
 
 func TestLongRunAgent_WithContextManagement(t *testing.T) {
-	model := gollem.NewTestModel(gollem.TextResponse("Response after context management"))
+	model := core.NewTestModel(core.TextResponse("Response after context management"))
 
 	agent := NewLongRunAgent[string](model,
 		WithContextWindow[string](100000),
@@ -63,12 +63,12 @@ func TestLongRunAgent_WithContextManagement(t *testing.T) {
 }
 
 func TestLongRunAgent_WithAgentOptions(t *testing.T) {
-	model := gollem.NewTestModel(gollem.TextResponse("With options"))
+	model := core.NewTestModel(core.TextResponse("With options"))
 
 	type Params struct {
 		Q string `json:"q"`
 	}
-	tool := gollem.FuncTool[Params]("test_tool", "A test tool",
+	tool := core.FuncTool[Params]("test_tool", "A test tool",
 		func(_ context.Context, p Params) (string, error) {
 			return "result", nil
 		},
@@ -76,8 +76,8 @@ func TestLongRunAgent_WithAgentOptions(t *testing.T) {
 
 	agent := NewLongRunAgent[string](model,
 		WithLongRunAgentOptions[string](
-			gollem.WithTools[string](tool),
-			gollem.WithSystemPrompt[string]("You are a test agent."),
+			core.WithTools[string](tool),
+			core.WithSystemPrompt[string]("You are a test agent."),
 		),
 	)
 

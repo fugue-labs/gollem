@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestCheckpoint_SaveLoad(t *testing.T) {
@@ -16,15 +16,15 @@ func TestCheckpoint_SaveLoad(t *testing.T) {
 	}
 
 	cp := &Checkpoint{
-		Messages: []gollem.ModelMessage{
-			gollem.ModelRequest{
-				Parts: []gollem.ModelRequestPart{
-					gollem.UserPromptPart{Content: "Hello"},
+		Messages: []core.ModelMessage{
+			core.ModelRequest{
+				Parts: []core.ModelRequestPart{
+					core.UserPromptPart{Content: "Hello"},
 				},
 				Timestamp: time.Now(),
 			},
 		},
-		Usage: gollem.RunUsage{
+		Usage: core.RunUsage{
 			Requests: 1,
 		},
 		RunID:     "run-123",
@@ -160,10 +160,10 @@ func TestResumeFromCheckpoint(t *testing.T) {
 
 	ctx := context.Background()
 	cp := &Checkpoint{
-		Messages: []gollem.ModelMessage{
-			gollem.ModelRequest{
-				Parts: []gollem.ModelRequestPart{
-					gollem.UserPromptPart{Content: "Previous conversation"},
+		Messages: []core.ModelMessage{
+			core.ModelRequest{
+				Parts: []core.ModelRequestPart{
+					core.UserPromptPart{Content: "Previous conversation"},
 				},
 				Timestamp: time.Now(),
 			},
@@ -212,9 +212,9 @@ func TestCheckpoint_GetHistory(t *testing.T) {
 			RunID:     "history-run",
 			StepIndex: i + 1,
 			Timestamp: time.Now(),
-			Messages: []gollem.ModelMessage{
-				gollem.ModelRequest{
-					Parts:     []gollem.ModelRequestPart{gollem.UserPromptPart{Content: "step"}},
+			Messages: []core.ModelMessage{
+				core.ModelRequest{
+					Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "step"}},
 					Timestamp: time.Now(),
 				},
 			},
@@ -256,9 +256,9 @@ func TestCheckpoint_ReplayFrom(t *testing.T) {
 			RunID:     "replay-run",
 			StepIndex: i + 1,
 			Timestamp: time.Now(),
-			Messages: []gollem.ModelMessage{
-				gollem.ModelRequest{
-					Parts:     []gollem.ModelRequestPart{gollem.UserPromptPart{Content: "msg at step " + time.Now().String()}},
+			Messages: []core.ModelMessage{
+				core.ModelRequest{
+					Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "msg at step " + time.Now().String()}},
 					Timestamp: time.Now(),
 				},
 			},
@@ -297,9 +297,9 @@ func TestCheckpoint_ForkFrom(t *testing.T) {
 		RunID:     "fork-run",
 		StepIndex: 1,
 		Timestamp: time.Now(),
-		Messages: []gollem.ModelMessage{
-			gollem.ModelRequest{
-				Parts:     []gollem.ModelRequestPart{gollem.UserPromptPart{Content: "original"}},
+		Messages: []core.ModelMessage{
+			core.ModelRequest{
+				Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "original"}},
 				Timestamp: time.Now(),
 			},
 		},
@@ -372,9 +372,9 @@ func TestCheckpoint_ToolState(t *testing.T) {
 
 	// Create a mock stateful tool.
 	mockTool := &mockStatefulTool{state: map[string]any{"plan": "step 1"}}
-	tools := []gollem.Tool{
+	tools := []core.Tool{
 		{
-			Definition: gollem.ToolDefinition{Name: "planner"},
+			Definition: core.ToolDefinition{Name: "planner"},
 			Stateful:   mockTool,
 		},
 	}
@@ -416,7 +416,7 @@ func TestCheckpoint_ToolState(t *testing.T) {
 	}
 }
 
-// mockStatefulTool implements gollem.StatefulTool for testing.
+// mockStatefulTool implements core.StatefulTool for testing.
 type mockStatefulTool struct {
 	state map[string]any
 }

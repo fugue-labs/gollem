@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // LoggingMiddleware logs each model request and response using slog.
@@ -24,7 +24,7 @@ func NewLogging(logger *slog.Logger, level slog.Level) *LoggingMiddleware {
 
 // WrapRequest implements Middleware.
 func (l *LoggingMiddleware) WrapRequest(next RequestFunc) RequestFunc {
-	return func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+	return func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 		start := time.Now()
 
 		l.Logger.Log(ctx, l.Level, "model request started",

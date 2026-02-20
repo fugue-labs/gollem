@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 	"github.com/fugue-labs/gollem/provider/anthropic"
 )
 
@@ -28,7 +28,7 @@ func main() {
 	model := anthropic.New()
 
 	// Create a tool that the agent can call.
-	weatherTool := gollem.FuncTool[WeatherParams](
+	weatherTool := core.FuncTool[WeatherParams](
 		"get_weather",
 		"Get the current weather for a city",
 		func(ctx context.Context, params WeatherParams) (string, error) {
@@ -38,9 +38,9 @@ func main() {
 	)
 
 	// Create an agent with the tool.
-	agent := gollem.NewAgent[WeatherResult](model,
-		gollem.WithSystemPrompt[WeatherResult]("You are a helpful weather assistant. Use the get_weather tool to look up weather, then provide a summary with clothing suggestions."),
-		gollem.WithTools[WeatherResult](weatherTool),
+	agent := core.NewAgent[WeatherResult](model,
+		core.WithSystemPrompt[WeatherResult]("You are a helpful weather assistant. Use the get_weather tool to look up weather, then provide a summary with clothing suggestions."),
+		core.WithTools[WeatherResult](weatherTool),
 	)
 
 	result, err := agent.Run(context.Background(), "What's the weather like in San Francisco?")

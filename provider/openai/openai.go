@@ -1,4 +1,4 @@
-// Package openai provides a gollem.Model implementation for OpenAI's
+// Package openai provides a core.Model implementation for OpenAI's
 // Chat Completions API, supporting GPT and O-series models with tool use,
 // streaming, and native structured output.
 package openai
@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // Model constants for OpenAI models.
@@ -31,7 +31,7 @@ const (
 	chatCompletionsEndpoint = "/v1/chat/completions"
 )
 
-// Provider implements gollem.Model for OpenAI's Chat Completions API.
+// Provider implements core.Model for OpenAI's Chat Completions API.
 type Provider struct {
 	apiKey     string
 	model      string
@@ -109,7 +109,7 @@ func (p *Provider) ModelName() string {
 }
 
 // Request sends messages to OpenAI and returns a complete response.
-func (p *Provider) Request(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+func (p *Provider) Request(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 	req, err := buildRequest(messages, settings, params, p.model, p.maxTokens, false)
 	if err != nil {
 		return nil, fmt.Errorf("openai: failed to build request: %w", err)
@@ -134,7 +134,7 @@ func (p *Provider) Request(ctx context.Context, messages []gollem.ModelMessage, 
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, &gollem.ModelHTTPError{
+		return nil, &core.ModelHTTPError{
 			Message:    "openai API error: " + string(respBody),
 			StatusCode: resp.StatusCode,
 			Body:       string(respBody),
@@ -151,7 +151,7 @@ func (p *Provider) Request(ctx context.Context, messages []gollem.ModelMessage, 
 }
 
 // RequestStream sends messages and returns a streaming response.
-func (p *Provider) RequestStream(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (gollem.StreamedResponse, error) {
+func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (core.StreamedResponse, error) {
 	req, err := buildRequest(messages, settings, params, p.model, p.maxTokens, true)
 	if err != nil {
 		return nil, fmt.Errorf("openai: failed to build request: %w", err)
@@ -176,7 +176,7 @@ func (p *Provider) RequestStream(ctx context.Context, messages []gollem.ModelMes
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, &gollem.ModelHTTPError{
+		return nil, &core.ModelHTTPError{
 			Message:    "openai API error: " + string(respBody),
 			StatusCode: resp.StatusCode,
 			Body:       string(respBody),
@@ -192,5 +192,5 @@ func (p *Provider) setHeaders(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
 }
 
-// Verify Provider implements gollem.Model.
-var _ gollem.Model = (*Provider)(nil)
+// Verify Provider implements core.Model.
+var _ core.Model = (*Provider)(nil)

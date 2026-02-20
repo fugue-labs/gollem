@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 	"github.com/fugue-labs/gollem/ext/deep"
 )
 
@@ -24,11 +24,11 @@ type AnalysisResult struct {
 
 func main() {
 	// Create a TestModel for demonstrating the context manager.
-	model := gollem.NewTestModel(
+	model := core.NewTestModel(
 		// First response: model calls a tool that returns a large result.
-		gollem.ToolCallResponse("analyze_data", `{"dataset":"sales_q4"}`),
+		core.ToolCallResponse("analyze_data", `{"dataset":"sales_q4"}`),
 		// Second response: model produces the final result.
-		gollem.ToolCallResponse("final_result", `{
+		core.ToolCallResponse("final_result", `{
 			"summary": "Q4 sales data analyzed across 1000 records",
 			"item_count": 1000,
 			"conclusion": "Revenue increased 15% quarter-over-quarter"
@@ -36,7 +36,7 @@ func main() {
 	)
 
 	// Create a tool that simulates returning a large result.
-	analyzeTool := gollem.FuncTool[struct {
+	analyzeTool := core.FuncTool[struct {
 		Dataset string `json:"dataset" jsonschema:"description=Name of the dataset to analyze"`
 	}](
 		"analyze_data",
@@ -65,10 +65,10 @@ func main() {
 	// Create an agent with the context manager as a history processor.
 	// The ContextManager will automatically compress context when it
 	// approaches the token limit.
-	agent := gollem.NewAgent[AnalysisResult](model,
-		gollem.WithSystemPrompt[AnalysisResult]("You are a data analyst. Analyze datasets and provide summaries."),
-		gollem.WithTools[AnalysisResult](analyzeTool),
-		gollem.WithHistoryProcessor[AnalysisResult](cm.AsHistoryProcessor()),
+	agent := core.NewAgent[AnalysisResult](model,
+		core.WithSystemPrompt[AnalysisResult]("You are a data analyst. Analyze datasets and provide summaries."),
+		core.WithTools[AnalysisResult](analyzeTool),
+		core.WithHistoryProcessor[AnalysisResult](cm.AsHistoryProcessor()),
 	)
 
 	result, err := agent.Run(context.Background(), "Analyze the Q4 sales data and summarize the findings")
@@ -86,8 +86,8 @@ func main() {
 	// and optional planning into a single wrapper.
 	fmt.Println("\n=== LongRunAgent Demo ===")
 
-	longModel := gollem.NewTestModel(
-		gollem.ToolCallResponse("final_result", `{
+	longModel := core.NewTestModel(
+		core.ToolCallResponse("final_result", `{
 			"summary": "Comprehensive analysis complete",
 			"item_count": 5000,
 			"conclusion": "All systems nominal"
@@ -98,7 +98,7 @@ func main() {
 		deep.WithContextWindow[AnalysisResult](100000),
 		deep.WithPlanningEnabled[AnalysisResult](),
 		deep.WithLongRunAgentOptions[AnalysisResult](
-			gollem.WithSystemPrompt[AnalysisResult]("You are a thorough analyst. Plan your work, then execute."),
+			core.WithSystemPrompt[AnalysisResult]("You are a thorough analyst. Plan your work, then execute."),
 		),
 	)
 

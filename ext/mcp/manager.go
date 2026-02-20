@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // ToolSource is the interface for any MCP client that can provide tools.
@@ -105,9 +105,9 @@ func (m *Manager) RemoveServer(name string) error {
 }
 
 // Tools discovers tools from all registered servers and returns them as
-// gollem.Tool instances with namespaced names (e.g., "server__tool_name").
+// core.Tool instances with namespaced names (e.g., "server__tool_name").
 // Tools are discovered concurrently for efficiency.
-func (m *Manager) Tools(ctx context.Context) ([]gollem.Tool, error) {
+func (m *Manager) Tools(ctx context.Context) ([]core.Tool, error) {
 	m.mu.Lock()
 	servers := make(map[string]ToolSource, len(m.servers))
 	for name, source := range m.servers {
@@ -138,7 +138,7 @@ func (m *Manager) Tools(ctx context.Context) ([]gollem.Tool, error) {
 		close(ch)
 	}()
 
-	var allTools []gollem.Tool
+	var allTools []core.Tool
 	var errs []error
 
 	for r := range ch {
@@ -165,31 +165,31 @@ func (m *Manager) Tools(ctx context.Context) ([]gollem.Tool, error) {
 	return allTools, nil
 }
 
-// convertManagedTool creates a gollem.Tool from an MCP tool definition with
+// convertManagedTool creates a core.Tool from an MCP tool definition with
 // a namespaced name.
-func (m *Manager) convertManagedTool(serverName string, source ToolSource, mt Tool) gollem.Tool {
-	var schema gollem.Schema
+func (m *Manager) convertManagedTool(serverName string, source ToolSource, mt Tool) core.Tool {
+	var schema core.Schema
 	if mt.InputSchema != nil {
 		if err := json.Unmarshal(mt.InputSchema, &schema); err != nil {
 			schema = nil
 		}
 	}
 	if schema == nil {
-		schema = gollem.Schema{"type": "object"}
+		schema = core.Schema{"type": "object"}
 	}
 
 	prefixedName := serverName + m.sep + mt.Name
 
-	def := gollem.ToolDefinition{
+	def := core.ToolDefinition{
 		Name:             prefixedName,
 		Description:      fmt.Sprintf("[%s] %s", serverName, mt.Description),
 		ParametersSchema: schema,
-		Kind:             gollem.ToolKindFunction,
+		Kind:             core.ToolKindFunction,
 	}
 
 	originalName := mt.Name
 
-	handler := func(ctx context.Context, _ *gollem.RunContext, argsJSON string) (any, error) {
+	handler := func(ctx context.Context, _ *core.RunContext, argsJSON string) (any, error) {
 		var args map[string]any
 		if argsJSON != "" && argsJSON != "{}" {
 			if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
@@ -206,13 +206,13 @@ func (m *Manager) convertManagedTool(serverName string, source ToolSource, mt To
 		}
 
 		if result.IsError {
-			return nil, &gollem.ModelRetryError{Message: result.TextContent()}
+			return nil, &core.ModelRetryError{Message: result.TextContent()}
 		}
 
 		return result.TextContent(), nil
 	}
 
-	return gollem.Tool{
+	return core.Tool{
 		Definition: def,
 		Handler:    handler,
 	}

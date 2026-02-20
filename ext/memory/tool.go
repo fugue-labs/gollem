@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // memoryToolParams defines the JSON arguments for the memory tool.
@@ -21,8 +21,8 @@ type memoryToolParams struct {
 // MemoryTool creates a tool that gives agents direct access to a memory store.
 // The tool supports four operations: save, get, search, and delete.
 // An optional namespace scopes all operations to a specific prefix.
-func MemoryTool(store Store, namespace ...string) gollem.Tool {
-	handler := func(ctx context.Context, _ *gollem.RunContext, argsJSON string) (any, error) {
+func MemoryTool(store Store, namespace ...string) core.Tool {
+	handler := func(ctx context.Context, _ *core.RunContext, argsJSON string) (any, error) {
 		var params memoryToolParams
 		if err := json.Unmarshal([]byte(argsJSON), &params); err != nil {
 			return nil, fmt.Errorf("failed to parse memory tool arguments: %w", err)
@@ -87,12 +87,12 @@ func MemoryTool(store Store, namespace ...string) gollem.Tool {
 		}
 	}
 
-	return gollem.Tool{
-		Definition: gollem.ToolDefinition{
+	return core.Tool{
+		Definition: core.ToolDefinition{
 			Name:        "memory",
 			Description: "Store and retrieve information from the persistent memory store. Supports save, get, search, and delete operations.",
-			ParametersSchema: gollem.SchemaFor[memoryToolParams](),
-			Kind:             gollem.ToolKindFunction,
+			ParametersSchema: core.SchemaFor[memoryToolParams](),
+			Kind:             core.ToolKindFunction,
 		},
 		Handler: handler,
 	}

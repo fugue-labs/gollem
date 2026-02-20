@@ -6,14 +6,14 @@ package middleware
 import (
 	"context"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // RequestFunc is the type for a model request handler.
-type RequestFunc func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error)
+type RequestFunc func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error)
 
 // StreamRequestFunc is the type for a streaming model request handler.
-type StreamRequestFunc func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (gollem.StreamedResponse, error)
+type StreamRequestFunc func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (core.StreamedResponse, error)
 
 // Middleware intercepts model requests.
 type Middleware interface {
@@ -62,9 +62,9 @@ func (f StreamFunc) WrapStreamRequest(next StreamRequestFunc) StreamRequestFunc 
 	return next
 }
 
-// wrappedModel applies a middleware chain to a gollem.Model.
+// wrappedModel applies a middleware chain to a core.Model.
 type wrappedModel struct {
-	inner       gollem.Model
+	inner       core.Model
 	middlewares []Middleware
 }
 
@@ -72,7 +72,7 @@ type wrappedModel struct {
 // Middlewares are applied in order: first middleware is outermost (executes first).
 // If a middleware implements StreamMiddleware, it will also be applied to
 // streaming requests via RequestStream.
-func Wrap(model gollem.Model, middlewares ...Middleware) gollem.Model {
+func Wrap(model core.Model, middlewares ...Middleware) core.Model {
 	if len(middlewares) == 0 {
 		return model
 	}
@@ -88,8 +88,8 @@ func (m *wrappedModel) ModelName() string {
 }
 
 // Request sends a request through the middleware chain.
-func (m *wrappedModel) Request(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
-	handler := RequestFunc(func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+func (m *wrappedModel) Request(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
+	handler := RequestFunc(func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 		return m.inner.Request(ctx, messages, settings, params)
 	})
 
@@ -103,8 +103,8 @@ func (m *wrappedModel) Request(ctx context.Context, messages []gollem.ModelMessa
 
 // RequestStream sends a streaming request through the middleware chain.
 // Only middlewares that implement StreamMiddleware are applied.
-func (m *wrappedModel) RequestStream(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (gollem.StreamedResponse, error) {
-	handler := StreamRequestFunc(func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (gollem.StreamedResponse, error) {
+func (m *wrappedModel) RequestStream(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (core.StreamedResponse, error) {
+	handler := StreamRequestFunc(func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (core.StreamedResponse, error) {
 		return m.inner.RequestStream(ctx, messages, settings, params)
 	})
 
@@ -118,5 +118,5 @@ func (m *wrappedModel) RequestStream(ctx context.Context, messages []gollem.Mode
 	return handler(ctx, messages, settings, params)
 }
 
-// Verify wrappedModel implements gollem.Model.
-var _ gollem.Model = (*wrappedModel)(nil)
+// Verify wrappedModel implements core.Model.
+var _ core.Model = (*wrappedModel)(nil)

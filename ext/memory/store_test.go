@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestMemoryStore_PutGet(t *testing.T) {
@@ -298,7 +298,7 @@ func TestMemoryTool_SaveAndRetrieve(t *testing.T) {
 	if tool.Definition.Name != "memory" {
 		t.Errorf("expected tool name 'memory', got %q", tool.Definition.Name)
 	}
-	if tool.Definition.Kind != gollem.ToolKindFunction {
+	if tool.Definition.Kind != core.ToolKindFunction {
 		t.Errorf("expected tool kind 'function', got %q", tool.Definition.Kind)
 	}
 
@@ -308,7 +308,7 @@ func TestMemoryTool_SaveAndRetrieve(t *testing.T) {
 		"key":       "greeting",
 		"value":     `{"text": "hello world"}`,
 	})
-	result, err := tool.Handler(ctx, &gollem.RunContext{}, string(saveArgs))
+	result, err := tool.Handler(ctx, &core.RunContext{}, string(saveArgs))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestMemoryTool_SaveAndRetrieve(t *testing.T) {
 		"operation": "get",
 		"key":       "greeting",
 	})
-	result, err = tool.Handler(ctx, &gollem.RunContext{}, string(getArgs))
+	result, err = tool.Handler(ctx, &core.RunContext{}, string(getArgs))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestMemoryTool_SaveAndRetrieve(t *testing.T) {
 		"operation": "search",
 		"query":     "hello",
 	})
-	result, err = tool.Handler(ctx, &gollem.RunContext{}, string(searchArgs))
+	result, err = tool.Handler(ctx, &core.RunContext{}, string(searchArgs))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +366,7 @@ func TestMemoryTool_SaveAndRetrieve(t *testing.T) {
 		"operation": "delete",
 		"key":       "greeting",
 	})
-	result, err = tool.Handler(ctx, &gollem.RunContext{}, string(deleteArgs))
+	result, err = tool.Handler(ctx, &core.RunContext{}, string(deleteArgs))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func TestMemoryTool_SaveAndRetrieve(t *testing.T) {
 	}
 
 	// Verify deletion.
-	result, err = tool.Handler(ctx, &gollem.RunContext{}, string(getArgs))
+	result, err = tool.Handler(ctx, &core.RunContext{}, string(getArgs))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +412,7 @@ func TestMemoryTool_Errors(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			argsJSON, _ := json.Marshal(tc.args)
-			_, err := tool.Handler(ctx, &gollem.RunContext{}, string(argsJSON))
+			_, err := tool.Handler(ctx, &core.RunContext{}, string(argsJSON))
 			if err == nil {
 				t.Error("expected error, got nil")
 			}

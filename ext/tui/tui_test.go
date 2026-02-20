@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestTUI_ModelCreation(t *testing.T) {
@@ -110,8 +110,8 @@ func TestTUI_StepRendering(t *testing.T) {
 }
 
 func TestTUI_UsageDisplay(t *testing.T) {
-	usage := gollem.RunUsage{
-		Usage: gollem.Usage{
+	usage := core.RunUsage{
+		Usage: core.Usage{
 			InputTokens:  150,
 			OutputTokens: 42,
 		},
@@ -183,26 +183,26 @@ func TestTUI_ToolCallDisplay(t *testing.T) {
 }
 
 func TestTUI_ExtractSteps(t *testing.T) {
-	messages := []gollem.ModelMessage{
-		gollem.ModelRequest{
-			Parts: []gollem.ModelRequestPart{
-				gollem.SystemPromptPart{Content: "Be helpful."},
-				gollem.UserPromptPart{Content: "Hello"},
+	messages := []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.SystemPromptPart{Content: "Be helpful."},
+				core.UserPromptPart{Content: "Hello"},
 			},
 		},
-		gollem.ModelResponse{
-			Parts: []gollem.ModelResponsePart{
-				gollem.TextPart{Content: "Hi there!"},
+		core.ModelResponse{
+			Parts: []core.ModelResponsePart{
+				core.TextPart{Content: "Hi there!"},
 			},
 		},
-		gollem.ModelRequest{
-			Parts: []gollem.ModelRequestPart{
-				gollem.ToolReturnPart{ToolName: "search", Content: "results"},
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.ToolReturnPart{ToolName: "search", Content: "results"},
 			},
 		},
-		gollem.ModelResponse{
-			Parts: []gollem.ModelResponsePart{
-				gollem.ToolCallPart{ToolName: "search", ArgsJSON: `{"q":"test"}`},
+		core.ModelResponse{
+			Parts: []core.ModelResponsePart{
+				core.ToolCallPart{ToolName: "search", ArgsJSON: `{"q":"test"}`},
 			},
 		},
 	}

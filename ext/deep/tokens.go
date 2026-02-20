@@ -3,13 +3,13 @@ package deep
 import (
 	"fmt"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // TokenCounter estimates token counts for messages.
 type TokenCounter interface {
 	CountTokens(content string) int
-	CountMessageTokens(messages []gollem.ModelMessage) int
+	CountMessageTokens(messages []core.ModelMessage) int
 }
 
 // defaultTokenCounter uses a simple heuristic (~4 chars per token).
@@ -32,7 +32,7 @@ func (d *defaultTokenCounter) CountTokens(content string) int {
 	return tokens
 }
 
-func (d *defaultTokenCounter) CountMessageTokens(messages []gollem.ModelMessage) int {
+func (d *defaultTokenCounter) CountMessageTokens(messages []core.ModelMessage) int {
 	total := 0
 	for _, msg := range messages {
 		total += d.countMessage(msg)
@@ -40,14 +40,14 @@ func (d *defaultTokenCounter) CountMessageTokens(messages []gollem.ModelMessage)
 	return total
 }
 
-func (d *defaultTokenCounter) countMessage(msg gollem.ModelMessage) int {
+func (d *defaultTokenCounter) countMessage(msg core.ModelMessage) int {
 	tokens := 0
 	switch m := msg.(type) {
-	case gollem.ModelRequest:
+	case core.ModelRequest:
 		for _, part := range m.Parts {
 			tokens += d.countRequestPart(part)
 		}
-	case gollem.ModelResponse:
+	case core.ModelResponse:
 		for _, part := range m.Parts {
 			tokens += d.countResponsePart(part)
 		}
@@ -55,28 +55,28 @@ func (d *defaultTokenCounter) countMessage(msg gollem.ModelMessage) int {
 	return tokens
 }
 
-func (d *defaultTokenCounter) countRequestPart(part gollem.ModelRequestPart) int {
+func (d *defaultTokenCounter) countRequestPart(part core.ModelRequestPart) int {
 	switch p := part.(type) {
-	case gollem.SystemPromptPart:
+	case core.SystemPromptPart:
 		return d.CountTokens(p.Content)
-	case gollem.UserPromptPart:
+	case core.UserPromptPart:
 		return d.CountTokens(p.Content)
-	case gollem.ToolReturnPart:
+	case core.ToolReturnPart:
 		return d.CountTokens(fmt.Sprintf("%v", p.Content))
-	case gollem.RetryPromptPart:
+	case core.RetryPromptPart:
 		return d.CountTokens(p.Content)
 	default:
 		return 0
 	}
 }
 
-func (d *defaultTokenCounter) countResponsePart(part gollem.ModelResponsePart) int {
+func (d *defaultTokenCounter) countResponsePart(part core.ModelResponsePart) int {
 	switch p := part.(type) {
-	case gollem.TextPart:
+	case core.TextPart:
 		return d.CountTokens(p.Content)
-	case gollem.ToolCallPart:
+	case core.ToolCallPart:
 		return d.CountTokens(p.ArgsJSON)
-	case gollem.ThinkingPart:
+	case core.ThinkingPart:
 		return d.CountTokens(p.Content)
 	default:
 		return 0

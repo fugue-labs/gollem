@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // Metrics holds thread-safe counters for model request metrics.
@@ -60,7 +60,7 @@ func NewMetrics(m *Metrics) *MetricsMiddleware {
 
 // WrapRequest implements Middleware.
 func (m *MetricsMiddleware) WrapRequest(next RequestFunc) RequestFunc {
-	return func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+	return func(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 		start := time.Now()
 		m.metrics.RequestCount.Add(1)
 

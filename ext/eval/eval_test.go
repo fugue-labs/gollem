@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestExactMatch(t *testing.T) {
@@ -108,7 +108,7 @@ func TestCustomEvaluator(t *testing.T) {
 
 func TestLLMJudge(t *testing.T) {
 	// Mock model returns "Score: 1.0 - perfect match".
-	model := gollem.NewTestModel(gollem.TextResponse("Score: 1.0 - perfect match"))
+	model := core.NewTestModel(core.TextResponse("Score: 1.0 - perfect match"))
 	evaluator := LLMJudge[string](model, "Check if the greeting is friendly")
 
 	score, err := evaluator.Evaluate(context.Background(), "Hello, how are you?", "A friendly greeting")
@@ -121,7 +121,7 @@ func TestLLMJudge(t *testing.T) {
 }
 
 func TestLLMJudge_Moderate(t *testing.T) {
-	model := gollem.NewTestModel(gollem.TextResponse("Score: 0.5 - partial match"))
+	model := core.NewTestModel(core.TextResponse("Score: 0.5 - partial match"))
 	evaluator := LLMJudge[string](model, "Check quality")
 
 	score, err := evaluator.Evaluate(context.Background(), "OK output", "Great output")
@@ -134,12 +134,12 @@ func TestLLMJudge_Moderate(t *testing.T) {
 }
 
 func TestRunner_FullDataset(t *testing.T) {
-	model := gollem.NewTestModel(
-		gollem.TextResponse("Hello, World!"),
-		gollem.TextResponse("Goodbye!"),
-		gollem.TextResponse("Thanks!"),
+	model := core.NewTestModel(
+		core.TextResponse("Hello, World!"),
+		core.TextResponse("Goodbye!"),
+		core.TextResponse("Thanks!"),
 	)
-	agent := gollem.NewAgent[string](model)
+	agent := core.NewAgent[string](model)
 
 	dataset := Dataset[string]{
 		Name: "greeting-test",
@@ -167,11 +167,11 @@ func TestRunner_FullDataset(t *testing.T) {
 }
 
 func TestReport_Aggregation(t *testing.T) {
-	model := gollem.NewTestModel(
-		gollem.TextResponse("Match"),
-		gollem.TextResponse("NoMatch"),
+	model := core.NewTestModel(
+		core.TextResponse("Match"),
+		core.TextResponse("NoMatch"),
 	)
-	agent := gollem.NewAgent[string](model)
+	agent := core.NewAgent[string](model)
 
 	dataset := Dataset[string]{
 		Name: "mixed-test",
@@ -202,8 +202,8 @@ func TestReport_Aggregation(t *testing.T) {
 }
 
 func TestRunner_MultipleEvaluators(t *testing.T) {
-	model := gollem.NewTestModel(gollem.TextResponse("Hello World"))
-	agent := gollem.NewAgent[string](model)
+	model := core.NewTestModel(core.TextResponse("Hello World"))
+	agent := core.NewAgent[string](model)
 
 	dataset := Dataset[string]{
 		Name: "multi-eval",

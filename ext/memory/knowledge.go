@@ -7,20 +7,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
-// storeKnowledgeBase wraps a Store as a gollem.KnowledgeBase.
+// storeKnowledgeBase wraps a Store as a core.KnowledgeBase.
 type storeKnowledgeBase struct {
 	store     Store
 	namespace []string
 }
 
-// StoreKnowledgeBase wraps a Store as a gollem.KnowledgeBase.
+// StoreKnowledgeBase wraps a Store as a core.KnowledgeBase.
 // Retrieve performs a search across the store namespace and returns
 // matching documents as formatted text. Store saves the content as
 // a document keyed by timestamp.
-func StoreKnowledgeBase(store Store, namespace ...string) gollem.KnowledgeBase {
+func StoreKnowledgeBase(store Store, namespace ...string) core.KnowledgeBase {
 	return &storeKnowledgeBase{
 		store:     store,
 		namespace: namespace,
@@ -60,5 +60,5 @@ func (kb *storeKnowledgeBase) Store(ctx context.Context, content string) error {
 	return kb.store.Put(ctx, kb.namespace, key, value)
 }
 
-// Verify storeKnowledgeBase implements gollem.KnowledgeBase.
-var _ gollem.KnowledgeBase = (*storeKnowledgeBase)(nil)
+// Verify storeKnowledgeBase implements core.KnowledgeBase.
+var _ core.KnowledgeBase = (*storeKnowledgeBase)(nil)

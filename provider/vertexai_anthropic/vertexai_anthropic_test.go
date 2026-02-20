@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 func TestEndpointConstruction(t *testing.T) {
@@ -43,11 +43,11 @@ func TestBuildRequestHasAnthropicVersion(t *testing.T) {
 }
 
 func TestBuildRequestAnthropicFormat(t *testing.T) {
-	messages := []gollem.ModelMessage{
-		gollem.ModelRequest{
-			Parts: []gollem.ModelRequestPart{
-				gollem.SystemPromptPart{Content: "You are helpful."},
-				gollem.UserPromptPart{Content: "Hello"},
+	messages := []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.SystemPromptPart{Content: "You are helpful."},
+				core.UserPromptPart{Content: "Hello"},
 			},
 		},
 	}
@@ -86,14 +86,14 @@ func TestParseResponse(t *testing.T) {
 	if len(result.Parts) != 1 {
 		t.Fatalf("expected 1 part, got %d", len(result.Parts))
 	}
-	tp, ok := result.Parts[0].(gollem.TextPart)
+	tp, ok := result.Parts[0].(core.TextPart)
 	if !ok {
 		t.Fatal("expected TextPart")
 	}
 	if tp.Content != "Hello there!" {
 		t.Errorf("unexpected content: %s", tp.Content)
 	}
-	if result.FinishReason != gollem.FinishReasonStop {
+	if result.FinishReason != core.FinishReasonStop {
 		t.Errorf("expected FinishReasonStop, got %s", result.FinishReason)
 	}
 }
@@ -114,7 +114,7 @@ func TestParseResponseToolCall(t *testing.T) {
 	if len(result.Parts) != 1 {
 		t.Fatalf("expected 1 part, got %d", len(result.Parts))
 	}
-	tc, ok := result.Parts[0].(gollem.ToolCallPart)
+	tc, ok := result.Parts[0].(core.ToolCallPart)
 	if !ok {
 		t.Fatal("expected ToolCallPart")
 	}
@@ -199,9 +199,9 @@ func TestRequestIntegration(t *testing.T) {
 		},
 	}
 
-	result, err := p.Request(context.Background(), []gollem.ModelMessage{
-		gollem.ModelRequest{
-			Parts:     []gollem.ModelRequestPart{gollem.UserPromptPart{Content: "Hello"}},
+	result, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{
+			Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "Hello"}},
 			Timestamp: time.Now(),
 		},
 	}, nil, nil)
@@ -241,9 +241,9 @@ func TestRequestStreamIntegration(t *testing.T) {
 		},
 	}
 
-	stream, err := p.RequestStream(context.Background(), []gollem.ModelMessage{
-		gollem.ModelRequest{
-			Parts:     []gollem.ModelRequestPart{gollem.UserPromptPart{Content: "Hello"}},
+	stream, err := p.RequestStream(context.Background(), []core.ModelMessage{
+		core.ModelRequest{
+			Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "Hello"}},
 			Timestamp: time.Now(),
 		},
 	}, nil, nil)
@@ -262,8 +262,8 @@ func TestRequestStreamIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		switch e := event.(type) {
-		case gollem.PartDeltaEvent:
-			if td, ok := e.Delta.(gollem.TextPartDelta); ok {
+		case core.PartDeltaEvent:
+			if td, ok := e.Delta.(core.TextPartDelta); ok {
 				text.WriteString(td.ContentDelta)
 			}
 		}
@@ -295,9 +295,9 @@ func TestRequestHTTPError(t *testing.T) {
 		},
 	}
 
-	_, err := p.Request(context.Background(), []gollem.ModelMessage{
-		gollem.ModelRequest{
-			Parts: []gollem.ModelRequestPart{gollem.UserPromptPart{Content: "Hello"}},
+	_, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "Hello"}},
 		},
 	}, nil, nil)
 	if err == nil {

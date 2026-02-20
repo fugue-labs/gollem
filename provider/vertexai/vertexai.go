@@ -1,4 +1,4 @@
-// Package vertexai provides a gollem.Model implementation for Google's
+// Package vertexai provides a core.Model implementation for Google's
 // Vertex AI Gemini API, supporting Gemini models with tool use, streaming,
 // and GCP authentication via Application Default Credentials or service accounts.
 package vertexai
@@ -16,7 +16,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // Model constants for Gemini models.
@@ -32,7 +32,7 @@ const (
 	cloudScope      = "https://www.googleapis.com/auth/cloud-platform"
 )
 
-// Provider implements gollem.Model for Vertex AI Gemini API.
+// Provider implements core.Model for Vertex AI Gemini API.
 type Provider struct {
 	project         string
 	location        string
@@ -170,7 +170,7 @@ func (p *Provider) createTokenSource(ctx context.Context) (oauth2.TokenSource, e
 }
 
 // Request sends messages to Vertex AI Gemini and returns a complete response.
-func (p *Provider) Request(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (*gollem.ModelResponse, error) {
+func (p *Provider) Request(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 	req, err := buildRequest(messages, settings, params)
 	if err != nil {
 		return nil, fmt.Errorf("vertexai: failed to build request: %w", err)
@@ -198,7 +198,7 @@ func (p *Provider) Request(ctx context.Context, messages []gollem.ModelMessage, 
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, &gollem.ModelHTTPError{
+		return nil, &core.ModelHTTPError{
 			Message:    "vertexai API error: " + string(respBody),
 			StatusCode: resp.StatusCode,
 			Body:       string(respBody),
@@ -215,7 +215,7 @@ func (p *Provider) Request(ctx context.Context, messages []gollem.ModelMessage, 
 }
 
 // RequestStream sends messages and returns a streaming response.
-func (p *Provider) RequestStream(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters) (gollem.StreamedResponse, error) {
+func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (core.StreamedResponse, error) {
 	req, err := buildRequest(messages, settings, params)
 	if err != nil {
 		return nil, fmt.Errorf("vertexai: failed to build request: %w", err)
@@ -243,7 +243,7 @@ func (p *Provider) RequestStream(ctx context.Context, messages []gollem.ModelMes
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, &gollem.ModelHTTPError{
+		return nil, &core.ModelHTTPError{
 			Message:    "vertexai API error: " + string(respBody),
 			StatusCode: resp.StatusCode,
 			Body:       string(respBody),
@@ -264,5 +264,5 @@ func (p *Provider) setHeaders(ctx context.Context, req *http.Request) error {
 	return nil
 }
 
-// Verify Provider implements gollem.Model.
-var _ gollem.Model = (*Provider)(nil)
+// Verify Provider implements core.Model.
+var _ core.Model = (*Provider)(nil)

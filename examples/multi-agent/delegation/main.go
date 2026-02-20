@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 )
 
 // ResearchResult is the output type for the specialist research agent.
@@ -31,25 +31,25 @@ type FinalReport struct {
 func main() {
 	// --- Inner Agent: Research Specialist ---
 	// This agent handles research tasks delegated by the orchestrator.
-	researchModel := gollem.NewTestModel(
-		gollem.ToolCallResponse("final_result", `{
+	researchModel := core.NewTestModel(
+		core.ToolCallResponse("final_result", `{
 			"topic": "Go generics",
 			"summary": "Go 1.18 introduced type parameters enabling generic programming. Key features include type constraints via interfaces, type inference, and the comparable constraint.",
 			"sources": ["go.dev/doc/tutorial/generics", "go.dev/ref/spec#Type_parameters"]
 		}`),
 	)
 
-	researchAgent := gollem.NewAgent[ResearchResult](researchModel,
-		gollem.WithSystemPrompt[ResearchResult]("You are a research specialist. Investigate topics thoroughly and return structured findings."),
+	researchAgent := core.NewAgent[ResearchResult](researchModel,
+		core.WithSystemPrompt[ResearchResult]("You are a research specialist. Investigate topics thoroughly and return structured findings."),
 	)
 
 	// --- Outer Agent: Orchestrator ---
 	// This agent decides what to research and composes the final report.
-	orchestratorModel := gollem.NewTestModel(
+	orchestratorModel := core.NewTestModel(
 		// First response: orchestrator calls the research agent tool.
-		gollem.ToolCallResponse("research", `{"prompt":"Research Go generics: history, features, and best practices"}`),
+		core.ToolCallResponse("research", `{"prompt":"Research Go generics: history, features, and best practices"}`),
 		// Second response: orchestrator produces the final report.
-		gollem.ToolCallResponse("final_result", `{
+		core.ToolCallResponse("final_result", `{
 			"title": "The State of Go Generics",
 			"content": "Go generics were introduced in Go 1.18 and have since become a foundational feature. Type parameters enable writing reusable, type-safe code without sacrificing Go's simplicity.",
 			"conclusion": "Go generics strike a balance between expressiveness and simplicity, making them suitable for libraries and frameworks."
@@ -57,11 +57,11 @@ func main() {
 	)
 
 	// Wrap the research agent as a tool using AgentTool.
-	researchTool := gollem.AgentTool("research", "Delegate research tasks to a specialist agent", researchAgent)
+	researchTool := core.AgentTool("research", "Delegate research tasks to a specialist agent", researchAgent)
 
-	orchestratorAgent := gollem.NewAgent[FinalReport](orchestratorModel,
-		gollem.WithSystemPrompt[FinalReport]("You are a report writer. Use the research tool to gather information, then compose a comprehensive report."),
-		gollem.WithTools[FinalReport](researchTool),
+	orchestratorAgent := core.NewAgent[FinalReport](orchestratorModel,
+		core.WithSystemPrompt[FinalReport]("You are a report writer. Use the research tool to gather information, then compose a comprehensive report."),
+		core.WithTools[FinalReport](researchTool),
 	)
 
 	// Run the orchestrator agent.

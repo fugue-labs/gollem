@@ -9,7 +9,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/fugue-labs/gollem"
+	"github.com/fugue-labs/gollem/core"
 	"github.com/fugue-labs/gollem/provider/anthropic"
 	mcpclient "github.com/fugue-labs/gollem/ext/mcp"
 )
@@ -46,9 +46,9 @@ func main() {
 
 	// Create an agent with the MCP tools.
 	model := anthropic.New()
-	agent := gollem.NewAgent[string](model,
-		gollem.WithSystemPrompt[string]("You are a helpful assistant with access to external tools. Use them when appropriate."),
-		gollem.WithTools[string](tools...),
+	agent := core.NewAgent[string](model,
+		core.WithSystemPrompt[string]("You are a helpful assistant with access to external tools. Use them when appropriate."),
+		core.WithTools[string](tools...),
 	)
 
 	result, err := agent.Run(ctx, "What files are available?")
