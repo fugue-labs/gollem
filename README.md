@@ -2,7 +2,7 @@
   <h1 align="center">gollem</h1>
   <p align="center"><strong>The production agent framework for Go</strong></p>
   <p align="center">
-    Type-safe agents, structured output, multi-provider streaming, guardrails, observability, and multi-agent orchestration — with zero core dependencies and compile-time guarantees that Python frameworks can't offer.
+    Type-safe agents, structured output, multi-provider streaming, guardrails, cost tracking, agent middleware, composable pipelines, and multi-agent orchestration — with zero core dependencies and compile-time guarantees that Python frameworks can't offer.
   </p>
 </p>
 
@@ -12,7 +12,7 @@
   <a href="https://goreportcard.com/report/github.com/fugue-labs/gollem"><img src="https://goreportcard.com/badge/github.com/fugue-labs/gollem" alt="Go Report Card"></a>
   <a href="https://codecov.io/gh/fugue-labs/gollem"><img src="https://codecov.io/gh/fugue-labs/gollem/branch/main/graph/badge.svg" alt="codecov"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="https://github.com/fugue-labs/gollem"><img src="https://img.shields.io/badge/tests-560+-brightgreen" alt="560+ tests"></a>
+  <a href="https://github.com/fugue-labs/gollem"><img src="https://img.shields.io/badge/tests-561+-brightgreen" alt="561+ tests"></a>
 </p>
 
 ---
@@ -21,15 +21,35 @@
 
 Python agent frameworks give you runtime validation and hope. Gollem gives you **compile-time type safety**, **zero-allocation streaming**, and a **single-binary deployment story** that eliminates the "works on my machine" class of production failures entirely.
 
-Go's type system isn't a limitation — it's a superpower. When your agent's output schema, tool parameters, guardrail signatures, and event bus subscriptions are all checked at compile time, entire categories of bugs simply cannot exist. No `pydantic.ValidationError` at 3am. No `TypeError: 'NoneType' is not subscriptable` in production. The compiler catches it before your code ever runs.
+Go's type system isn't a limitation — it's a superpower. When your agent's output schema, tool parameters, guardrail signatures, middleware chains, and event bus subscriptions are all checked at compile time, entire categories of bugs simply cannot exist. No `pydantic.ValidationError` at 3am. No `TypeError: 'NoneType' is not subscriptable` in production. The compiler catches it before your code ever runs.
 
 ```bash
 go get github.com/fugue-labs/gollem
 ```
 
+### How Gollem Compares
+
+| Capability | Gollem (Go) | Pydantic-AI | LangChain | OpenAI Agents SDK | CrewAI |
+|---|---|---|---|---|---|
+| **Type safety** | Compile-time generics | Runtime (Pydantic) | Runtime (optional) | Runtime (Pydantic) | Runtime |
+| **Structured output** | Generic `Agent[T]` | `result_type` | OutputParser | `output_type` | Pydantic models |
+| **Streaming** | `iter.Seq2` (stdlib) | `async for` | `astream` | `async for` | N/A |
+| **Tool creation** | `FuncTool[P]` (reflection) | `@agent.tool` decorator | `@tool` decorator | `@function_tool` | `@tool` decorator |
+| **Multi-agent** | AgentTool, Handoff, Graph | Agent delegation | LangGraph | Handoffs | Crews, Flows |
+| **Guardrails** | Input, Turn, Output | Input validators | N/A | Guardrails | N/A |
+| **Middleware** | Agent middleware chain | N/A | Callbacks | N/A | N/A |
+| **Cost tracking** | Built-in CostTracker | N/A | LangSmith (paid) | N/A | N/A |
+| **Composable pipelines** | Pipeline, Then, Parallel | N/A | LCEL | N/A | Flows |
+| **Usage quotas** | Built-in with auto-stop | N/A | N/A | N/A | N/A |
+| **Message interceptors** | PII redaction, audit log | N/A | N/A | N/A | N/A |
+| **Context management** | Auto-compress, 3-tier deep | N/A | ConversationBuffer | N/A | Memory |
+| **Deployment** | Single binary | pip + venv | pip + venv | pip + venv | pip + venv |
+| **Core dependencies** | Zero | 15+ | 50+ | 5+ | 30+ |
+| **Test suite** | 561+ tests | N/A | N/A | N/A | N/A |
+
 ## Features at a Glance
 
-Gollem ships 40+ composable primitives in a single framework. Here's what you get:
+Gollem ships **50+ composable primitives** in a single framework. Here's what you get:
 
 ### Core Agent Framework
 - **Generic `Agent[T]`** — Define output type once; schema generation, validation, and deserialization happen automatically at compile time
@@ -53,6 +73,20 @@ Gollem ships 40+ composable primitives in a single framework. Here's what you ge
 - **OpenTelemetry middleware** — Distributed tracing and metrics for model requests out of the box
 - **Conversation state snapshots** — Serialize mid-run state for time-travel debugging and branching
 
+### Agent Middleware & Interceptors
+- **Agent middleware chain** — Wrap model calls with cross-cutting concerns; compose in order (first = outermost)
+- **Built-in middleware** — `LoggingMiddleware`, `TimingMiddleware`, `MaxTokensMiddleware`
+- **Message interceptors** — Intercept, modify, or drop outgoing model requests before they leave your system
+- **Response interceptors** — Intercept incoming model responses for filtering or transformation
+- **PII redaction** — Built-in `RedactPII` interceptor with regex-based pattern matching
+- **Audit logging** — Built-in `AuditLog` interceptor for compliance and debugging
+
+### Cost & Usage Control
+- **Cost tracking** — `CostTracker` with per-model pricing, per-run cost breakdowns, and cumulative totals
+- **Usage quotas** — Hard limits on requests, input tokens, output tokens, and total tokens with auto-termination
+- **Tool choice control** — `Auto`, `Required`, `None`, `Force(toolName)` with optional auto-reset to prevent infinite loops
+- **Auto context window management** — Transparent token overflow handling with configurable threshold and model-based summarization
+
 ### Resilience & Performance
 - **Retry with exponential backoff** — `RetryModel` wrapper with jitter, configurable retries, and custom retryable predicates
 - **Rate limiting** — Token-bucket `RateLimitedModel` for API throttling with burst capacity
@@ -64,6 +98,7 @@ Gollem ships 40+ composable primitives in a single framework. Here's what you ge
 ### Composition & Multi-Agent
 - **Agent cloning** — `Clone()` creates independent copies with additional options
 - **Agent chaining** — `orchestration.ChainRun` pipes one agent's output as the next agent's input with usage aggregation
+- **Composable pipelines** — `Pipeline` chains `PipelineStep` functions sequentially with `Then`, `ParallelSteps`, and `ConditionalStep` (`core/orchestration`)
 - **`AgentTool` delegation** — One agent calls another as a tool (`core/orchestration`)
 - **`Handoff` pipelines** — Sequential agent chains with context filters at boundaries (`core/orchestration`)
 - **Handoff context filters** — `StripSystemPrompts`, `KeepLastN`, `SummarizeHistory`, composable with `ChainFilters` (`core/orchestration`)
@@ -71,22 +106,32 @@ Gollem ships 40+ composable primitives in a single framework. Here's what you ge
 
 ### Intelligence & Routing
 - **Model router** — Route prompts to different models based on content, length, or custom logic
+- **Capability-based routing** — `NewCapabilityRouter` selects models matching required capabilities (vision, tool calls, context window)
+- **Model capability profiles** — `ModelProfile` describes what a model supports; `Profiled` interface for self-declaration
+- **Typed dependency injection** — `GetDeps[D]` and `TryGetDeps[D]` for compile-time safe dependency access from tools
 - **Prompt templates** — Go `text/template` syntax with `Partial()` pre-filling and `TemplateVars` interface
 - **Conversation memory strategies** — `SlidingWindowMemory`, `TokenBudgetMemory`, `SummaryMemory` (`core/memory`)
 - **Dynamic system prompts** — Generate system prompts at runtime using `RunContext`
 
+### Streaming Options
+- **Delta streaming** — `StreamTextDelta` for raw incremental text chunks as they arrive
+- **Accumulated streaming** — `StreamTextAccumulated` for growing accumulated text at each step
+- **Debounced streaming** — `StreamTextDebounced` for grouped event delivery with configurable window
+- **Unified `StreamText`** — Single function with `StreamTextOptions` for all modes
+
 ### Extensions
-- **Graph workflow engine** — Typed state machines with conditional branching, cycle detection, and Mermaid export
+- **Graph workflow engine** — Typed state machines with conditional branching, fan-out/map-reduce, cycle detection, and Mermaid export
 - **Deep context management** — Three-tier compression, planning tools, and checkpointing for long-running agents
 - **Temporal durable execution** — Fault-tolerant agents with automatic checkpointing via Temporal
 - **MCP integration** — Stdio and SSE transports with multi-server management and namespaced tools
 - **Evaluation framework** — Datasets, built-in evaluators (`ExactMatch`, `Contains`, `JSONMatch`, `Custom`), LLM-as-judge scoring
-- **Middleware chain** — Composable logging, retry, caching, metrics, and custom middleware
+- **Persistent memory store** — Namespace-scoped CRUD and search with in-memory and SQLite backends
+- **TUI debugger** — Terminal UI with step-mode execution, tool call formatting, and color-coded messages
 
 ### Testing
 - **`TestModel` mock** — Test agents without real LLM calls using canned responses and call recording
 - **`Override` / `WithTestModel`** — Swap models in tests without modifying the original agent
-- **560+ tests** across all packages with zero external test dependencies in core
+- **561+ tests** across all packages with zero external test dependencies in core
 
 ## Quick Start
 
@@ -129,7 +174,7 @@ func main() {
 }
 ```
 
-### Production Agent with Guardrails, Tracing, and Retry
+### Production Agent with Middleware, Cost Tracking, and Guardrails
 
 ```go
 import (
@@ -139,11 +184,31 @@ import (
 
 model := gollem.NewRetryModel(anthropic.New(), gollem.DefaultRetryConfig())
 
+// Track costs across all runs.
+tracker := gollem.NewCostTracker(map[string]gollem.ModelPricing{
+    "claude-sonnet-4-5-20250929": {InputTokenCost: 0.003, OutputTokenCost: 0.015},
+})
+
 agent := gollem.NewAgent[Analysis](model,
     // Safety
     gollem.WithInputGuardrail[Analysis]("length", gollem.MaxPromptLength(10000)),
     gollem.WithInputGuardrail[Analysis]("content", gollem.ContentFilter("ignore previous instructions")),
     gollem.WithTurnGuardrail[Analysis]("turns", gollem.MaxTurns(20)),
+
+    // Cost & Usage Control
+    gollem.WithCostTracker[Analysis](tracker),
+    gollem.WithUsageQuota[Analysis](gollem.UsageQuota{MaxRequests: 50, MaxTotalTokens: 100000}),
+
+    // Middleware
+    gollem.WithAgentMiddleware[Analysis](gollem.TimingMiddleware(func(d time.Duration) {
+        log.Printf("model call took %v", d)
+    })),
+    gollem.WithAgentMiddleware[Analysis](gollem.LoggingMiddleware(log.Printf)),
+
+    // Intercept PII before it reaches the model
+    gollem.WithMessageInterceptor[Analysis](gollem.RedactPII(
+        `\b\d{3}-\d{2}-\d{4}\b`, "[SSN REDACTED]",
+    )),
 
     // Observability
     gollem.WithTracing[Analysis](),
@@ -163,7 +228,9 @@ agent := gollem.NewAgent[Analysis](model,
 )
 
 result, err := agent.Run(ctx, "Analyze Q4 earnings report")
-// result.Trace contains full execution trace
+// result.Cost.TotalCost — cost of this run
+// result.Trace — full execution trace
+// tracker.TotalCost() — cumulative cost across all runs
 ```
 
 ### Multi-Agent with Event Coordination
@@ -197,10 +264,62 @@ orchestrator := gollem.NewAgent[FinalReport](model,
 result, _ := orchestrator.Run(ctx, "Research and summarize recent advances in robotics")
 ```
 
+### Composable Pipelines
+
+```go
+// Build a processing pipeline that chains agents and transforms.
+pipeline := gollem.NewPipeline(
+    gollem.AgentStep(researcher),
+    gollem.TransformStep(func(s string) string {
+        return "Summarize the following research:\n" + s
+    }),
+    gollem.AgentStep(writer),
+)
+
+// Or use parallel fan-out with automatic result joining.
+pipeline = pipeline.Then(gollem.ParallelSteps(
+    gollem.AgentStep(factChecker),
+    gollem.AgentStep(editor),
+))
+
+// Conditional branching based on content.
+pipeline = pipeline.Then(gollem.ConditionalStep(
+    func(s string) bool { return len(s) > 5000 },
+    gollem.AgentStep(summarizer),  // long content
+    gollem.TransformStep(strings.TrimSpace), // short content
+))
+
+result, _ := pipeline.Run(ctx, "Research quantum computing advances")
+```
+
+### Typed Dependencies in Tools
+
+```go
+type AppDeps struct {
+    DB     *sql.DB
+    Cache  *redis.Client
+    APIKey string
+}
+
+queryTool := gollem.FuncTool[struct{ SQL string }](
+    "query_db", "Execute a database query",
+    func(ctx context.Context, rc *gollem.RunContext, p struct{ SQL string }) (string, error) {
+        deps := gollem.GetDeps[*AppDeps](rc)  // compile-time type safe
+        rows, err := deps.DB.QueryContext(ctx, p.SQL)
+        // ...
+    },
+)
+
+agent := gollem.NewAgent[Report](model,
+    gollem.WithTools[Report](queryTool),
+    gollem.WithDeps[Report](&AppDeps{DB: db, Cache: cache, APIKey: key}),
+)
+```
+
 ### Batch Processing with Model Routing
 
 ```go
-// Route simple queries to a fast model, complex ones to a powerful model
+// Route simple queries to a fast model, complex ones to a powerful model.
 router := gollem.NewRouterModel(gollem.ThresholdRouter(
     fastModel,    // short prompts
     powerModel,   // long prompts
@@ -295,11 +414,12 @@ agent := gollem.NewAgent[Analysis](model,
 
 ### Streaming
 
-Use `RunStream` for real-time token streaming with Go 1.23+ iterators:
+Use `RunStream` for real-time token streaming with Go 1.23+ iterators, or the new streaming options for fine-grained control:
 
 ```go
 stream, _ := agent.RunStream(ctx, "Write a story about a robot")
 
+// Standard streaming.
 for text, err := range stream.StreamText(true) {
     if err != nil {
         log.Fatal(err)
@@ -307,8 +427,18 @@ for text, err := range stream.StreamText(true) {
     fmt.Print(text) // prints tokens as they arrive
 }
 
-output, _ := stream.GetOutput()
-fmt.Printf("\nTokens used: %d\n", output.Usage.TotalTokens())
+// Or use streaming options for more control.
+for delta, err := range gollem.StreamTextDelta(rawStream) {
+    fmt.Print(delta) // raw incremental chunks
+}
+
+for accumulated, err := range gollem.StreamTextAccumulated(rawStream) {
+    updateUI(accumulated) // growing text at each step
+}
+
+for text, err := range gollem.StreamTextDebounced(rawStream, 100*time.Millisecond) {
+    sendToClient(text) // grouped delivery for network efficiency
+}
 ```
 
 ### Providers
@@ -364,6 +494,11 @@ graph TD
         Traces["Run Traces"]
         EventBus["Event Bus"]
         Conditions["Run Conditions"]
+        Middleware["Agent Middleware"]
+        Interceptors["Message/Response Interceptors"]
+        CostTracker["Cost Tracker"]
+        Quotas["Usage Quotas"]
+        Pipeline["Composable Pipeline"]
     end
 
     subgraph "Model Wrappers"
@@ -371,6 +506,7 @@ graph TD
         RateLimit["RateLimitedModel"]
         Cache["CachedModel"]
         Router["RouterModel"]
+        CapRouter["CapabilityRouter"]
     end
 
     subgraph "Providers"
@@ -387,13 +523,14 @@ graph TD
     end
 
     subgraph "Extensions"
-        Middleware["middleware (logging, otel)"]
+        ExtMiddleware["middleware (logging, otel)"]
         MCP["mcp (stdio, sse, manager)"]
-        Memory["ext/memory"]
+        Memory["ext/memory (sqlite, in-memory)"]
         Deep["deep (context, planning, checkpoint)"]
         Temporal["temporal"]
         Graph["graph (workflow engine)"]
         Eval["eval (evaluation framework)"]
+        TUI["tui (debugger)"]
     end
 
     Agent --> Tools
@@ -404,6 +541,11 @@ graph TD
     Agent --> Traces
     Agent --> EventBus
     Agent --> Conditions
+    Agent --> Middleware
+    Agent --> Interceptors
+    Agent --> CostTracker
+    Agent --> Quotas
+    Agent --> Pipeline
     Retry --> Anthropic
     Retry --> OpenAI
     Retry --> VertexAI
@@ -411,19 +553,136 @@ graph TD
     RateLimit --> Retry
     Cache --> RateLimit
     Router --> Cache
-    Agent --> Router
+    CapRouter --> Router
+    Agent --> CapRouter
     Orchestration --> Agent
     StreamUtil --> Agent
     MemoryPkg --> Agent
-    Middleware --> Agent
+    ExtMiddleware --> Agent
     MCP --> Tools
     Deep --> Agent
     Temporal --> Agent
     Graph --> Agent
     Eval --> Agent
+    TUI --> Agent
 ```
 
 ## Advanced Features
+
+### Agent Middleware
+
+Wrap model calls with cross-cutting concerns. Middleware compose like HTTP middleware — first registered is outermost:
+
+```go
+agent := gollem.NewAgent[string](model,
+    // Outermost: timing wraps everything.
+    gollem.WithAgentMiddleware[string](gollem.TimingMiddleware(func(d time.Duration) {
+        metrics.RecordLatency("model_call", d)
+    })),
+    // Middle: logging.
+    gollem.WithAgentMiddleware[string](gollem.LoggingMiddleware(log.Printf)),
+    // Innermost: token limit enforcement.
+    gollem.WithAgentMiddleware[string](gollem.MaxTokensMiddleware(4096)),
+    // Custom middleware can skip the model call entirely.
+    gollem.WithAgentMiddleware[string](func(ctx context.Context, messages []gollem.ModelMessage, settings *gollem.ModelSettings, params *gollem.ModelRequestParameters, next func(context.Context, []gollem.ModelMessage, *gollem.ModelSettings, *gollem.ModelRequestParameters) (*gollem.ModelResponse, error)) (*gollem.ModelResponse, error) {
+        if shouldUseCache(messages) {
+            return cachedResponse, nil // skip model call
+        }
+        return next(ctx, messages, settings, params)
+    }),
+)
+```
+
+### Message Interceptors
+
+Filter, modify, or block messages before they reach the model or after responses return:
+
+```go
+agent := gollem.NewAgent[string](model,
+    // Redact SSNs before they leave your system.
+    gollem.WithMessageInterceptor[string](gollem.RedactPII(
+        `\b\d{3}-\d{2}-\d{4}\b`, "[SSN REDACTED]",
+    )),
+    // Audit log all messages for compliance.
+    gollem.WithMessageInterceptor[string](gollem.AuditLog(func(direction string, messages []gollem.ModelMessage) {
+        auditDB.Record(direction, messages)
+    })),
+    // Custom interceptor to strip sensitive headers.
+    gollem.WithResponseInterceptor[string](func(ctx context.Context, resp *gollem.ModelResponse) gollem.InterceptResult {
+        sanitize(resp)
+        return gollem.InterceptResult{Action: gollem.MessageAllow}
+    }),
+)
+```
+
+### Cost Tracking & Usage Quotas
+
+Monitor spend in real-time and enforce hard limits:
+
+```go
+tracker := gollem.NewCostTracker(map[string]gollem.ModelPricing{
+    "claude-sonnet-4-5-20250929": {InputTokenCost: 0.003, OutputTokenCost: 0.015},
+    "gpt-4o":                    {InputTokenCost: 0.005, OutputTokenCost: 0.015},
+})
+
+agent := gollem.NewAgent[string](model,
+    gollem.WithCostTracker[string](tracker),
+    gollem.WithUsageQuota[string](gollem.UsageQuota{
+        MaxRequests:     100,
+        MaxTotalTokens:  500000,
+        MaxOutputTokens: 100000,
+    }),
+)
+
+result, err := agent.Run(ctx, "prompt")
+if err != nil {
+    var qe *gollem.QuotaExceededError
+    if errors.As(err, &qe) {
+        log.Printf("quota exceeded: %s", qe.Message)
+    }
+}
+
+// Per-run and cumulative cost visibility.
+fmt.Printf("Run cost: $%.4f\n", result.Cost.TotalCost)
+fmt.Printf("Total spend: $%.4f\n", tracker.TotalCost())
+breakdown := tracker.CostBreakdown()
+for model, cost := range breakdown {
+    fmt.Printf("  %s: $%.4f\n", model, cost)
+}
+```
+
+### Tool Choice Control
+
+Direct which tools the model can use:
+
+```go
+agent := gollem.NewAgent[string](model,
+    gollem.WithTools[string](searchTool, calcTool, writeTool),
+
+    // Force the model to use a specific tool on the first call.
+    gollem.WithToolChoice[string](gollem.ToolChoiceForce("search")),
+
+    // Auto-reset to "auto" after the first tool call to prevent infinite loops.
+    gollem.WithToolChoiceAutoReset[string](),
+)
+```
+
+### Model Capability Profiles
+
+Query model capabilities and route based on requirements:
+
+```go
+// Models can self-declare capabilities.
+profile := gollem.GetProfile(model)
+fmt.Printf("Supports vision: %v\n", profile.SupportsVision)
+fmt.Printf("Max context: %d tokens\n", profile.MaxContextTokens)
+
+// Route to the first model that supports your requirements.
+router := gollem.NewCapabilityRouter(
+    []gollem.Model{fastModel, powerModel, visionModel},
+    gollem.ModelProfile{SupportsVision: true, SupportsToolCalls: true},
+)
+```
 
 ### Prompt Templates
 
@@ -439,7 +698,7 @@ agent := gollem.NewAgent[Analysis](model,
 
 // Variables resolved from RunContext.Deps
 result, _ := agent.Run(ctx, "Analyze Q4 results",
-    gollem.WithDeps(map[string]string{
+    gollem.WithRunDeps(map[string]string{
         "Role": "senior analyst", "Domain": "fintech", "Depth": "comprehensive",
     }),
 )
@@ -465,6 +724,15 @@ agent := gollem.NewAgent[string](model,
 // Summarize old messages using a model.
 agent := gollem.NewAgent[string](model,
     gollem.WithHistoryProcessor[string](memory.SummaryMemory(summaryModel, 20)),
+)
+
+// Auto context compression (transparent overflow handling).
+agent := gollem.NewAgent[string](model,
+    gollem.WithAutoContext[string](gollem.AutoContextConfig{
+        MaxTokens:    100000,
+        KeepLastN:    10,
+        SummaryModel: summaryModel, // optional
+    }),
 )
 ```
 
@@ -630,7 +898,7 @@ allTools, _ := mgr.Tools(ctx) // "fs__read", "db__query", etc.
 
 ### Middleware
 
-Compose cross-cutting concerns around model requests:
+Compose cross-cutting concerns around model requests at the provider level:
 
 ```go
 import "github.com/fugue-labs/gollem/ext/middleware"
