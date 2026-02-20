@@ -1,10 +1,12 @@
-package core
+package orchestration
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/fugue-labs/gollem/core"
 )
 
 // agentToolParams is the input schema for an agent-as-tool.
@@ -15,11 +17,11 @@ type agentToolParams struct {
 // AgentTool wraps an agent as a tool that can be called by another agent.
 // The inner agent receives the tool call arguments as its prompt and returns
 // its output as the tool result. Usage is aggregated to the outer agent.
-func AgentTool[T any](name, description string, agent *Agent[T]) Tool {
-	return FuncTool[agentToolParams](
+func AgentTool[T any](name, description string, agent *core.Agent[T]) core.Tool {
+	return core.FuncTool[agentToolParams](
 		name,
 		description,
-		func(ctx context.Context, rc *RunContext, params agentToolParams) (any, error) {
+		func(ctx context.Context, rc *core.RunContext, params agentToolParams) (any, error) {
 			result, err := agent.Run(ctx, params.Prompt)
 			if err != nil {
 				return nil, fmt.Errorf("inner agent %q failed: %w", name, err)
@@ -40,7 +42,7 @@ func AgentTool[T any](name, description string, agent *Agent[T]) Tool {
 // handoffStep represents a single step in a handoff pipeline.
 type handoffStep[T any] struct {
 	name     string
-	agent    *Agent[T]
+	agent    *core.Agent[T]
 	promptFn func(prevOutput T) string
 	filter   HandoffFilter // optional context filter
 }
@@ -58,7 +60,7 @@ func NewHandoff[T any]() *Handoff[T] {
 
 // AddStep adds an agent step to the pipeline.
 // The promptFn generates the prompt for this agent from the previous agent's output.
-func (h *Handoff[T]) AddStep(name string, agent *Agent[T], promptFn func(prevOutput T) string) *Handoff[T] {
+func (h *Handoff[T]) AddStep(name string, agent *core.Agent[T], promptFn func(prevOutput T) string) *Handoff[T] {
 	h.steps = append(h.steps, handoffStep[T]{
 		name:     name,
 		agent:    agent,
@@ -68,7 +70,7 @@ func (h *Handoff[T]) AddStep(name string, agent *Agent[T], promptFn func(prevOut
 }
 
 // AddStepWithFilter adds a step with a context filter applied before the agent sees messages.
-func (h *Handoff[T]) AddStepWithFilter(name string, agent *Agent[T], promptFn func(prevOutput T) string, filter HandoffFilter) *Handoff[T] {
+func (h *Handoff[T]) AddStepWithFilter(name string, agent *core.Agent[T], promptFn func(prevOutput T) string, filter HandoffFilter) *Handoff[T] {
 	h.steps = append(h.steps, handoffStep[T]{
 		name:     name,
 		agent:    agent,
@@ -79,13 +81,13 @@ func (h *Handoff[T]) AddStepWithFilter(name string, agent *Agent[T], promptFn fu
 }
 
 // Run executes the pipeline with the initial prompt.
-func (h *Handoff[T]) Run(ctx context.Context, initialPrompt string) (*RunResult[T], error) {
+func (h *Handoff[T]) Run(ctx context.Context, initialPrompt string) (*core.RunResult[T], error) {
 	if len(h.steps) == 0 {
 		return nil, errors.New("handoff pipeline has no steps")
 	}
 
-	var totalUsage RunUsage
-	var lastResult *RunResult[T]
+	var totalUsage core.RunUsage
+	var lastResult *core.RunResult[T]
 
 	for i, step := range h.steps {
 		var prompt string
@@ -95,7 +97,7 @@ func (h *Handoff[T]) Run(ctx context.Context, initialPrompt string) (*RunResult[
 			prompt = step.promptFn(lastResult.Output)
 		}
 
-		var opts []RunOption
+		var opts []core.RunOption
 		if lastResult != nil {
 			msgs := lastResult.Messages
 			// Apply handoff filter if present.
@@ -106,7 +108,7 @@ func (h *Handoff[T]) Run(ctx context.Context, initialPrompt string) (*RunResult[
 					return nil, fmt.Errorf("handoff step %q filter: %w", step.name, filterErr)
 				}
 			}
-			opts = append(opts, WithMessages(msgs...))
+			opts = append(opts, core.WithMessages(msgs...))
 		}
 
 		result, err := step.agent.Run(ctx, prompt, opts...)

@@ -1,7 +1,5 @@
 package core
 
-import "context"
-
 // Clone creates a copy of the agent with additional options applied.
 // The original agent is not modified.
 func (a *Agent[T]) Clone(opts ...AgentOption[T]) *Agent[T] {
@@ -108,52 +106,3 @@ func (a *Agent[T]) Clone(opts ...AgentOption[T]) *Agent[T] {
 	return clone
 }
 
-// ChainRunResult includes both intermediate and final results.
-type ChainRunResult[A, B any] struct {
-	Intermediate A
-	Final        B
-	TotalUsage   RunUsage
-}
-
-// ChainRun runs the first agent, transforms its output into a prompt,
-// then runs the second agent with that prompt. Returns the second agent's result.
-func ChainRun[A, B any](ctx context.Context, first *Agent[A], second *Agent[B], prompt string, transform func(A) string, opts ...RunOption) (*RunResult[B], error) {
-	firstResult, err := first.Run(ctx, prompt, opts...)
-	if err != nil {
-		return nil, err
-	}
-
-	secondPrompt := transform(firstResult.Output)
-	secondResult, err := second.Run(ctx, secondPrompt, opts...)
-	if err != nil {
-		return nil, err
-	}
-
-	// Combine usage.
-	secondResult.Usage.IncrRun(firstResult.Usage)
-
-	return secondResult, nil
-}
-
-// ChainRunFull is like ChainRun but returns both intermediate and final results.
-func ChainRunFull[A, B any](ctx context.Context, first *Agent[A], second *Agent[B], prompt string, transform func(A) string, opts ...RunOption) (*ChainRunResult[A, B], error) {
-	firstResult, err := first.Run(ctx, prompt, opts...)
-	if err != nil {
-		return nil, err
-	}
-
-	secondPrompt := transform(firstResult.Output)
-	secondResult, err := second.Run(ctx, secondPrompt, opts...)
-	if err != nil {
-		return nil, err
-	}
-
-	totalUsage := firstResult.Usage
-	totalUsage.IncrRun(secondResult.Usage)
-
-	return &ChainRunResult[A, B]{
-		Intermediate: firstResult.Output,
-		Final:        secondResult.Output,
-		TotalUsage:   totalUsage,
-	}, nil
-}

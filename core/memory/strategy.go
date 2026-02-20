@@ -1,23 +1,25 @@
-package core
+package memory
 
 import (
 	"context"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/fugue-labs/gollem/core"
 )
 
 // SlidingWindowMemory keeps only the last N message pairs (request + response).
 // Always preserves the first message (system prompt) and the last message.
-func SlidingWindowMemory(windowSize int) HistoryProcessor {
-	return func(ctx context.Context, messages []ModelMessage) ([]ModelMessage, error) {
+func SlidingWindowMemory(windowSize int) core.HistoryProcessor {
+	return func(ctx context.Context, messages []core.ModelMessage) ([]core.ModelMessage, error) {
 		if len(messages) <= windowSize*2+1 {
 			// Under the window, return as-is.
 			return messages, nil
 		}
 
 		// Keep first message (system prompt/initial request), then last windowSize*2 messages.
-		result := make([]ModelMessage, 0, windowSize*2+1)
+		result := make([]core.ModelMessage, 0, windowSize*2+1)
 		result = append(result, messages[0])
 		start := len(messages) - windowSize*2
 		if start < 1 {
@@ -31,8 +33,8 @@ func SlidingWindowMemory(windowSize int) HistoryProcessor {
 // TokenBudgetMemory keeps messages within an approximate token budget,
 // dropping the oldest messages (after the system prompt) first.
 // Token estimation: ~4 characters per token.
-func TokenBudgetMemory(maxTokens int) HistoryProcessor {
-	return func(ctx context.Context, messages []ModelMessage) ([]ModelMessage, error) {
+func TokenBudgetMemory(maxTokens int) core.HistoryProcessor {
+	return func(ctx context.Context, messages []core.ModelMessage) ([]core.ModelMessage, error) {
 		total := estimateMessageTokens(messages)
 		if total <= maxTokens {
 			return messages, nil
@@ -44,7 +46,7 @@ func TokenBudgetMemory(maxTokens int) HistoryProcessor {
 		}
 
 		// Drop messages from position 1 until under budget.
-		result := make([]ModelMessage, len(messages))
+		result := make([]core.ModelMessage, len(messages))
 		copy(result, messages)
 
 		for len(result) > 2 && estimateMessageTokens(result) > maxTokens {
@@ -57,33 +59,33 @@ func TokenBudgetMemory(maxTokens int) HistoryProcessor {
 
 // estimateMessageTokens estimates total tokens in a message list.
 // Uses a simple heuristic of ~4 characters per token.
-func estimateMessageTokens(messages []ModelMessage) int {
+func estimateMessageTokens(messages []core.ModelMessage) int {
 	total := 0
 	for _, msg := range messages {
 		switch m := msg.(type) {
-		case ModelRequest:
+		case core.ModelRequest:
 			for _, part := range m.Parts {
 				switch p := part.(type) {
-				case SystemPromptPart:
+				case core.SystemPromptPart:
 					total += len(p.Content) / 4
-				case UserPromptPart:
+				case core.UserPromptPart:
 					total += len(p.Content) / 4
-				case ToolReturnPart:
+				case core.ToolReturnPart:
 					if s, ok := p.Content.(string); ok {
 						total += len(s) / 4
 					} else {
 						total += 50 // estimate for structured content
 					}
-				case RetryPromptPart:
+				case core.RetryPromptPart:
 					total += len(p.Content) / 4
 				}
 			}
-		case ModelResponse:
+		case core.ModelResponse:
 			for _, part := range m.Parts {
 				switch p := part.(type) {
-				case TextPart:
+				case core.TextPart:
 					total += len(p.Content) / 4
-				case ToolCallPart:
+				case core.ToolCallPart:
 					total += len(p.ArgsJSON) / 4
 				}
 			}
@@ -98,8 +100,8 @@ func estimateMessageTokens(messages []ModelMessage) int {
 // SummaryMemory summarizes older messages when the conversation exceeds
 // maxMessages, using the provided model to generate summaries. The summary
 // replaces the dropped messages as a system prompt.
-func SummaryMemory(summarizer Model, maxMessages int) HistoryProcessor {
-	return func(ctx context.Context, messages []ModelMessage) ([]ModelMessage, error) {
+func SummaryMemory(summarizer core.Model, maxMessages int) core.HistoryProcessor {
+	return func(ctx context.Context, messages []core.ModelMessage) ([]core.ModelMessage, error) {
 		if len(messages) <= maxMessages {
 			return messages, nil
 		}
@@ -122,15 +124,15 @@ func SummaryMemory(summarizer Model, maxMessages int) HistoryProcessor {
 		var sb strings.Builder
 		for _, msg := range toSummarize {
 			switch m := msg.(type) {
-			case ModelRequest:
+			case core.ModelRequest:
 				for _, part := range m.Parts {
-					if up, ok := part.(UserPromptPart); ok {
+					if up, ok := part.(core.UserPromptPart); ok {
 						sb.WriteString("User: ")
 						sb.WriteString(up.Content)
 						sb.WriteString("\n")
 					}
 				}
-			case ModelResponse:
+			case core.ModelResponse:
 				text := m.TextContent()
 				if text != "" {
 					sb.WriteString("Assistant: ")
@@ -142,9 +144,9 @@ func SummaryMemory(summarizer Model, maxMessages int) HistoryProcessor {
 		summaryText := sb.String()
 
 		// Ask the summarizer model to summarize.
-		summaryReq := ModelRequest{
-			Parts: []ModelRequestPart{
-				UserPromptPart{
+		summaryReq := core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.UserPromptPart{
 					Content:   "Summarize this conversation concisely:\n" + summaryText,
 					Timestamp: time.Now(),
 				},
@@ -152,7 +154,7 @@ func SummaryMemory(summarizer Model, maxMessages int) HistoryProcessor {
 			Timestamp: time.Now(),
 		}
 
-		resp, err := summarizer.Request(ctx, []ModelMessage{summaryReq}, nil, &ModelRequestParameters{
+		resp, err := summarizer.Request(ctx, []core.ModelMessage{summaryReq}, nil, &core.ModelRequestParameters{
 			AllowTextOutput: true,
 		})
 		if err != nil {
@@ -165,11 +167,11 @@ func SummaryMemory(summarizer Model, maxMessages int) HistoryProcessor {
 		}
 
 		// Reconstruct: first message + summary as system prompt + recent messages.
-		result := make([]ModelMessage, 0, keepLast+2)
+		result := make([]core.ModelMessage, 0, keepLast+2)
 		result = append(result, messages[0])
-		result = append(result, ModelRequest{
-			Parts: []ModelRequestPart{
-				SystemPromptPart{
+		result = append(result, core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.SystemPromptPart{
 					Content:   "[Conversation Summary] " + summary,
 					Timestamp: time.Now(),
 				},

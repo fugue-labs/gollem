@@ -1,10 +1,12 @@
-package core
+package streamutil
 
 import (
 	"errors"
 	"io"
 	"iter"
 	"time"
+
+	"github.com/fugue-labs/gollem/core"
 )
 
 // StreamTextOptions configures text streaming behavior.
@@ -14,7 +16,7 @@ type StreamTextOptions struct {
 }
 
 // StreamText wraps a StreamedResponse to yield text according to options.
-func StreamText(stream StreamedResponse, opts StreamTextOptions) iter.Seq2[string, error] {
+func StreamText(stream core.StreamedResponse, opts StreamTextOptions) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		var accumulated string
 		var lastYield time.Time
@@ -38,11 +40,11 @@ func StreamText(stream StreamedResponse, opts StreamTextOptions) iter.Seq2[strin
 				return
 			}
 
-			delta, ok := event.(PartDeltaEvent)
+			delta, ok := event.(core.PartDeltaEvent)
 			if !ok {
 				continue
 			}
-			textDelta, ok := delta.Delta.(TextPartDelta)
+			textDelta, ok := delta.Delta.(core.TextPartDelta)
 			if !ok {
 				continue
 			}
@@ -72,16 +74,16 @@ func StreamText(stream StreamedResponse, opts StreamTextOptions) iter.Seq2[strin
 }
 
 // StreamTextDelta is a convenience for delta mode streaming.
-func StreamTextDelta(stream StreamedResponse) iter.Seq2[string, error] {
+func StreamTextDelta(stream core.StreamedResponse) iter.Seq2[string, error] {
 	return StreamText(stream, StreamTextOptions{Delta: true})
 }
 
 // StreamTextAccumulated is a convenience for accumulated mode streaming.
-func StreamTextAccumulated(stream StreamedResponse) iter.Seq2[string, error] {
+func StreamTextAccumulated(stream core.StreamedResponse) iter.Seq2[string, error] {
 	return StreamText(stream, StreamTextOptions{Delta: false})
 }
 
 // StreamTextDebounced wraps streaming with debounce grouping.
-func StreamTextDebounced(stream StreamedResponse, debounce time.Duration) iter.Seq2[string, error] {
+func StreamTextDebounced(stream core.StreamedResponse, debounce time.Duration) iter.Seq2[string, error] {
 	return StreamText(stream, StreamTextOptions{Delta: true, Debounce: debounce})
 }

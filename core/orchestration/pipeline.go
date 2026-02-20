@@ -1,9 +1,11 @@
-package core
+package orchestration
 
 import (
 	"context"
 	"strings"
 	"sync"
+
+	"github.com/fugue-labs/gollem/core"
 )
 
 // PipelineStep is a single step in a pipeline.
@@ -44,7 +46,7 @@ func (p *Pipeline) Then(step PipelineStep) *Pipeline {
 }
 
 // AgentStep wraps an Agent[string] as a PipelineStep.
-func AgentStep(agent *Agent[string]) PipelineStep {
+func AgentStep(agent *core.Agent[string]) PipelineStep {
 	return func(ctx context.Context, input string) (string, error) {
 		result, err := agent.Run(ctx, input)
 		if err != nil {

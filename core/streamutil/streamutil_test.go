@@ -1,20 +1,23 @@
-package core
+package streamutil_test
 
 import (
 	"io"
 	"testing"
+
+	"github.com/fugue-labs/gollem/core"
+	"github.com/fugue-labs/gollem/core/streamutil"
 )
 
 func TestStreamText_Delta(t *testing.T) {
-	resp := &ModelResponse{
-		Parts: []ModelResponsePart{TextPart{Content: "hello world"}},
+	resp := &core.ModelResponse{
+		Parts: []core.ModelResponsePart{core.TextPart{Content: "hello world"}},
 	}
 	stream := &testStreamedResponseWithDeltas{
 		deltas: []string{"hel", "lo ", "wor", "ld"},
 	}
 
 	var chunks []string
-	for text, err := range StreamTextDelta(stream) {
+	for text, err := range streamutil.StreamTextDelta(stream) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -34,7 +37,7 @@ func TestStreamText_Accumulated(t *testing.T) {
 	}
 
 	var chunks []string
-	for text, err := range StreamTextAccumulated(stream) {
+	for text, err := range streamutil.StreamTextAccumulated(stream) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -58,7 +61,7 @@ func TestStreamText_Debounce(t *testing.T) {
 
 	// With zero debounce, all chunks pass through.
 	var chunks []string
-	for text, err := range StreamTextDebounced(stream, 0) {
+	for text, err := range streamutil.StreamTextDebounced(stream, 0) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -77,7 +80,7 @@ func TestStreamTextDelta_Convenience(t *testing.T) {
 	}
 
 	count := 0
-	for _, err := range StreamTextDelta(stream) {
+	for _, err := range streamutil.StreamTextDelta(stream) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -95,7 +98,7 @@ func TestStreamTextAccumulated_Convenience(t *testing.T) {
 	}
 
 	var last string
-	for text, err := range StreamTextAccumulated(stream) {
+	for text, err := range streamutil.StreamTextAccumulated(stream) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -113,28 +116,25 @@ type testStreamedResponseWithDeltas struct {
 	idx    int
 }
 
-func (s *testStreamedResponseWithDeltas) Next() (ModelResponseStreamEvent, error) {
+func (s *testStreamedResponseWithDeltas) Next() (core.ModelResponseStreamEvent, error) {
 	if s.idx >= len(s.deltas) {
-		return nil, errEOF
+		return nil, io.EOF
 	}
 	delta := s.deltas[s.idx]
 	s.idx++
-	return PartDeltaEvent{
+	return core.PartDeltaEvent{
 		Index: 0,
-		Delta: TextPartDelta{ContentDelta: delta},
+		Delta: core.TextPartDelta{ContentDelta: delta},
 	}, nil
 }
 
-func (s *testStreamedResponseWithDeltas) Response() *ModelResponse {
+func (s *testStreamedResponseWithDeltas) Response() *core.ModelResponse {
 	var accumulated string
 	for _, d := range s.deltas {
 		accumulated += d
 	}
-	return &ModelResponse{Parts: []ModelResponsePart{TextPart{Content: accumulated}}}
+	return &core.ModelResponse{Parts: []core.ModelResponsePart{core.TextPart{Content: accumulated}}}
 }
 
-func (s *testStreamedResponseWithDeltas) Usage() Usage { return Usage{} }
-func (s *testStreamedResponseWithDeltas) Close() error { return nil }
-
-// errEOF is io.EOF for test usage.
-var errEOF = io.EOF
+func (s *testStreamedResponseWithDeltas) Usage() core.Usage { return core.Usage{} }
+func (s *testStreamedResponseWithDeltas) Close() error      { return nil }

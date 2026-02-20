@@ -1,4 +1,4 @@
-// Package gollem is a production-grade Go agent framework for building
+// Package core is a production-grade Go agent framework for building
 // LLM-powered agents with structured output, tool use, streaming, and
 // multi-provider support.
 //
@@ -6,12 +6,19 @@
 // typed output of type T. Agents can be configured with tools (via FuncTool),
 // system prompts, output validators, and usage limits.
 //
+// # Sub-packages
+//
+// Leaf functionality is organized into sub-packages:
+//   - core/orchestration: Multi-agent coordination (AgentTool, Handoff, Pipeline, ChainRun)
+//   - core/streamutil: Stream text helpers (StreamText, StreamTextDelta, StreamTextDebounced)
+//   - core/memory: Memory strategies (SlidingWindowMemory, TokenBudgetMemory, SummaryMemory)
+//
 // # Basic Usage
 //
 //	model := anthropic.New()
-//	agent := gollem.NewAgent[MyOutput](model,
-//	    gollem.WithSystemPrompt[MyOutput]("You are helpful."),
-//	    gollem.WithTools[MyOutput](myTool),
+//	agent := core.NewAgent[MyOutput](model,
+//	    core.WithSystemPrompt[MyOutput]("You are helpful."),
+//	    core.WithTools[MyOutput](myTool),
 //	)
 //	result, err := agent.Run(ctx, "user prompt")
 //
@@ -27,7 +34,7 @@
 //
 // Use FuncTool to create type-safe tools from Go functions:
 //
-//	tool := gollem.FuncTool[MyParams]("name", "description",
+//	tool := core.FuncTool[MyParams]("name", "description",
 //	    func(ctx context.Context, p MyParams) (string, error) { ... })
 //
 // # Streaming

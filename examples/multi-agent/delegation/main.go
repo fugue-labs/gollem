@@ -12,6 +12,7 @@ import (
 	"log"
 
 	"github.com/fugue-labs/gollem/core"
+	"github.com/fugue-labs/gollem/core/orchestration"
 )
 
 // ResearchResult is the output type for the specialist research agent.
@@ -57,7 +58,7 @@ func main() {
 	)
 
 	// Wrap the research agent as a tool using AgentTool.
-	researchTool := core.AgentTool("research", "Delegate research tasks to a specialist agent", researchAgent)
+	researchTool := orchestration.AgentTool("research", "Delegate research tasks to a specialist agent", researchAgent)
 
 	orchestratorAgent := core.NewAgent[FinalReport](orchestratorModel,
 		core.WithSystemPrompt[FinalReport]("You are a report writer. Use the research tool to gather information, then compose a comprehensive report."),

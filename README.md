@@ -63,16 +63,16 @@ Gollem ships 40+ composable primitives in a single framework. Here's what you ge
 
 ### Composition & Multi-Agent
 - **Agent cloning** — `Clone()` creates independent copies with additional options
-- **Agent chaining** — `ChainRun` pipes one agent's output as the next agent's input with usage aggregation
-- **`AgentTool` delegation** — One agent calls another as a tool
-- **`Handoff` pipelines** — Sequential agent chains with context filters at boundaries
-- **Handoff context filters** — `StripSystemPrompts`, `KeepLastN`, `SummarizeHistory`, composable with `ChainFilters`
+- **Agent chaining** — `orchestration.ChainRun` pipes one agent's output as the next agent's input with usage aggregation
+- **`AgentTool` delegation** — One agent calls another as a tool (`core/orchestration`)
+- **`Handoff` pipelines** — Sequential agent chains with context filters at boundaries (`core/orchestration`)
+- **Handoff context filters** — `StripSystemPrompts`, `KeepLastN`, `SummarizeHistory`, composable with `ChainFilters` (`core/orchestration`)
 - **Typed event bus** — Publish-subscribe coordination with `Subscribe[E]`, `Publish[E]`, and async variants
 
 ### Intelligence & Routing
 - **Model router** — Route prompts to different models based on content, length, or custom logic
 - **Prompt templates** — Go `text/template` syntax with `Partial()` pre-filling and `TemplateVars` interface
-- **Conversation memory strategies** — `SlidingWindowMemory`, `TokenBudgetMemory`, `SummaryMemory`
+- **Conversation memory strategies** — `SlidingWindowMemory`, `TokenBudgetMemory`, `SummaryMemory` (`core/memory`)
 - **Dynamic system prompts** — Generate system prompts at runtime using `RunContext`
 
 ### Extensions
@@ -169,6 +169,8 @@ result, err := agent.Run(ctx, "Analyze Q4 earnings report")
 ### Multi-Agent with Event Coordination
 
 ```go
+import "github.com/fugue-labs/gollem/core/orchestration"
+
 bus := gollem.NewEventBus()
 
 type TaskAssigned struct {
@@ -188,7 +190,7 @@ researcher := gollem.NewAgent[ResearchResult](model,
 orchestrator := gollem.NewAgent[FinalReport](model,
     gollem.WithEventBus[FinalReport](bus),
     gollem.WithTools[FinalReport](
-        gollem.AgentTool("research", "Delegate research tasks", researcher),
+        orchestration.AgentTool("research", "Delegate research tasks", researcher),
     ),
 )
 
@@ -378,13 +380,18 @@ graph TD
         VertexAnthropic["vertexai_anthropic"]
     end
 
+    subgraph "Core Sub-packages"
+        Orchestration["orchestration (AgentTool, Handoff, Pipeline, ChainRun)"]
+        StreamUtil["streamutil (StreamText helpers)"]
+        MemoryPkg["memory (SlidingWindow, TokenBudget, Summary)"]
+    end
+
     subgraph "Extensions"
         Middleware["middleware (logging, otel)"]
         MCP["mcp (stdio, sse, manager)"]
-        Memory["memory"]
+        Memory["ext/memory"]
         Deep["deep (context, planning, checkpoint)"]
         Temporal["temporal"]
-        MultiAgent["multi-agent (AgentTool, Handoff)"]
         Graph["graph (workflow engine)"]
         Eval["eval (evaluation framework)"]
     end
@@ -405,11 +412,13 @@ graph TD
     Cache --> RateLimit
     Router --> Cache
     Agent --> Router
+    Orchestration --> Agent
+    StreamUtil --> Agent
+    MemoryPkg --> Agent
     Middleware --> Agent
     MCP --> Tools
     Deep --> Agent
     Temporal --> Agent
-    MultiAgent --> Agent
     Graph --> Agent
     Eval --> Agent
 ```
@@ -441,19 +450,21 @@ result, _ := agent.Run(ctx, "Analyze Q4 results",
 Manage context windows intelligently across long conversations:
 
 ```go
+import "github.com/fugue-labs/gollem/core/memory"
+
 // Keep only the last 10 message pairs.
 agent := gollem.NewAgent[string](model,
-    gollem.WithHistoryProcessor[string](gollem.SlidingWindowMemory(10)),
+    gollem.WithHistoryProcessor[string](memory.SlidingWindowMemory(10)),
 )
 
 // Stay within a token budget.
 agent := gollem.NewAgent[string](model,
-    gollem.WithHistoryProcessor[string](gollem.TokenBudgetMemory(4000)),
+    gollem.WithHistoryProcessor[string](memory.TokenBudgetMemory(4000)),
 )
 
 // Summarize old messages using a model.
 agent := gollem.NewAgent[string](model,
-    gollem.WithHistoryProcessor[string](gollem.SummaryMemory(summaryModel, 20)),
+    gollem.WithHistoryProcessor[string](memory.SummaryMemory(summaryModel, 20)),
 )
 ```
 
@@ -469,7 +480,7 @@ verbose := agent.Clone(
 )
 
 // Chain agents — first output becomes second input.
-summary, _ := gollem.ChainRun(ctx, researcher, writer, "Topic: AI safety",
+summary, _ := orchestration.ChainRun(ctx, researcher, writer, "Topic: AI safety",
     func(research ResearchResult) string {
         return fmt.Sprintf("Write an article based on: %s", research.Summary)
     },

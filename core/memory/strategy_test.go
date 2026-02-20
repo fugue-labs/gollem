@@ -1,22 +1,25 @@
-package core
+package memory_test
 
 import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/fugue-labs/gollem/core"
+	"github.com/fugue-labs/gollem/core/memory"
 )
 
-func makeMessages(n int) []ModelMessage {
-	messages := make([]ModelMessage, 0, n)
+func makeMessages(n int) []core.ModelMessage {
+	messages := make([]core.ModelMessage, 0, n)
 	for i := range n {
 		if i%2 == 0 {
-			messages = append(messages, ModelRequest{
-				Parts:     []ModelRequestPart{UserPromptPart{Content: "msg-" + string(rune('A'+i)), Timestamp: time.Now()}},
+			messages = append(messages, core.ModelRequest{
+				Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "msg-" + string(rune('A'+i)), Timestamp: time.Now()}},
 				Timestamp: time.Now(),
 			})
 		} else {
-			messages = append(messages, ModelResponse{
-				Parts:     []ModelResponsePart{TextPart{Content: "resp-" + string(rune('A'+i))}},
+			messages = append(messages, core.ModelResponse{
+				Parts:     []core.ModelResponsePart{core.TextPart{Content: "resp-" + string(rune('A'+i))}},
 				Timestamp: time.Now(),
 			})
 		}
@@ -25,25 +28,25 @@ func makeMessages(n int) []ModelMessage {
 }
 
 // msgText extracts a comparable string from a message for testing.
-func msgText(msg ModelMessage) string {
+func msgText(msg core.ModelMessage) string {
 	switch m := msg.(type) {
-	case ModelRequest:
+	case core.ModelRequest:
 		for _, p := range m.Parts {
-			if up, ok := p.(UserPromptPart); ok {
+			if up, ok := p.(core.UserPromptPart); ok {
 				return up.Content
 			}
-			if sp, ok := p.(SystemPromptPart); ok {
+			if sp, ok := p.(core.SystemPromptPart); ok {
 				return sp.Content
 			}
 		}
-	case ModelResponse:
+	case core.ModelResponse:
 		return m.TextContent()
 	}
 	return ""
 }
 
 func TestSlidingWindowMemory(t *testing.T) {
-	proc := SlidingWindowMemory(2)
+	proc := memory.SlidingWindowMemory(2)
 
 	// 10 messages: first + last 4 = 5
 	messages := makeMessages(10)
@@ -71,7 +74,7 @@ func TestSlidingWindowMemory(t *testing.T) {
 }
 
 func TestSlidingWindowMemory_PreservesFirst(t *testing.T) {
-	proc := SlidingWindowMemory(2)
+	proc := memory.SlidingWindowMemory(2)
 
 	messages := makeMessages(10)
 	result, err := proc(context.Background(), messages)
@@ -86,7 +89,7 @@ func TestSlidingWindowMemory_PreservesFirst(t *testing.T) {
 }
 
 func TestSlidingWindowMemory_SmallConversation(t *testing.T) {
-	proc := SlidingWindowMemory(5)
+	proc := memory.SlidingWindowMemory(5)
 
 	messages := makeMessages(4) // Under window
 	result, err := proc(context.Background(), messages)
@@ -100,18 +103,18 @@ func TestSlidingWindowMemory_SmallConversation(t *testing.T) {
 }
 
 func TestTokenBudgetMemory(t *testing.T) {
-	proc := TokenBudgetMemory(50) // Very tight budget
+	proc := memory.TokenBudgetMemory(50) // Very tight budget
 
 	// Create messages with known content length.
-	messages := []ModelMessage{
-		ModelRequest{Parts: []ModelRequestPart{
-			SystemPromptPart{Content: "You are helpful.", Timestamp: time.Now()},
-			UserPromptPart{Content: "Hello", Timestamp: time.Now()},
+	messages := []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{
+			core.SystemPromptPart{Content: "You are helpful.", Timestamp: time.Now()},
+			core.UserPromptPart{Content: "Hello", Timestamp: time.Now()},
 		}, Timestamp: time.Now()},
-		ModelResponse{Parts: []ModelResponsePart{TextPart{Content: "Hi there! How can I help you today? I am here to assist with anything."}}, Timestamp: time.Now()},
-		ModelRequest{Parts: []ModelRequestPart{UserPromptPart{Content: "Tell me about Go programming language and its features.", Timestamp: time.Now()}}, Timestamp: time.Now()},
-		ModelResponse{Parts: []ModelResponsePart{TextPart{Content: "Go is a statically typed language designed for simplicity and performance."}}, Timestamp: time.Now()},
-		ModelRequest{Parts: []ModelRequestPart{UserPromptPart{Content: "Thanks", Timestamp: time.Now()}}, Timestamp: time.Now()},
+		core.ModelResponse{Parts: []core.ModelResponsePart{core.TextPart{Content: "Hi there! How can I help you today? I am here to assist with anything."}}, Timestamp: time.Now()},
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "Tell me about Go programming language and its features.", Timestamp: time.Now()}}, Timestamp: time.Now()},
+		core.ModelResponse{Parts: []core.ModelResponsePart{core.TextPart{Content: "Go is a statically typed language designed for simplicity and performance."}}, Timestamp: time.Now()},
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "Thanks", Timestamp: time.Now()}}, Timestamp: time.Now()},
 	}
 
 	result, err := proc(context.Background(), messages)
@@ -134,7 +137,7 @@ func TestTokenBudgetMemory(t *testing.T) {
 }
 
 func TestTokenBudgetMemory_SmallConversation(t *testing.T) {
-	proc := TokenBudgetMemory(10000) // Very generous budget
+	proc := memory.TokenBudgetMemory(10000) // Very generous budget
 
 	messages := makeMessages(4)
 	result, err := proc(context.Background(), messages)
@@ -149,21 +152,21 @@ func TestTokenBudgetMemory_SmallConversation(t *testing.T) {
 
 func TestSummaryMemory(t *testing.T) {
 	// Create a summarizer model that returns a canned summary.
-	summarizer := NewTestModel(TextResponse("User asked about Go and got a helpful response."))
+	summarizer := core.NewTestModel(core.TextResponse("User asked about Go and got a helpful response."))
 
-	proc := SummaryMemory(summarizer, 4)
+	proc := memory.SummaryMemory(summarizer, 4)
 
-	messages := []ModelMessage{
-		ModelRequest{Parts: []ModelRequestPart{
-			SystemPromptPart{Content: "You are helpful.", Timestamp: time.Now()},
-			UserPromptPart{Content: "Tell me about Go", Timestamp: time.Now()},
+	messages := []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{
+			core.SystemPromptPart{Content: "You are helpful.", Timestamp: time.Now()},
+			core.UserPromptPart{Content: "Tell me about Go", Timestamp: time.Now()},
 		}, Timestamp: time.Now()},
-		ModelResponse{Parts: []ModelResponsePart{TextPart{Content: "Go is great!"}}, Timestamp: time.Now()},
-		ModelRequest{Parts: []ModelRequestPart{UserPromptPart{Content: "What about concurrency?", Timestamp: time.Now()}}, Timestamp: time.Now()},
-		ModelResponse{Parts: []ModelResponsePart{TextPart{Content: "Goroutines are lightweight threads."}}, Timestamp: time.Now()},
-		ModelRequest{Parts: []ModelRequestPart{UserPromptPart{Content: "And channels?", Timestamp: time.Now()}}, Timestamp: time.Now()},
-		ModelResponse{Parts: []ModelResponsePart{TextPart{Content: "Channels enable safe communication."}}, Timestamp: time.Now()},
-		ModelRequest{Parts: []ModelRequestPart{UserPromptPart{Content: "Thanks!", Timestamp: time.Now()}}, Timestamp: time.Now()},
+		core.ModelResponse{Parts: []core.ModelResponsePart{core.TextPart{Content: "Go is great!"}}, Timestamp: time.Now()},
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "What about concurrency?", Timestamp: time.Now()}}, Timestamp: time.Now()},
+		core.ModelResponse{Parts: []core.ModelResponsePart{core.TextPart{Content: "Goroutines are lightweight threads."}}, Timestamp: time.Now()},
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "And channels?", Timestamp: time.Now()}}, Timestamp: time.Now()},
+		core.ModelResponse{Parts: []core.ModelResponsePart{core.TextPart{Content: "Channels enable safe communication."}}, Timestamp: time.Now()},
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "Thanks!", Timestamp: time.Now()}}, Timestamp: time.Now()},
 	}
 
 	result, err := proc(context.Background(), messages)
@@ -184,9 +187,9 @@ func TestSummaryMemory(t *testing.T) {
 	// Should contain a summary system prompt.
 	found := false
 	for _, msg := range result {
-		if req, ok := msg.(ModelRequest); ok {
+		if req, ok := msg.(core.ModelRequest); ok {
 			for _, part := range req.Parts {
-				if sp, ok := part.(SystemPromptPart); ok {
+				if sp, ok := part.(core.SystemPromptPart); ok {
 					if len(sp.Content) > 0 {
 						found = true
 					}
@@ -205,8 +208,8 @@ func TestSummaryMemory(t *testing.T) {
 }
 
 func TestSummaryMemory_ShortConversation(t *testing.T) {
-	summarizer := NewTestModel(TextResponse("summary"))
-	proc := SummaryMemory(summarizer, 10)
+	summarizer := core.NewTestModel(core.TextResponse("summary"))
+	proc := memory.SummaryMemory(summarizer, 10)
 
 	messages := makeMessages(4) // Under limit
 	result, err := proc(context.Background(), messages)

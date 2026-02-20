@@ -1,16 +1,19 @@
-package core
+package orchestration_test
 
 import (
 	"context"
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/fugue-labs/gollem/core"
+	"github.com/fugue-labs/gollem/core/orchestration"
 )
 
 func TestPipeline_Sequential(t *testing.T) {
-	p := NewPipeline(
-		TransformStep(strings.ToUpper),
-		TransformStep(func(s string) string { return s + "!" }),
+	p := orchestration.NewPipeline(
+		orchestration.TransformStep(strings.ToUpper),
+		orchestration.TransformStep(func(s string) string { return s + "!" }),
 	)
 
 	result, err := p.Run(context.Background(), "hello")
@@ -23,8 +26,8 @@ func TestPipeline_Sequential(t *testing.T) {
 }
 
 func TestPipeline_Then(t *testing.T) {
-	p := NewPipeline(TransformStep(strings.ToUpper))
-	p2 := p.Then(TransformStep(func(s string) string { return "[" + s + "]" }))
+	p := orchestration.NewPipeline(orchestration.TransformStep(strings.ToUpper))
+	p2 := p.Then(orchestration.TransformStep(func(s string) string { return "[" + s + "]" }))
 
 	result, err := p2.Run(context.Background(), "hello")
 	if err != nil {
@@ -45,10 +48,10 @@ func TestPipeline_Then(t *testing.T) {
 }
 
 func TestPipeline_AgentStep(t *testing.T) {
-	model := NewTestModel(TextResponse("agent output"))
-	agent := NewAgent[string](model)
+	model := core.NewTestModel(core.TextResponse("agent output"))
+	agent := core.NewAgent[string](model)
 
-	step := AgentStep(agent)
+	step := orchestration.AgentStep(agent)
 	result, err := step(context.Background(), "input")
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +62,7 @@ func TestPipeline_AgentStep(t *testing.T) {
 }
 
 func TestPipeline_TransformStep(t *testing.T) {
-	step := TransformStep(func(s string) string {
+	step := orchestration.TransformStep(func(s string) string {
 		return strings.ReplaceAll(s, "world", "Go")
 	})
 
@@ -73,9 +76,9 @@ func TestPipeline_TransformStep(t *testing.T) {
 }
 
 func TestPipeline_ParallelSteps(t *testing.T) {
-	step := ParallelSteps(
-		TransformStep(func(s string) string { return "A:" + s }),
-		TransformStep(func(s string) string { return "B:" + s }),
+	step := orchestration.ParallelSteps(
+		orchestration.TransformStep(func(s string) string { return "A:" + s }),
+		orchestration.TransformStep(func(s string) string { return "B:" + s }),
 	)
 
 	result, err := step(context.Background(), "input")
@@ -88,10 +91,10 @@ func TestPipeline_ParallelSteps(t *testing.T) {
 }
 
 func TestPipeline_ConditionalStep(t *testing.T) {
-	step := ConditionalStep(
+	step := orchestration.ConditionalStep(
 		func(s string) bool { return len(s) > 5 },
-		TransformStep(func(s string) string { return "long: " + s }),
-		TransformStep(func(s string) string { return "short: " + s }),
+		orchestration.TransformStep(func(s string) string { return "long: " + s }),
+		orchestration.TransformStep(func(s string) string { return "short: " + s }),
 	)
 
 	long, _ := step(context.Background(), "abcdefgh")
@@ -106,11 +109,11 @@ func TestPipeline_ConditionalStep(t *testing.T) {
 }
 
 func TestPipeline_ErrorPropagation(t *testing.T) {
-	p := NewPipeline(
+	p := orchestration.NewPipeline(
 		func(_ context.Context, _ string) (string, error) {
 			return "", errors.New("step failed")
 		},
-		TransformStep(func(s string) string { return "should not reach" }),
+		orchestration.TransformStep(func(s string) string { return "should not reach" }),
 	)
 
 	_, err := p.Run(context.Background(), "input")

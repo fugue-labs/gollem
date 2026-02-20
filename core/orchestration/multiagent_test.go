@@ -1,22 +1,25 @@
-package core
+package orchestration_test
 
 import (
 	"context"
 	"testing"
+
+	"github.com/fugue-labs/gollem/core"
+	"github.com/fugue-labs/gollem/core/orchestration"
 )
 
 func TestAgentTool_Delegation(t *testing.T) {
 	// Inner agent: given a prompt, returns a response.
-	innerModel := NewTestModel(TextResponse("Inner agent completed the task."))
-	innerAgent := NewAgent[string](innerModel)
+	innerModel := core.NewTestModel(core.TextResponse("Inner agent completed the task."))
+	innerAgent := core.NewAgent[string](innerModel)
 
 	// Outer agent: calls inner agent as a tool.
-	outerModel := NewTestModel(
-		ToolCallResponseWithID("delegate", `{"prompt":"Do the inner task"}`, "tc1"),
-		TextResponse("Outer done."),
+	outerModel := core.NewTestModel(
+		core.ToolCallResponseWithID("delegate", `{"prompt":"Do the inner task"}`, "tc1"),
+		core.TextResponse("Outer done."),
 	)
-	outerAgent := NewAgent[string](outerModel,
-		WithTools[string](AgentTool("delegate", "Delegate to inner agent", innerAgent)),
+	outerAgent := core.NewAgent[string](outerModel,
+		core.WithTools[string](orchestration.AgentTool("delegate", "Delegate to inner agent", innerAgent)),
 	)
 
 	result, err := outerAgent.Run(context.Background(), "Do the task")
@@ -30,25 +33,25 @@ func TestAgentTool_Delegation(t *testing.T) {
 
 func TestAgentTool_ChainedDelegation(t *testing.T) {
 	// Level 3: innermost agent.
-	level3Model := NewTestModel(TextResponse("Level 3 result"))
-	level3Agent := NewAgent[string](level3Model)
+	level3Model := core.NewTestModel(core.TextResponse("Level 3 result"))
+	level3Agent := core.NewAgent[string](level3Model)
 
 	// Level 2: calls level 3.
-	level2Model := NewTestModel(
-		ToolCallResponseWithID("level3", `{"prompt":"Go deeper"}`, "tc1"),
-		TextResponse("Level 2 done."),
+	level2Model := core.NewTestModel(
+		core.ToolCallResponseWithID("level3", `{"prompt":"Go deeper"}`, "tc1"),
+		core.TextResponse("Level 2 done."),
 	)
-	level2Agent := NewAgent[string](level2Model,
-		WithTools[string](AgentTool("level3", "Call level 3", level3Agent)),
+	level2Agent := core.NewAgent[string](level2Model,
+		core.WithTools[string](orchestration.AgentTool("level3", "Call level 3", level3Agent)),
 	)
 
 	// Level 1: calls level 2.
-	level1Model := NewTestModel(
-		ToolCallResponseWithID("level2", `{"prompt":"Go to level 2"}`, "tc1"),
-		TextResponse("Level 1 done."),
+	level1Model := core.NewTestModel(
+		core.ToolCallResponseWithID("level2", `{"prompt":"Go to level 2"}`, "tc1"),
+		core.TextResponse("Level 1 done."),
 	)
-	level1Agent := NewAgent[string](level1Model,
-		WithTools[string](AgentTool("level2", "Call level 2", level2Agent)),
+	level1Agent := core.NewAgent[string](level1Model,
+		core.WithTools[string](orchestration.AgentTool("level2", "Call level 2", level2Agent)),
 	)
 
 	result, err := level1Agent.Run(context.Background(), "Start chain")
@@ -61,10 +64,10 @@ func TestAgentTool_ChainedDelegation(t *testing.T) {
 }
 
 func TestHandoff_TwoAgents(t *testing.T) {
-	agentA := NewAgent[string](NewTestModel(TextResponse("Step A output")))
-	agentB := NewAgent[string](NewTestModel(TextResponse("Step B final")))
+	agentA := core.NewAgent[string](core.NewTestModel(core.TextResponse("Step A output")))
+	agentB := core.NewAgent[string](core.NewTestModel(core.TextResponse("Step B final")))
 
-	pipeline := NewHandoff[string]()
+	pipeline := orchestration.NewHandoff[string]()
 	pipeline.AddStep("agent-a", agentA, nil)
 	pipeline.AddStep("agent-b", agentB, func(prevOutput string) string {
 		return "Continue from: " + prevOutput
@@ -80,10 +83,10 @@ func TestHandoff_TwoAgents(t *testing.T) {
 }
 
 func TestHandoff_UsageAggregation(t *testing.T) {
-	agentA := NewAgent[string](NewTestModel(TextResponse("A")))
-	agentB := NewAgent[string](NewTestModel(TextResponse("B")))
+	agentA := core.NewAgent[string](core.NewTestModel(core.TextResponse("A")))
+	agentB := core.NewAgent[string](core.NewTestModel(core.TextResponse("B")))
 
-	pipeline := NewHandoff[string]()
+	pipeline := orchestration.NewHandoff[string]()
 	pipeline.AddStep("a", agentA, nil)
 	pipeline.AddStep("b", agentB, func(_ string) string { return "B prompt" })
 
@@ -98,7 +101,7 @@ func TestHandoff_UsageAggregation(t *testing.T) {
 }
 
 func TestHandoff_EmptyPipeline(t *testing.T) {
-	pipeline := NewHandoff[string]()
+	pipeline := orchestration.NewHandoff[string]()
 	_, err := pipeline.Run(context.Background(), "Start")
 	if err == nil {
 		t.Fatal("expected error for empty pipeline")
@@ -106,11 +109,11 @@ func TestHandoff_EmptyPipeline(t *testing.T) {
 }
 
 func TestHandoff_ThreeAgents(t *testing.T) {
-	agentA := NewAgent[string](NewTestModel(TextResponse("A result")))
-	agentB := NewAgent[string](NewTestModel(TextResponse("B result")))
-	agentC := NewAgent[string](NewTestModel(TextResponse("C final")))
+	agentA := core.NewAgent[string](core.NewTestModel(core.TextResponse("A result")))
+	agentB := core.NewAgent[string](core.NewTestModel(core.TextResponse("B result")))
+	agentC := core.NewAgent[string](core.NewTestModel(core.TextResponse("C final")))
 
-	pipeline := NewHandoff[string]()
+	pipeline := orchestration.NewHandoff[string]()
 	pipeline.AddStep("a", agentA, nil)
 	pipeline.AddStep("b", agentB, func(prev string) string { return "From A: " + prev })
 	pipeline.AddStep("c", agentC, func(prev string) string { return "From B: " + prev })
