@@ -65,6 +65,7 @@ type DeferredToolRequest struct {
 
 // DeferredToolResult provides the result for a previously deferred tool call.
 type DeferredToolResult struct {
+	ToolName   string `json:"tool_name"`
 	ToolCallID string `json:"tool_call_id"`
 	Content    string `json:"content"`
 	IsError    bool   `json:"is_error,omitempty"`

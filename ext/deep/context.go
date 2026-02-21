@@ -309,14 +309,20 @@ func (cm *ContextManager) offloadContent(content string, tokens int) string {
 	cm.mu.Unlock()
 
 	// Try to store in the context store.
+	stored := false
 	if cm.store != nil {
-		_ = cm.store.Store(key, content)
+		if err := cm.store.Store(key, content); err == nil {
+			stored = true
+		}
 	}
 
 	// Build summary from first 200 chars.
 	preview := content
 	if len(preview) > 200 {
 		preview = preview[:200] + "..."
+	}
+	if !stored {
+		return fmt.Sprintf("[Content could not be offloaded — %d tokens retained inline. Summary: %s]", tokens, preview)
 	}
 	return fmt.Sprintf("[Content offloaded — %d tokens. Summary: %s]", tokens, preview)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestRunCondition_Or(t *testing.T) {
@@ -58,12 +59,61 @@ func TestRunCondition_And(t *testing.T) {
 }
 
 func TestMaxRunDuration(t *testing.T) {
-	// Use a very short duration so the condition triggers immediately on second check.
+	// Use a very short duration so the condition triggers immediately.
 	cond := MaxRunDuration(0)
 
-	stop, _ := cond(context.Background(), nil, &ModelResponse{})
+	rc := &RunContext{RunStartTime: time.Now()}
+	stop, _ := cond(context.Background(), rc, &ModelResponse{})
 	if !stop {
 		t.Error("expected MaxRunDuration(0) to trigger immediately")
+	}
+}
+
+// Regression: MaxRunDuration used to capture time.Now() at creation time,
+// not at run start. This test verifies the timer starts from RunStartTime.
+func TestMaxRunDuration_UsesRunStartTime(t *testing.T) {
+	cond := MaxRunDuration(50 * time.Millisecond)
+
+	// RunStartTime is recent — should not trigger.
+	rc := &RunContext{RunStartTime: time.Now()}
+	stop, _ := cond(context.Background(), rc, &ModelResponse{})
+	if stop {
+		t.Error("expected MaxRunDuration not to trigger with fresh start time")
+	}
+
+	// RunStartTime is in the past — should trigger.
+	rc2 := &RunContext{RunStartTime: time.Now().Add(-100 * time.Millisecond)}
+	stop2, _ := cond(context.Background(), rc2, &ModelResponse{})
+	if !stop2 {
+		t.Error("expected MaxRunDuration to trigger with old start time")
+	}
+}
+
+// Regression: MaxRunDuration previously couldn't be shared across runs because
+// the timer was a captured closure variable. Now it uses RunStartTime, which
+// is per-run, so the same condition can be reused.
+func TestMaxRunDuration_ReusableAcrossRuns(t *testing.T) {
+	cond := MaxRunDuration(50 * time.Millisecond)
+
+	// First "run" — fresh start, should not trigger.
+	rc1 := &RunContext{RunStartTime: time.Now(), RunID: "run-1"}
+	stop, _ := cond(context.Background(), rc1, &ModelResponse{})
+	if stop {
+		t.Error("run-1: expected not to trigger with fresh start time")
+	}
+
+	// Second "run" — also fresh, should not trigger.
+	rc2 := &RunContext{RunStartTime: time.Now(), RunID: "run-2"}
+	stop, _ = cond(context.Background(), rc2, &ModelResponse{})
+	if stop {
+		t.Error("run-2: expected not to trigger with fresh start time")
+	}
+
+	// Third "run" — start time in the past, should trigger.
+	rc3 := &RunContext{RunStartTime: time.Now().Add(-100 * time.Millisecond), RunID: "run-3"}
+	stop, _ = cond(context.Background(), rc3, &ModelResponse{})
+	if !stop {
+		t.Error("run-3: expected to trigger with old start time")
 	}
 }
 

@@ -2,6 +2,7 @@ package vertexai_anthropic
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/fugue-labs/gollem/core"
@@ -184,6 +185,8 @@ func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, pa
 							Text: p.Content,
 						})
 					}
+				default:
+					return nil, fmt.Errorf("vertexai_anthropic provider: unsupported request part type %T", part)
 				}
 			}
 			if len(userBlocks) > 0 {

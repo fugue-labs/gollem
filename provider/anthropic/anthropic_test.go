@@ -758,3 +758,33 @@ func TestBuildRequestNoThinkingByDefault(t *testing.T) {
 		t.Errorf("expected Thinking to be nil by default, got %+v", req.Thinking)
 	}
 }
+
+// Regression: unsupported request part types (ImagePart, AudioPart, DocumentPart)
+// were silently dropped. Now they return an error.
+func TestBuildRequestRejectsUnsupportedParts(t *testing.T) {
+	tests := []struct {
+		name string
+		part core.ModelRequestPart
+	}{
+		{"ImagePart", core.ImagePart{URL: "https://example.com/img.png", MIMEType: "image/png"}},
+		{"AudioPart", core.AudioPart{URL: "https://example.com/audio.mp3", MIMEType: "audio/mp3"}},
+		{"DocumentPart", core.DocumentPart{URL: "https://example.com/doc.pdf", MIMEType: "application/pdf"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			messages := []core.ModelMessage{
+				core.ModelRequest{
+					Parts:     []core.ModelRequestPart{tt.part},
+					Timestamp: time.Now(),
+				},
+			}
+			_, err := buildRequest(messages, nil, &core.ModelRequestParameters{AllowTextOutput: true}, "claude-3", 1024, false)
+			if err == nil {
+				t.Errorf("expected error for unsupported %s, got nil", tt.name)
+			}
+			if err != nil && !strings.Contains(err.Error(), "unsupported request part type") {
+				t.Errorf("expected 'unsupported request part type' in error, got %q", err.Error())
+			}
+		})
+	}
+}

@@ -273,3 +273,57 @@ func TestErrDeferred_Error(t *testing.T) {
 		t.Errorf("Error() = %q, want %q", err.Error(), expected)
 	}
 }
+
+// Regression: DeferredToolResult was missing ToolName, causing ToolReturnPart
+// to have an empty ToolName when resuming with deferred results.
+func TestDeferredTool_ToolNamePreserved(t *testing.T) {
+	model := NewTestModel(TextResponse("resumed"))
+
+	agent := NewAgent[string](model)
+
+	_, err := agent.Run(context.Background(), "resume",
+		WithMessages(
+			ModelRequest{
+				Parts:     []ModelRequestPart{UserPromptPart{Content: "original"}},
+				Timestamp: time.Now(),
+			},
+			ModelResponse{
+				Parts: []ModelResponsePart{
+					ToolCallPart{ToolName: "my_tool", ArgsJSON: `{}`, ToolCallID: "call_42"},
+				},
+				FinishReason: FinishReasonToolCall,
+				Timestamp:    time.Now(),
+			},
+		),
+		WithDeferredResults(DeferredToolResult{
+			ToolName:   "my_tool",
+			ToolCallID: "call_42",
+			Content:    "result data",
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Verify the model received a ToolReturnPart with the correct ToolName.
+	calls := model.Calls()
+	if len(calls) == 0 {
+		t.Fatal("expected at least one model call")
+	}
+	found := false
+	for _, msg := range calls[0].Messages {
+		if req, ok := msg.(ModelRequest); ok {
+			for _, part := range req.Parts {
+				if trp, ok := part.(ToolReturnPart); ok && trp.ToolCallID == "call_42" {
+					if trp.ToolName != "my_tool" {
+						t.Errorf("ToolReturnPart.ToolName = %q, want %q", trp.ToolName, "my_tool")
+					}
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("expected ToolReturnPart with ToolCallID 'call_42' in model messages")
+	}
+}

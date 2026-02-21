@@ -2,6 +2,7 @@ package vertexai
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/fugue-labs/gollem/core"
@@ -212,6 +213,8 @@ func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, pa
 					} else {
 						userParts = append(userParts, geminiPart{Text: p.Content})
 					}
+				default:
+					return nil, fmt.Errorf("vertexai provider: unsupported request part type %T", part)
 				}
 			}
 

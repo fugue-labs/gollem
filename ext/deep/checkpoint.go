@@ -45,8 +45,12 @@ type messageEnvelope struct {
 
 // MarshalJSON implements custom JSON marshaling for Checkpoint.
 func (cp Checkpoint) MarshalJSON() ([]byte, error) {
+	msgs, err := encodeMessages(cp.Messages)
+	if err != nil {
+		return nil, err
+	}
 	cj := checkpointJSON{
-		Messages:   encodeMessages(cp.Messages),
+		Messages:   msgs,
 		Usage:      cp.Usage,
 		RunID:      cp.RunID,
 		StepIndex:  cp.StepIndex,

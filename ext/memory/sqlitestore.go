@@ -183,8 +183,14 @@ func parseDocument(ns, key, valueJSON, createdStr, updatedStr string) (*Document
 		return nil, fmt.Errorf("unmarshaling document value: %w", err)
 	}
 
-	created, _ := time.Parse(time.RFC3339Nano, createdStr)
-	updated, _ := time.Parse(time.RFC3339Nano, updatedStr)
+	created, err := time.Parse(time.RFC3339Nano, createdStr)
+	if err != nil {
+		return nil, fmt.Errorf("parsing created timestamp: %w", err)
+	}
+	updated, err := time.Parse(time.RFC3339Nano, updatedStr)
+	if err != nil {
+		return nil, fmt.Errorf("parsing updated timestamp: %w", err)
+	}
 
 	var namespace []string
 	if ns != "" {

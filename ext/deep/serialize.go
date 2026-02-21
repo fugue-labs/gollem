@@ -116,28 +116,34 @@ func decodeResponseParts(envs []responsePartEnvelope) []core.ModelResponsePart {
 }
 
 // encodeMessages converts a slice of ModelMessage to JSON-safe messageEnvelopes.
-func encodeMessages(messages []core.ModelMessage) []messageEnvelope {
+func encodeMessages(messages []core.ModelMessage) ([]messageEnvelope, error) {
 	envs := make([]messageEnvelope, 0, len(messages))
 	for _, msg := range messages {
 		switch m := msg.(type) {
 		case core.ModelRequest:
-			data, _ := json.Marshal(serializableRequest{
+			data, err := json.Marshal(serializableRequest{
 				Parts:     encodeRequestParts(m.Parts),
 				Timestamp: m.Timestamp,
 			})
+			if err != nil {
+				return nil, fmt.Errorf("encoding request message: %w", err)
+			}
 			envs = append(envs, messageEnvelope{Kind: "request", RawData: data})
 		case core.ModelResponse:
-			data, _ := json.Marshal(serializableResponse{
+			data, err := json.Marshal(serializableResponse{
 				Parts:        encodeResponseParts(m.Parts),
 				Usage:        m.Usage,
 				ModelName:    m.ModelName,
 				FinishReason: string(m.FinishReason),
 				Timestamp:    m.Timestamp,
 			})
+			if err != nil {
+				return nil, fmt.Errorf("encoding response message: %w", err)
+			}
 			envs = append(envs, messageEnvelope{Kind: "response", RawData: data})
 		}
 	}
-	return envs
+	return envs, nil
 }
 
 // decodeMessages converts messageEnvelopes back to ModelMessage slice.

@@ -325,6 +325,7 @@ type agentRunState struct {
 	toolRetries map[string]int
 	runStep     int
 	runID       string
+	startTime   time.Time
 	limits      UsageLimits
 	mu          sync.Mutex // protects usage, toolRetries, and traceSteps during concurrent tool execution
 	traceSteps  []TraceStep
@@ -353,6 +354,7 @@ func (a *Agent[T]) Run(ctx context.Context, prompt string, opts ...RunOption) (*
 	state := &agentRunState{
 		toolRetries: make(map[string]int),
 		runID:       newRunID(),
+		startTime:   time.Now(),
 	}
 
 	// Copy any provided history.
@@ -392,12 +394,13 @@ func (a *Agent[T]) Run(ctx context.Context, prompt string, opts ...RunOption) (*
 
 	// Fire OnRunStart hooks.
 	rc := &RunContext{
-		Deps:     deps,
-		Usage:    state.usage,
-		Prompt:   prompt,
-		RunStep:  state.runStep,
-		RunID:    state.runID,
-		EventBus: a.eventBus,
+		Deps:         deps,
+		Usage:        state.usage,
+		Prompt:       prompt,
+		RunStep:      state.runStep,
+		RunID:        state.runID,
+		RunStartTime: state.startTime,
+		EventBus:     a.eventBus,
 	}
 
 	// Publish RunStartedEvent.
@@ -410,18 +413,16 @@ func (a *Agent[T]) Run(ctx context.Context, prompt string, opts ...RunOption) (*
 		}
 	})
 
-	// Track start time for tracing.
-	startTime := time.Now()
-
 	result, runErr := a.runLoop(ctx, state, prompt, settings, limits, deps, cfg.deferredResults)
 
 	endRC := &RunContext{
-		Deps:     deps,
-		Usage:    state.usage,
-		Prompt:   prompt,
-		RunStep:  state.runStep,
-		RunID:    state.runID,
-		EventBus: a.eventBus,
+		Deps:         deps,
+		Usage:        state.usage,
+		Prompt:       prompt,
+		RunStep:      state.runStep,
+		RunID:        state.runID,
+		RunStartTime: state.startTime,
+		EventBus:     a.eventBus,
 	}
 
 	// Publish RunCompletedEvent.
@@ -444,9 +445,9 @@ func (a *Agent[T]) Run(ctx context.Context, prompt string, opts ...RunOption) (*
 		trace := &RunTrace{
 			RunID:     state.runID,
 			Prompt:    prompt,
-			StartTime: startTime,
+			StartTime: state.startTime,
 			EndTime:   endTime,
-			Duration:  endTime.Sub(startTime),
+			Duration:  endTime.Sub(state.startTime),
 			Steps:     state.traceSteps,
 			Usage:     state.usage,
 			Success:   runErr == nil,
@@ -487,6 +488,7 @@ func (a *Agent[T]) RunStream(ctx context.Context, prompt string, opts ...RunOpti
 	state := &agentRunState{
 		toolRetries: make(map[string]int),
 		runID:       newRunID(),
+		startTime:   time.Now(),
 	}
 	if len(cfg.messages) > 0 {
 		state.messages = make([]ModelMessage, len(cfg.messages))
@@ -533,12 +535,13 @@ func (a *Agent[T]) prepareTools(ctx context.Context, state *agentRunState, tools
 	}
 
 	rc := &RunContext{
-		Deps:     deps,
-		Usage:    state.usage,
-		Prompt:   prompt,
-		Messages: state.messages,
-		RunStep:  state.runStep,
-		RunID:    state.runID,
+		Deps:         deps,
+		Usage:        state.usage,
+		Prompt:       prompt,
+		Messages:     state.messages,
+		RunStep:      state.runStep,
+		RunID:        state.runID,
+		RunStartTime: state.startTime,
 	}
 
 	// Apply per-tool prepare functions.
@@ -608,11 +611,13 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 			if dr.IsError {
 				deferredParts = append(deferredParts, RetryPromptPart{
 					Content:    dr.Content,
+					ToolName:   dr.ToolName,
 					ToolCallID: dr.ToolCallID,
 					Timestamp:  time.Now(),
 				})
 			} else {
 				deferredParts = append(deferredParts, ToolReturnPart{
+					ToolName:   dr.ToolName,
 					Content:    dr.Content,
 					ToolCallID: dr.ToolCallID,
 					Timestamp:  time.Now(),
@@ -718,13 +723,14 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 
 		// Run turn guardrails.
 		turnRC := &RunContext{
-			Deps:     deps,
-			Usage:    state.usage,
-			Prompt:   prompt,
-			Messages: messages,
-			RunStep:  state.runStep,
-			RunID:    state.runID,
-			EventBus: a.eventBus,
+			Deps:         deps,
+			Usage:        state.usage,
+			Prompt:       prompt,
+			Messages:     messages,
+			RunStep:      state.runStep,
+			RunID:        state.runID,
+			RunStartTime: state.startTime,
+			EventBus:     a.eventBus,
 		}
 		for _, g := range a.turnGuardrails {
 			if gErr := g.fn(ctx, turnRC, messages); gErr != nil {
@@ -737,13 +743,14 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 
 		// Fire OnModelRequest hooks.
 		modelRC := &RunContext{
-			Deps:     deps,
-			Usage:    state.usage,
-			Prompt:   prompt,
-			Messages: messages,
-			RunStep:  state.runStep,
-			RunID:    state.runID,
-			EventBus: a.eventBus,
+			Deps:         deps,
+			Usage:        state.usage,
+			Prompt:       prompt,
+			Messages:     messages,
+			RunStep:      state.runStep,
+			RunID:        state.runID,
+			RunStartTime: state.startTime,
+			EventBus:     a.eventBus,
 		}
 		a.fireHook(func(h Hook) {
 			if h.OnModelRequest != nil {
@@ -828,12 +835,13 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 		// Check run conditions.
 		if len(a.runConditions) > 0 {
 			condRC := &RunContext{
-				Deps:     deps,
-				Usage:    state.usage,
-				Prompt:   prompt,
-				Messages: state.messages,
-				RunStep:  state.runStep,
-				RunID:    state.runID,
+				Deps:         deps,
+				Usage:        state.usage,
+				Prompt:       prompt,
+				Messages:     state.messages,
+				RunStep:      state.runStep,
+				RunID:        state.runID,
+				RunStartTime: state.startTime,
 			}
 			for _, cond := range a.runConditions {
 				if stop, reason := cond(ctx, condRC, resp); stop {
@@ -962,18 +970,19 @@ func (a *Agent[T]) processResponse(
 
 		// Validate output.
 		rc := &RunContext{
-			Deps:    deps,
-			Usage:   state.usage,
-			Prompt:  prompt,
-			RunStep: state.runStep,
-			RunID:   state.runID,
+			Deps:         deps,
+			Usage:        state.usage,
+			Prompt:       prompt,
+			RunStep:      state.runStep,
+			RunID:        state.runID,
+			RunStartTime: state.startTime,
 		}
 		output, err = validateOutput(ctx, rc, output, a.outputValidators)
 		if err != nil {
 			var retryErr *ModelRetryError
 			if errors.As(err, &retryErr) {
-				if retryErr := incrementRetries(&state.retries, a.maxRetries, state.messages); retryErr != nil {
-					return nil, nil, nil, retryErr
+				if incErr := incrementRetries(&state.retries, a.maxRetries, state.messages); incErr != nil {
+					return nil, nil, nil, incErr
 				}
 				part := buildRetryParts(retryErr.Message, "", "")
 				return nil, []ModelRequestPart{part}, nil, nil
@@ -1067,13 +1076,14 @@ func (a *Agent[T]) processResponse(
 
 		// Validate output.
 		rc := &RunContext{
-			Deps:       deps,
-			Usage:      state.usage,
-			Prompt:     prompt,
-			ToolName:   tc.ToolName,
-			ToolCallID: tc.ToolCallID,
-			RunStep:    state.runStep,
-			RunID:      state.runID,
+			Deps:         deps,
+			Usage:        state.usage,
+			Prompt:       prompt,
+			ToolName:     tc.ToolName,
+			ToolCallID:   tc.ToolCallID,
+			RunStep:      state.runStep,
+			RunID:        state.runID,
+			RunStartTime: state.startTime,
 		}
 		output, err = validateOutput(ctx, rc, output, a.outputValidators)
 		if err != nil {
@@ -1237,17 +1247,18 @@ func (a *Agent[T]) executeSingleTool(
 	}
 
 	rc := &RunContext{
-		Deps:       deps,
-		Usage:      state.usage,
-		Prompt:     prompt,
-		Retry:      state.toolRetries[call.ToolName],
-		MaxRetries: maxRetries,
-		ToolName:   call.ToolName,
-		ToolCallID: call.ToolCallID,
-		Messages:   state.messages,
-		RunStep:    state.runStep,
-		RunID:      state.runID,
-		EventBus:   a.eventBus,
+		Deps:         deps,
+		Usage:        state.usage,
+		Prompt:       prompt,
+		Retry:        state.toolRetries[call.ToolName],
+		MaxRetries:   maxRetries,
+		ToolName:     call.ToolName,
+		ToolCallID:   call.ToolCallID,
+		Messages:     state.messages,
+		RunStep:      state.runStep,
+		RunID:        state.runID,
+		RunStartTime: state.startTime,
+		EventBus:     a.eventBus,
 	}
 	state.mu.Unlock()
 
@@ -1487,11 +1498,12 @@ func (a *Agent[T]) buildInitialRequestWithDynamic(ctx context.Context, prompt st
 	// Add dynamic system prompts.
 	for _, fn := range a.dynamicSystemPrompts {
 		rc := &RunContext{
-			Deps:    deps,
-			Usage:   state.usage,
-			Prompt:  prompt,
-			RunStep: state.runStep,
-			RunID:   state.runID,
+			Deps:         deps,
+			Usage:        state.usage,
+			Prompt:       prompt,
+			RunStep:      state.runStep,
+			RunID:        state.runID,
+			RunStartTime: state.startTime,
 		}
 		content, err := fn(ctx, rc)
 		if err != nil {

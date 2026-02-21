@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/fugue-labs/gollem/core"
@@ -228,6 +229,8 @@ func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, pa
 							Content: p.Content,
 						})
 					}
+				default:
+					return nil, fmt.Errorf("openai provider: unsupported request part type %T", part)
 				}
 			}
 

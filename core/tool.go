@@ -31,17 +31,18 @@ type ToolDefinition struct {
 
 // RunContext provides tools with access to agent run state.
 type RunContext struct {
-	Deps       any            // user-provided dependencies
-	Usage      RunUsage       // current usage
-	Prompt     string         // the user prompt
-	Retry      int            // current retry count for this tool
-	MaxRetries int            // max retries configured
-	ToolName   string         // name of the current tool
-	ToolCallID string         // ID of the current tool call
-	Messages   []ModelMessage // conversation history (read-only)
-	RunStep    int            // current step number
-	RunID      string         // unique run ID
-	EventBus   *EventBus      // event bus for agent coordination (nil if not configured)
+	Deps         any            // user-provided dependencies
+	Usage        RunUsage       // current usage
+	Prompt       string         // the user prompt
+	Retry        int            // current retry count for this tool
+	MaxRetries   int            // max retries configured
+	ToolName     string         // name of the current tool
+	ToolCallID   string         // ID of the current tool call
+	Messages     []ModelMessage // conversation history (read-only)
+	RunStep      int            // current step number
+	RunID        string         // unique run ID
+	RunStartTime time.Time      // when the current run started
+	EventBus     *EventBus      // event bus for agent coordination (nil if not configured)
 }
 
 // ToolHandler is the function that executes a tool.
