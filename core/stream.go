@@ -59,11 +59,19 @@ func (s *StreamResult[T]) StreamText(delta bool) iter.Seq2[string, error] {
 					}
 				}
 			case PartStartEvent:
-				if tp, ok := e.Part.(TextPart); ok && !delta {
-					cumulative += tp.Content
-					if cumulative != "" {
-						if !yield(cumulative, nil) {
-							return
+				if tp, ok := e.Part.(TextPart); ok {
+					if delta {
+						if tp.Content != "" {
+							if !yield(tp.Content, nil) {
+								return
+							}
+						}
+					} else {
+						cumulative += tp.Content
+						if cumulative != "" {
+							if !yield(cumulative, nil) {
+								return
+							}
 						}
 					}
 				}
