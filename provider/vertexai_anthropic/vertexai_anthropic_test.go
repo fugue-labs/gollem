@@ -279,6 +279,106 @@ func TestRequestStreamIntegration(t *testing.T) {
 	}
 }
 
+// Regression: VertexAI Anthropic stream was missing thinking block and
+// thinking_delta handling, present in the direct Anthropic provider.
+func TestRequestStreamThinkingBlocks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		events := []string{
+			`event: message_start` + "\n" + `data: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}` + "\n",
+			`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}` + "\n",
+			`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me think about this."}}` + "\n",
+			`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" The answer is 4."}}` + "\n",
+			`event: content_block_stop` + "\n" + `data: {"type":"content_block_stop","index":0}` + "\n",
+			`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}` + "\n",
+			`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"The answer is 4."}}` + "\n",
+			`event: content_block_stop` + "\n" + `data: {"type":"content_block_stop","index":1}` + "\n",
+			`event: message_delta` + "\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":15}}` + "\n",
+			`event: message_stop` + "\n" + `data: {"type":"message_stop"}` + "\n",
+		}
+		for _, event := range events {
+			fmt.Fprint(w, event+"\n")
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	p := New(WithProject("test-project"), WithLocation("us-east5"))
+	p.tokenSource = &staticTokenSource{token: "test-token"}
+	p.httpClient = &http.Client{
+		Transport: &rewriteTransport{
+			base:      server.Client().Transport,
+			targetURL: server.URL,
+		},
+	}
+
+	stream, err := p.RequestStream(context.Background(), []core.ModelMessage{
+		core.ModelRequest{
+			Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "What is 2+2?"}},
+			Timestamp: time.Now(),
+		},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var thinkingContent strings.Builder
+	var textContent strings.Builder
+	hasThinkingStart := false
+	hasThinkingDelta := false
+
+	for {
+		event, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch e := event.(type) {
+		case core.PartStartEvent:
+			if _, ok := e.Part.(core.ThinkingPart); ok {
+				hasThinkingStart = true
+			}
+		case core.PartDeltaEvent:
+			if td, ok := e.Delta.(core.ThinkingPartDelta); ok {
+				hasThinkingDelta = true
+				thinkingContent.WriteString(td.ContentDelta)
+			}
+			if td, ok := e.Delta.(core.TextPartDelta); ok {
+				textContent.WriteString(td.ContentDelta)
+			}
+		}
+	}
+
+	if !hasThinkingStart {
+		t.Error("expected thinking PartStartEvent")
+	}
+	if !hasThinkingDelta {
+		t.Error("expected thinking PartDeltaEvent")
+	}
+	if thinkingContent.String() != "Let me think about this. The answer is 4." {
+		t.Errorf("unexpected thinking content: %q", thinkingContent.String())
+	}
+	if textContent.String() != "The answer is 4." {
+		t.Errorf("unexpected text content: %q", textContent.String())
+	}
+
+	// Verify the final response has both parts.
+	resp := stream.Response()
+	if len(resp.Parts) != 2 {
+		t.Fatalf("expected 2 parts in response, got %d", len(resp.Parts))
+	}
+	if _, ok := resp.Parts[0].(core.ThinkingPart); !ok {
+		t.Errorf("expected first part to be ThinkingPart, got %T", resp.Parts[0])
+	}
+	if tp, ok := resp.Parts[1].(core.TextPart); !ok || tp.Content != "The answer is 4." {
+		t.Errorf("expected second part to be TextPart with 'The answer is 4.', got %T %v", resp.Parts[1], resp.Parts[1])
+	}
+}
+
 func TestRequestHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)

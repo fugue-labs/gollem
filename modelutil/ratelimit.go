@@ -20,9 +20,15 @@ type RateLimitedModel struct {
 }
 
 // NewRateLimitedModel creates a rate-limited model wrapper.
-// requestsPerSecond is the sustained request rate.
-// burst is the maximum number of concurrent requests allowed.
+// requestsPerSecond is the sustained request rate and must be > 0.
+// burst is the maximum number of concurrent requests allowed and must be >= 1.
 func NewRateLimitedModel(model core.Model, requestsPerSecond float64, burst int) *RateLimitedModel {
+	if requestsPerSecond <= 0 {
+		panic("modelutil: NewRateLimitedModel requestsPerSecond must be > 0")
+	}
+	if burst < 1 {
+		panic("modelutil: NewRateLimitedModel burst must be >= 1")
+	}
 	return &RateLimitedModel{
 		model:    model,
 		tokens:   float64(burst),

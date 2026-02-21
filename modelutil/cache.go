@@ -45,17 +45,15 @@ func NewMemoryCacheWithTTL(ttl time.Duration) *MemoryCache {
 }
 
 func (c *MemoryCache) Get(key string) (*core.ModelResponse, bool) {
-	c.mu.RLock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	entry, ok := c.entries[key]
-	c.mu.RUnlock()
 	if !ok {
 		return nil, false
 	}
 	if c.ttl > 0 && time.Since(entry.createdAt) > c.ttl {
 		// Expired — remove lazily.
-		c.mu.Lock()
 		delete(c.entries, key)
-		c.mu.Unlock()
 		return nil, false
 	}
 	return entry.response, true

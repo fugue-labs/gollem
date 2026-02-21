@@ -117,10 +117,12 @@ func (s *streamedResponse) processSSEEvent(event *sseEvent) (core.ModelResponseS
 		}
 
 		var blockType struct {
-			Type string `json:"type"`
-			Text string `json:"text,omitempty"`
-			ID   string `json:"id,omitempty"`
-			Name string `json:"name,omitempty"`
+			Type      string `json:"type"`
+			Text      string `json:"text,omitempty"`
+			ID        string `json:"id,omitempty"`
+			Name      string `json:"name,omitempty"`
+			Thinking  string `json:"thinking,omitempty"`
+			Signature string `json:"signature,omitempty"`
 		}
 		if err := json.Unmarshal(block.ContentBlock, &blockType); err != nil {
 			return nil, false
@@ -136,6 +138,11 @@ func (s *streamedResponse) processSSEEvent(event *sseEvent) (core.ModelResponseS
 				ToolCallID: blockType.ID,
 			}
 			s.argsBuffers[block.Index] = &strings.Builder{}
+		case "thinking":
+			part = core.ThinkingPart{
+				Content:   blockType.Thinking,
+				Signature: blockType.Signature,
+			}
 		default:
 			return nil, false
 		}
@@ -150,6 +157,7 @@ func (s *streamedResponse) processSSEEvent(event *sseEvent) (core.ModelResponseS
 				Type        string `json:"type"`
 				Text        string `json:"text,omitempty"`
 				PartialJSON string `json:"partial_json,omitempty"`
+				Thinking    string `json:"thinking,omitempty"`
 			} `json:"delta"`
 		}
 		if err := json.Unmarshal([]byte(event.Data), &delta); err != nil {
@@ -174,6 +182,16 @@ func (s *streamedResponse) processSSEEvent(event *sseEvent) (core.ModelResponseS
 			return core.PartDeltaEvent{
 				Index: delta.Index,
 				Delta: core.ToolCallPartDelta{ArgsJSONDelta: delta.Delta.PartialJSON},
+			}, true
+
+		case "thinking_delta":
+			if tp, ok := s.currentParts[delta.Index].(core.ThinkingPart); ok {
+				tp.Content += delta.Delta.Thinking
+				s.currentParts[delta.Index] = tp
+			}
+			return core.PartDeltaEvent{
+				Index: delta.Index,
+				Delta: core.ThinkingPartDelta{ContentDelta: delta.Delta.Thinking},
 			}, true
 		}
 		return nil, false

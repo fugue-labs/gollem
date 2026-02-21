@@ -1362,10 +1362,10 @@ func (a *Agent[T]) executeSingleTool(
 		var retryErr *ModelRetryError
 		if errors.As(err, &retryErr) {
 			state.mu.Lock()
-			state.toolRetries[call.ToolName]++
 			retryCount := state.toolRetries[call.ToolName]
+			state.toolRetries[call.ToolName] = retryCount + 1
 			state.mu.Unlock()
-			if retryCount > maxRetries {
+			if retryCount >= maxRetries {
 				return RetryPromptPart{
 					Content:    fmt.Sprintf("tool %q exceeded maximum retries (%d): %s", call.ToolName, maxRetries, retryErr.Message),
 					ToolName:   call.ToolName,

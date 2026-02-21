@@ -149,6 +149,65 @@ func TestFallbackModel_InterfaceCompliance(t *testing.T) {
 	var _ core.Model = (*FallbackModel)(nil)
 }
 
+// Regression: FallbackModel did not check ctx.Err() between models, wasting
+// time trying remaining models after context cancellation.
+func TestFallbackModel_RespectsContextCancellation(t *testing.T) {
+	callCount := 0
+	slow := &countingFailModel{callFn: func() error {
+		callCount++
+		return errors.New("fail")
+	}}
+
+	m := NewFallbackModel(slow, slow, slow)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel before requesting — all models should be skipped.
+	cancel()
+
+	_, err := m.Request(ctx, nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if callCount > 0 {
+		t.Errorf("expected 0 model calls after context cancellation, got %d", callCount)
+	}
+}
+
+func TestFallbackModel_StreamRespectsContextCancellation(t *testing.T) {
+	callCount := 0
+	slow := &countingFailModel{callFn: func() error {
+		callCount++
+		return errors.New("fail")
+	}}
+
+	m := NewFallbackModel(slow, slow, slow)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := m.RequestStream(ctx, nil, nil, &core.ModelRequestParameters{AllowTextOutput: true})
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if callCount > 0 {
+		t.Errorf("expected 0 model calls after context cancellation, got %d", callCount)
+	}
+}
+
+type countingFailModel struct {
+	callFn func() error
+}
+
+func (c *countingFailModel) Request(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (*core.ModelResponse, error) {
+	return nil, c.callFn()
+}
+
+func (c *countingFailModel) RequestStream(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (core.StreamedResponse, error) {
+	return nil, c.callFn()
+}
+
+func (c *countingFailModel) ModelName() string { return "counting-fail-model" }
+
 // failingModel is a model that always returns an error.
 type failingModel struct {
 	err error

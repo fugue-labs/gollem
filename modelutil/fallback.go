@@ -29,6 +29,9 @@ func NewFallbackModel(primary core.Model, fallbacks ...core.Model) *FallbackMode
 func (f *FallbackModel) Request(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 	var lastErr error
 	for _, m := range f.models {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("context cancelled before trying model %q: %w", m.ModelName(), err)
+		}
 		resp, err := m.Request(ctx, messages, settings, params)
 		if err == nil {
 			return resp, nil
@@ -41,6 +44,9 @@ func (f *FallbackModel) Request(ctx context.Context, messages []core.ModelMessag
 func (f *FallbackModel) RequestStream(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (core.StreamedResponse, error) {
 	var lastErr error
 	for _, m := range f.models {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("context cancelled before trying model %q: %w", m.ModelName(), err)
+		}
 		resp, err := m.RequestStream(ctx, messages, settings, params)
 		if err == nil {
 			return resp, nil

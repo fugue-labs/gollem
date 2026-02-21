@@ -399,6 +399,50 @@ func TestAgentRunToolRetry(t *testing.T) {
 	}
 }
 
+// --- Test: Tool retry off-by-one regression ---
+// Regression: the retry counter was incremented before the check, allowing
+// maxRetries+1 tool executions instead of maxRetries.
+func TestAgentRunToolRetryExactLimit(t *testing.T) {
+	callCount := 0
+
+	type Params struct{}
+
+	// With maxRetries=2, the tool should be called at most 3 times:
+	// initial call + 2 retries. The model then sees "exceeded maximum retries".
+	// We need enough model responses: each tool call needs a ToolCallResponse,
+	// plus the retry messages get sent back, and the model decides what to do.
+	model := NewTestModel(
+		ToolCallResponse("flaky", `{}`), // call 1 -> ModelRetryError
+		ToolCallResponse("flaky", `{}`), // call 2 -> ModelRetryError (retry 1)
+		ToolCallResponse("flaky", `{}`), // call 3 -> ModelRetryError (retry 2) -> exceeds limit
+		TextResponse("gave up"),         // model gives up
+	)
+
+	tool := FuncTool[Params]("flaky", "Always fails",
+		func(_ context.Context, _ Params) (string, error) {
+			callCount++
+			return "", NewModelRetryError("still broken")
+		},
+	)
+
+	agent := NewAgent[string](model,
+		WithTools[string](tool),
+		WithMaxRetries[string](2),
+	)
+
+	result, err := agent.Run(context.Background(), "Use flaky tool")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should be exactly 3 calls: initial + 2 retries.
+	// Before the fix, it would be 4 calls (initial + 3 retries).
+	if callCount != 3 {
+		t.Errorf("tool called %d times, want 3 (initial + maxRetries=2)", callCount)
+	}
+	_ = result
+}
+
 // --- Test: Message history ---
 
 func TestAgentRunWithMessageHistory(t *testing.T) {

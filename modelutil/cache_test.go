@@ -137,6 +137,32 @@ func TestCachedModel_ModelName(t *testing.T) {
 	}
 }
 
+// Regression: MemoryCache.Get() had a TOCTOU race — it released the read lock
+// before re-acquiring a write lock for TTL expiry, allowing concurrent readers
+// to see stale data. Now uses a single write lock for the entire operation.
+func TestMemoryCache_TTLConcurrentAccess(t *testing.T) {
+	cache := NewMemoryCacheWithTTL(10 * time.Millisecond)
+	resp := &core.ModelResponse{Parts: []core.ModelResponsePart{core.TextPart{Content: "cached"}}}
+	cache.Set("key", resp)
+
+	// Wait for entry to expire.
+	time.Sleep(20 * time.Millisecond)
+
+	// Concurrent reads should all see expired (no stale data).
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, ok := cache.Get("key")
+			if ok {
+				t.Error("expected cache miss for expired entry")
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 func TestCachedModel_DifferentSettings(t *testing.T) {
 	model := core.NewTestModel(core.TextResponse("low"), core.TextResponse("high"))
 	cache := NewMemoryCache()

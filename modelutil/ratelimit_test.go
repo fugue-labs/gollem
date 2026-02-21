@@ -100,3 +100,37 @@ func TestRateLimitedModel_Streaming(t *testing.T) {
 		t.Errorf("expected 'stream', got %q", resp.TextContent())
 	}
 }
+
+// Regression: NewRateLimitedModel with rate=0 caused division by zero in wait().
+func TestRateLimitedModel_PanicsOnZeroRate(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for zero rate, got none")
+		}
+	}()
+	model := core.NewTestModel(core.TextResponse("x"))
+	NewRateLimitedModel(model, 0, 1)
+}
+
+func TestRateLimitedModel_PanicsOnNegativeRate(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for negative rate, got none")
+		}
+	}()
+	model := core.NewTestModel(core.TextResponse("x"))
+	NewRateLimitedModel(model, -1, 1)
+}
+
+func TestRateLimitedModel_PanicsOnZeroBurst(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for zero burst, got none")
+		}
+	}()
+	model := core.NewTestModel(core.TextResponse("x"))
+	NewRateLimitedModel(model, 1, 0)
+}
