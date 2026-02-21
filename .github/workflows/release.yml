@@ -9,8 +9,50 @@ permissions:
   contents: write
 
 jobs:
+  validate:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate tag is semver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if ! echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "::error::Tag '$TAG' is not valid semver (expected vMAJOR.MINOR.PATCH)"
+            exit 1
+          fi
+          echo "Tag $TAG is valid semver"
+      - name: Validate tag matches go.mod module path
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          MAJOR=$(echo "$TAG" | sed -E 's/^v([0-9]+)\..*/\1/')
+          MODULE=$(head -1 go.mod | awk '{print $2}')
+
+          # Go modules v2+ require /vN suffix in module path
+          if [ "$MAJOR" -ge 2 ]; then
+            if ! echo "$MODULE" | grep -qE "/v${MAJOR}$"; then
+              echo "::error::Tag $TAG has major version $MAJOR but go.mod module path '$MODULE' is missing '/v${MAJOR}' suffix"
+              echo "::error::Update go.mod to 'module ${MODULE}/v${MAJOR}' before releasing v${MAJOR}.x.x"
+              exit 1
+            fi
+          else
+            if echo "$MODULE" | grep -qE '/v[0-9]+$'; then
+              echo "::error::Tag $TAG has major version $MAJOR but go.mod module path '$MODULE' has a version suffix (should not for v0/v1)"
+              exit 1
+            fi
+          fi
+          echo "Tag $TAG (major=$MAJOR) is consistent with module path '$MODULE'"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Verify build
+        run: go build ./...
+      - name: Verify tests pass
+        run: go test -race ./...
+
   release:
     name: Create Release
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,7 +60,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
       - name: Install git-cliff
         run: |
           curl -sSL https://github.com/orhun/git-cliff/releases/latest/download/git-cliff-x86_64-unknown-linux-gnu.tar.gz | tar xz
