@@ -1,4 +1,4 @@
-// Command gollem provides a minimal CLI for debugging gollem agents via the TUI.
+// Command gollem provides a CLI for debugging gollem agents via the TUI.
 //
 // Usage:
 //
@@ -12,6 +12,10 @@ import (
 
 	"github.com/fugue-labs/gollem/core"
 	"github.com/fugue-labs/gollem/ext/tui"
+	"github.com/fugue-labs/gollem/provider/anthropic"
+	"github.com/fugue-labs/gollem/provider/openai"
+	"github.com/fugue-labs/gollem/provider/vertexai"
+	"github.com/fugue-labs/gollem/provider/vertexai_anthropic"
 )
 
 func main() {
@@ -93,16 +97,33 @@ func createModel(provider, modelName string) (core.Model, error) {
 		return core.NewTestModel(
 			core.TextResponse("Hello! I'm a test model. This is a demonstration of the TUI debugger."),
 		), nil
+	case "anthropic":
+		var opts []anthropic.Option
+		if modelName != "" {
+			opts = append(opts, anthropic.WithModel(modelName))
+		}
+		return anthropic.New(opts...), nil
+	case "openai":
+		var opts []openai.Option
+		if modelName != "" {
+			opts = append(opts, openai.WithModel(modelName))
+		}
+		return openai.New(opts...), nil
+	case "vertexai":
+		var opts []vertexai.Option
+		if modelName != "" {
+			opts = append(opts, vertexai.WithModel(modelName))
+		}
+		return vertexai.New(opts...), nil
+	case "vertexai-anthropic":
+		var opts []vertexai_anthropic.Option
+		if modelName != "" {
+			opts = append(opts, vertexai_anthropic.WithModel(modelName))
+		}
+		return vertexai_anthropic.New(opts...), nil
 	default:
-		return nil, fmt.Errorf("provider %q not supported in CLI (use 'test' for demo, or import a real provider in your own code)", provider)
+		return nil, fmt.Errorf("provider %q not supported (available: test, anthropic, openai, vertexai, vertexai-anthropic)", provider)
 	}
-
-	// Note: For real providers, users should import the appropriate provider package
-	// and use the TUI directly in their own code:
-	//
-	//   import "github.com/fugue-labs/gollem/provider/openai"
-	//   model := openai.New(openai.WithModel("gpt-4o"))
-	//   result, err := tui.DebugUI(agent, prompt)
 }
 
 func printUsage() {
@@ -113,11 +134,21 @@ Usage:
 
 Options:
   --provider <name>  Model provider (default: test)
-  --model <name>     Model name
+                     Available: test, anthropic, openai, vertexai, vertexai-anthropic
+  --model <name>     Model name (uses provider default if not set)
   -h, --help         Show this help
 
 Examples:
   gollem debug "Tell me about Tokyo"
-  gollem debug --provider test "What is 2+2?"
+  gollem debug --provider anthropic "What is 2+2?"
+  gollem debug --provider anthropic --model claude-sonnet-4-5-20250929 "Explain concurrency"
+  gollem debug --provider openai --model gpt-4o "Summarize quantum computing"
+  gollem debug --provider vertexai --model gemini-2.5-flash "Write a haiku"
+  gollem debug --provider vertexai-anthropic --model claude-sonnet-4-5 "Hello"
+
+Environment variables:
+  ANTHROPIC_API_KEY       API key for the anthropic provider
+  OPENAI_API_KEY          API key for the openai provider
+  GOOGLE_CLOUD_PROJECT    GCP project for vertexai and vertexai-anthropic providers
 `)
 }
