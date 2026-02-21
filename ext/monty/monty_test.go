@@ -447,3 +447,50 @@ func TestGeneratePythonSignatureNoParams(t *testing.T) {
 		t.Errorf("expected 'def noop() -> Any', got %q", sig)
 	}
 }
+
+func TestWithLimits(t *testing.T) {
+	runner := newRunner(t)
+
+	cm := New(runner, nil, WithLimits(montygo.Limits{
+		MaxRecursionDepth: 2,
+	}))
+	tool := cm.Tool()
+
+	// Deep recursion should exceed the limit.
+	code := `
+def f(n):
+    if n == 0:
+        return 0
+    return f(n - 1)
+f(100)`
+	args, _ := json.Marshal(codeParams{Code: code})
+	_, err := tool.Handler(context.Background(), &core.RunContext{}, string(args))
+	if err == nil {
+		t.Error("expected error from recursion limit")
+	}
+}
+
+func TestContextCancellation(t *testing.T) {
+	runner := newRunner(t)
+
+	// Tool that blocks until context is cancelled.
+	slow := core.FuncTool[searchParams]("slow", "Slow tool",
+		func(ctx context.Context, p searchParams) (any, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	)
+
+	cm := New(runner, []core.Tool{slow})
+	tool := cm.Tool()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel immediately so the tool's context is already done.
+	cancel()
+
+	args, _ := json.Marshal(codeParams{Code: `slow(query="test")`})
+	_, err := tool.Handler(ctx, &core.RunContext{}, string(args))
+	if err == nil {
+		t.Error("expected error from cancelled context")
+	}
+}

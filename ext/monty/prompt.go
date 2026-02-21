@@ -106,7 +106,7 @@ func buildSystemPrompt(toolName string, tools map[string]*core.Tool, schemas map
 	var b strings.Builder
 
 	b.WriteString("## Code Execution\n\n")
-	b.WriteString(fmt.Sprintf("You have an `%s` tool that runs Python code. ", toolName))
+	fmt.Fprintf(&b, "You have an `%s` tool that runs Python code. ", toolName)
 	b.WriteString("Write Python code that calls the available functions below. ")
 	b.WriteString("The last expression in the code is the return value.\n\n")
 	b.WriteString("### Available Functions\n\n")
@@ -122,9 +122,9 @@ func buildSystemPrompt(toolName string, tools map[string]*core.Tool, schemas map
 		tool := tools[name]
 		schema := schemas[name]
 
-		b.WriteString(fmt.Sprintf("**%s**", name))
+		fmt.Fprintf(&b, "**%s**", name)
 		if tool.Definition.Description != "" {
-			b.WriteString(fmt.Sprintf(" - %s", tool.Definition.Description))
+			b.WriteString(" - " + tool.Definition.Description)
 		}
 		b.WriteString("\n```python\n")
 		b.WriteString(generatePythonSignature(name, schema))

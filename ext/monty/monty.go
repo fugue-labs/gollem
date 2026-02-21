@@ -3,8 +3,10 @@ package monty
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	montygo "github.com/fugue-labs/monty-go"
 
@@ -51,7 +53,11 @@ func WithCapturePrints(b bool) Option {
 // that calls the wrapped tools as functions; monty-go executes the Python
 // in a WASM sandbox, pausing at each function call so the corresponding
 // gollem tool handler runs.
+//
+// CodeMode is safe for concurrent use; a mutex serializes calls to the
+// underlying monty-go Runner (WASM instances are single-threaded).
 type CodeMode struct {
+	mu            sync.Mutex
 	runner        *montygo.Runner
 	tools         map[string]*core.Tool
 	schemas       map[string]core.Schema
@@ -130,8 +136,12 @@ func (cm *CodeMode) handler(ctx context.Context, rc *core.RunContext, argsJSON s
 		return nil, fmt.Errorf("failed to parse code tool arguments: %w", err)
 	}
 	if params.Code == "" {
-		return nil, fmt.Errorf("code parameter is required")
+		return nil, errors.New("code parameter is required")
 	}
+
+	// Serialize access to the WASM runner (single-threaded).
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
 
 	// Store RunContext in context for the external function callback.
 	ctx = context.WithValue(ctx, runContextKey, rc)
