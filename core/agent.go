@@ -155,6 +155,29 @@ func WithMaxTokens[T any](n int) AgentOption[T] {
 	}
 }
 
+// WithThinkingBudget enables extended thinking with the given token budget.
+// Supported by Anthropic (direct and Vertex AI). When thinking is enabled,
+// temperature is automatically stripped (Anthropic requirement).
+func WithThinkingBudget[T any](budget int) AgentOption[T] {
+	return func(a *Agent[T]) {
+		if a.modelSettings == nil {
+			a.modelSettings = &ModelSettings{}
+		}
+		a.modelSettings.ThinkingBudget = &budget
+	}
+}
+
+// WithReasoningEffort sets the reasoning effort level for OpenAI o-series models.
+// Valid values: "low", "medium", "high".
+func WithReasoningEffort[T any](effort string) AgentOption[T] {
+	return func(a *Agent[T]) {
+		if a.modelSettings == nil {
+			a.modelSettings = &ModelSettings{}
+		}
+		a.modelSettings.ReasoningEffort = &effort
+	}
+}
+
 // WithOutputValidator adds an output validator to the agent.
 func WithOutputValidator[T any](fn OutputValidatorFunc[T]) AgentOption[T] {
 	return func(a *Agent[T]) {

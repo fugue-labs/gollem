@@ -764,3 +764,34 @@ func isHTTPError(err error, target **core.ModelHTTPError) bool {
 		}
 	}
 }
+
+// --- Reasoning effort unit tests ---
+
+func TestBuildRequestWithReasoningEffort(t *testing.T) {
+	effort := "high"
+	settings := &core.ModelSettings{
+		ReasoningEffort: &effort,
+	}
+
+	req, err := buildRequest(nil, settings, nil, "o3-mini", 4096, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if req.ReasoningEffort == nil {
+		t.Fatal("expected ReasoningEffort to be set")
+	}
+	if *req.ReasoningEffort != "high" {
+		t.Errorf("reasoning_effort = %q, want 'high'", *req.ReasoningEffort)
+	}
+}
+
+func TestBuildRequestNoReasoningEffortByDefault(t *testing.T) {
+	req, err := buildRequest(nil, nil, nil, "gpt-4o-mini", 4096, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.ReasoningEffort != nil {
+		t.Errorf("expected ReasoningEffort to be nil by default, got %q", *req.ReasoningEffort)
+	}
+}

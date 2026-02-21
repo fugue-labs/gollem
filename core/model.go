@@ -21,10 +21,12 @@ type Model interface {
 
 // ModelSettings holds provider-specific settings like temperature and max tokens.
 type ModelSettings struct {
-	MaxTokens   *int        `json:"max_tokens,omitempty"`
-	Temperature *float64    `json:"temperature,omitempty"`
-	TopP        *float64    `json:"top_p,omitempty"`
-	ToolChoice  *ToolChoice `json:"tool_choice,omitempty"`
+	MaxTokens       *int        `json:"max_tokens,omitempty"`
+	Temperature     *float64    `json:"temperature,omitempty"`
+	TopP            *float64    `json:"top_p,omitempty"`
+	ToolChoice      *ToolChoice `json:"tool_choice,omitempty"`
+	ThinkingBudget  *int        `json:"thinking_budget,omitempty"`   // Anthropic extended thinking budget tokens
+	ReasoningEffort *string     `json:"reasoning_effort,omitempty"` // OpenAI o-series: "low", "medium", "high"
 }
 
 // OutputMode determines how structured output is extracted from the model.

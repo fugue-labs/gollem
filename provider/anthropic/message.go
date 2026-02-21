@@ -18,6 +18,12 @@ type apiRequest struct {
 	Stream      bool             `json:"stream,omitempty"`
 	Temperature *float64         `json:"temperature,omitempty"`
 	TopP        *float64         `json:"top_p,omitempty"`
+	Thinking    *apiThinking     `json:"thinking,omitempty"`
+}
+
+type apiThinking struct {
+	Type         string `json:"type"`           // "enabled" or "disabled"
+	BudgetTokens int    `json:"budget_tokens"`  // Max tokens for thinking
 }
 
 type apiSystemBlock struct {
@@ -86,6 +92,16 @@ func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, pa
 		}
 		req.Temperature = settings.Temperature
 		req.TopP = settings.TopP
+
+		// Enable extended thinking if ThinkingBudget is set.
+		if settings.ThinkingBudget != nil && *settings.ThinkingBudget > 0 {
+			req.Thinking = &apiThinking{
+				Type:         "enabled",
+				BudgetTokens: *settings.ThinkingBudget,
+			}
+			// Anthropic requires temperature to be omitted when thinking is enabled.
+			req.Temperature = nil
+		}
 	}
 
 	// Convert tool definitions.

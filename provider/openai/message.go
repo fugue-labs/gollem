@@ -19,6 +19,7 @@ type apiRequest struct {
 	Temperature      *float64           `json:"temperature,omitempty"`
 	TopP             *float64           `json:"top_p,omitempty"`
 	ResponseFormat   *apiResponseFormat `json:"response_format,omitempty"`
+	ReasoningEffort  *string            `json:"reasoning_effort,omitempty"`
 }
 
 type apiStreamOptions struct {
@@ -114,6 +115,7 @@ func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, pa
 		}
 		req.Temperature = settings.Temperature
 		req.TopP = settings.TopP
+		req.ReasoningEffort = settings.ReasoningEffort
 	}
 
 	// Convert tool definitions.

@@ -703,3 +703,58 @@ func TestRequestHTTPError(t *testing.T) {
 		t.Errorf("status = %d, want 429", httpErr.StatusCode)
 	}
 }
+
+// --- Extended thinking unit tests ---
+
+func TestBuildRequestWithThinkingBudget(t *testing.T) {
+	budget := 2048
+	settings := &core.ModelSettings{
+		ThinkingBudget: &budget,
+	}
+
+	req, err := buildRequest(nil, settings, nil, Claude4Sonnet, 4096, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if req.Thinking == nil {
+		t.Fatal("expected Thinking to be set")
+	}
+	if req.Thinking.Type != "enabled" {
+		t.Errorf("thinking type = %q, want 'enabled'", req.Thinking.Type)
+	}
+	if req.Thinking.BudgetTokens != 2048 {
+		t.Errorf("budget_tokens = %d, want 2048", req.Thinking.BudgetTokens)
+	}
+}
+
+func TestBuildRequestThinkingStripsTemperature(t *testing.T) {
+	budget := 1024
+	temp := 0.7
+	settings := &core.ModelSettings{
+		ThinkingBudget: &budget,
+		Temperature:    &temp,
+	}
+
+	req, err := buildRequest(nil, settings, nil, Claude4Sonnet, 4096, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if req.Thinking == nil {
+		t.Fatal("expected Thinking to be set")
+	}
+	if req.Temperature != nil {
+		t.Errorf("expected temperature to be nil when thinking enabled, got %v", *req.Temperature)
+	}
+}
+
+func TestBuildRequestNoThinkingByDefault(t *testing.T) {
+	req, err := buildRequest(nil, nil, nil, Claude4Sonnet, 4096, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Thinking != nil {
+		t.Errorf("expected Thinking to be nil by default, got %+v", req.Thinking)
+	}
+}
