@@ -42,6 +42,7 @@ go get github.com/fugue-labs/gollem
 | **Composable pipelines** | Pipeline, Then, Parallel | N/A | LCEL | N/A | Flows |
 | **Usage quotas** | Built-in with auto-stop | N/A | N/A | N/A | N/A |
 | **Message interceptors** | PII redaction, audit log | N/A | N/A | N/A | N/A |
+| **Code mode** | WASM Python sandbox (monty) | N/A | N/A | N/A | N/A |
 | **Context management** | Auto-compress, 3-tier deep | N/A | ConversationBuffer | N/A | Memory |
 | **Deployment** | Single binary | pip + venv | pip + venv | pip + venv | pip + venv |
 | **Core dependencies** | Zero | 15+ | 50+ | 5+ | 30+ |
@@ -120,6 +121,7 @@ Gollem ships **50+ composable primitives** in a single framework. Here's what yo
 - **Unified `StreamText`** — Single function with `StreamTextOptions` for all modes
 
 ### Extensions
+- **Code mode (monty)** — LLM writes a single Python script that calls N tools as functions; executes in a WASM sandbox via [monty-go](https://github.com/fugue-labs/monty-go) — N tool calls in 1 model round-trip
 - **Graph workflow engine** — Typed state machines with conditional branching, fan-out/map-reduce, cycle detection, and Mermaid export
 - **Deep context management** — Three-tier compression, planning tools, and checkpointing for long-running agents
 - **Temporal durable execution** — Fault-tolerant agents with automatic checkpointing via Temporal
@@ -531,6 +533,7 @@ graph TD
         Graph["graph (workflow engine)"]
         Eval["eval (evaluation framework)"]
         TUI["tui (debugger)"]
+        Monty["monty (code mode, WASM Python)"]
     end
 
     Agent --> Tools
@@ -565,6 +568,7 @@ graph TD
     Graph --> Agent
     Eval --> Agent
     TUI --> Agent
+    Monty --> Tools
 ```
 
 ## Advanced Features
@@ -781,6 +785,39 @@ alt := checkpoint.Branch(func(snap *gollem.RunSnapshot) {
 data, _ := gollem.MarshalSnapshot(checkpoint)
 restored, _ := gollem.UnmarshalSnapshot(data)
 ```
+
+### Code Mode (monty)
+
+Instead of N sequential tool calls (N model round-trips), the LLM writes a single Python script that calls tools as functions. The [monty-go](https://github.com/fugue-labs/monty-go) WASM interpreter executes the script in a sandbox, pausing at each function call so the corresponding gollem tool handler runs. Result: N tool calls in 1 round-trip.
+
+```go
+import (
+    montygo "github.com/fugue-labs/monty-go"
+    "github.com/fugue-labs/gollem/ext/monty"
+)
+
+runner, _ := montygo.New()
+defer runner.Close()
+
+searchTool := gollem.FuncTool[SearchParams]("search", "Search docs", doSearch)
+calcTool := gollem.FuncTool[CalcParams]("calculate", "Run calculations", doCalc)
+
+cm := monty.New(runner, []gollem.Tool{searchTool, calcTool})
+
+agent := gollem.NewAgent[string](model,
+    gollem.WithSystemPrompt[string](cm.SystemPrompt()),
+    gollem.WithTools[string](cm.Tool()),
+)
+
+// The LLM now writes Python like:
+//   results = search(query="Q4 revenue")
+//   total = calculate(a=results["count"], b=10)
+//   total
+// All tool calls execute in a single model round-trip.
+result, _ := agent.Run(ctx, "Search and calculate Q4 metrics")
+```
+
+Tools with `RequiresApproval` are automatically excluded (can't pause mid-script for human approval). CodeMode is safe for concurrent use.
 
 ### Graph Workflow Engine
 
