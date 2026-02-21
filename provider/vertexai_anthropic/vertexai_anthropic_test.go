@@ -18,7 +18,7 @@ import (
 
 func TestEndpointConstruction(t *testing.T) {
 	p := New(WithProject("my-project"), WithLocation("us-east5"), WithModel(Claude4Sonnet))
-	expected := "https://us-east5-aiplatform.googleapis.com/v1/projects/my-project/locations/us-east5/publishers/anthropic/models/claude-sonnet-4-5-20250929:rawPredict"
+	expected := "https://us-east5-aiplatform.googleapis.com/v1/projects/my-project/locations/us-east5/publishers/anthropic/models/claude-sonnet-4-5:rawPredict"
 	if p.endpoint() != expected {
 		t.Errorf("expected endpoint %s, got %s", expected, p.endpoint())
 	}
@@ -26,14 +26,14 @@ func TestEndpointConstruction(t *testing.T) {
 
 func TestStreamEndpointConstruction(t *testing.T) {
 	p := New(WithProject("my-project"), WithLocation("us-east5"), WithModel(Claude4Sonnet))
-	expected := "https://us-east5-aiplatform.googleapis.com/v1/projects/my-project/locations/us-east5/publishers/anthropic/models/claude-sonnet-4-5-20250929:streamRawPredict"
+	expected := "https://us-east5-aiplatform.googleapis.com/v1/projects/my-project/locations/us-east5/publishers/anthropic/models/claude-sonnet-4-5:streamRawPredict"
 	if p.streamEndpoint() != expected {
 		t.Errorf("expected endpoint %s, got %s", expected, p.streamEndpoint())
 	}
 }
 
 func TestBuildRequestHasAnthropicVersion(t *testing.T) {
-	req, err := buildRequest(nil, nil, nil, "claude-sonnet-4-5-20250929", 4096, false)
+	req, err := buildRequest(nil, nil, nil, "claude-sonnet-4-5", 4096, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestBuildRequestAnthropicFormat(t *testing.T) {
 			},
 		},
 	}
-	req, err := buildRequest(messages, nil, nil, "claude-sonnet-4-5-20250929", 4096, false)
+	req, err := buildRequest(messages, nil, nil, "claude-sonnet-4-5", 4096, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestParseResponse(t *testing.T) {
 			OutputTokens: 5,
 		},
 	}
-	result := parseResponse(resp, "claude-sonnet-4-5-20250929")
+	result := parseResponse(resp, "claude-sonnet-4-5")
 	if len(result.Parts) != 1 {
 		t.Fatalf("expected 1 part, got %d", len(result.Parts))
 	}
@@ -110,7 +110,7 @@ func TestParseResponseToolCall(t *testing.T) {
 		},
 		StopReason: "tool_use",
 	}
-	result := parseResponse(resp, "claude-sonnet-4-5-20250929")
+	result := parseResponse(resp, "claude-sonnet-4-5")
 	if len(result.Parts) != 1 {
 		t.Fatalf("expected 1 part, got %d", len(result.Parts))
 	}

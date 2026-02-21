@@ -20,10 +20,11 @@ import (
 )
 
 // Model constants for Claude models via Vertex AI.
+// Note: Vertex AI uses model IDs WITHOUT date suffixes, unlike the direct Anthropic API.
 const (
 	Claude4Opus   = "claude-opus-4-6"
-	Claude4Sonnet = "claude-sonnet-4-5-20250929"
-	Claude4Haiku  = "claude-haiku-4-5-20251001"
+	Claude4Sonnet = "claude-sonnet-4-5"
+	Claude4Haiku  = "claude-haiku-4-5"
 )
 
 const (
