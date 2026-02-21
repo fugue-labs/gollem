@@ -306,8 +306,10 @@ func (ar *AgentRun[T]) Next() (*ModelResponse, error) {
 						text := resp.TextContent()
 						output, parseErr := deserializeOutput[T](text, ar.agent.outputSchema.OuterTypedDictKey)
 						if parseErr != nil && ar.agent.outputSchema.Mode == OutputModeText {
-							output = any(text).(T)
-							parseErr = nil
+							if textOutput, ok := any(text).(T); ok {
+								output = textOutput
+								parseErr = nil
+							}
 						}
 						if parseErr == nil {
 							ar.done = true

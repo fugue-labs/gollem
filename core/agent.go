@@ -885,8 +885,10 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 						output, parseErr := deserializeOutput[T](text, a.outputSchema.OuterTypedDictKey)
 						if parseErr != nil {
 							if a.outputSchema.Mode == OutputModeText {
-								output = any(text).(T)
-								parseErr = nil
+								if textOutput, ok := any(text).(T); ok {
+									output = textOutput
+									parseErr = nil
+								}
 							}
 						}
 						if parseErr == nil {
@@ -988,10 +990,17 @@ func (a *Agent[T]) processResponse(
 			// Try direct assignment.
 			if a.outputSchema.Mode == OutputModeText {
 				// T should be string in text mode.
-				output = any(text).(T)
+				textOutput, ok := any(text).(T)
+				if !ok {
+					return nil, nil, nil, fmt.Errorf("output mode is text but type %T is not compatible with string", output)
+				}
+				output = textOutput
 			} else if a.repairFunc != nil {
 				// Try repair before failing.
-				repairFn := a.repairFunc.(RepairFunc[T])
+				repairFn, ok := a.repairFunc.(RepairFunc[T])
+				if !ok {
+					return nil, nil, nil, fmt.Errorf("failed to parse text output: %w", err)
+				}
 				repaired, repairErr := repairFn(ctx, text, err)
 				if repairErr != nil {
 					return nil, nil, nil, fmt.Errorf("failed to parse text output: %w", err)
@@ -1087,11 +1096,12 @@ func (a *Agent[T]) processResponse(
 		if err != nil {
 			// Try repair if available.
 			if a.repairFunc != nil {
-				repairFn := a.repairFunc.(RepairFunc[T])
-				repaired, repairErr := repairFn(ctx, tc.ArgsJSON, err)
-				if repairErr == nil {
-					output = repaired
-					err = nil
+				if repairFn, ok := a.repairFunc.(RepairFunc[T]); ok {
+					repaired, repairErr := repairFn(ctx, tc.ArgsJSON, err)
+					if repairErr == nil {
+						output = repaired
+						err = nil
+					}
 				}
 			}
 		}

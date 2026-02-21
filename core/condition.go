@@ -61,8 +61,11 @@ func TextContains(substr string) RunCondition {
 	}
 }
 
-// ToolCallCount stops after max total tool calls.
+// ToolCallCount stops after max total tool calls. max must be positive.
 func ToolCallCount(max int) RunCondition {
+	if max <= 0 {
+		max = 1 // Minimum of 1 to avoid immediate stop.
+	}
 	return func(_ context.Context, rc *RunContext, _ *ModelResponse) (bool, string) {
 		if rc.Usage.ToolCalls >= max {
 			return true, "tool call count limit reached"
