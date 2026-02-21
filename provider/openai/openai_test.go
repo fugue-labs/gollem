@@ -614,7 +614,7 @@ data: [DONE]
 
 `
 
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		body := io.NopCloser(strings.NewReader(sseData))
 		stream := newStreamedResponse(body, "gpt-4o")
 		for {
