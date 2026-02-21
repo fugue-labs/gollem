@@ -312,12 +312,7 @@ func encodeResponsePart(part ModelResponsePart) (partEnvelope, error) {
 		return partEnvelope{Type: "text", Data: data}, nil
 
 	case ToolCallPart:
-		data, err := json.Marshal(toolCallPartJSON{
-			ToolName:   p.ToolName,
-			ArgsJSON:   p.ArgsJSON,
-			ToolCallID: p.ToolCallID,
-			Metadata:   p.Metadata,
-		})
+		data, err := json.Marshal(toolCallPartJSON(p))
 		if err != nil {
 			return partEnvelope{}, err
 		}
@@ -441,12 +436,7 @@ func decodeResponsePart(env partEnvelope) (ModelResponsePart, error) {
 		if err := json.Unmarshal(env.Data, &p); err != nil {
 			return nil, fmt.Errorf("unmarshaling tool-call: %w", err)
 		}
-		return ToolCallPart{
-			ToolName:   p.ToolName,
-			ArgsJSON:   p.ArgsJSON,
-			ToolCallID: p.ToolCallID,
-			Metadata:   p.Metadata,
-		}, nil
+		return ToolCallPart(p), nil
 
 	case "thinking":
 		var p thinkingPartJSON
