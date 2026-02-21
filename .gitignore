@@ -32,5 +32,4 @@ Thumbs.db
 # XML dumps
 *.xml
 
-# Ralph prompt
-RALPH_PROMPT.md
+.env
