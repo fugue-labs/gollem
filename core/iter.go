@@ -37,6 +37,7 @@ func (a *Agent[T]) Iter(ctx context.Context, prompt string, opts ...RunOption) *
 	state := &agentRunState{
 		toolRetries: make(map[string]int),
 		runID:       newRunID(),
+		startTime:   time.Now(),
 	}
 	if len(cfg.messages) > 0 {
 		state.messages = make([]ModelMessage, len(cfg.messages))
@@ -57,6 +58,24 @@ func (a *Agent[T]) Iter(ctx context.Context, prompt string, opts ...RunOption) *
 	deps := a.deps
 	if cfg.deps != nil {
 		deps = cfg.deps
+	}
+
+	// Run input guardrails (must apply to iterative mode too).
+	for _, g := range a.inputGuardrails {
+		var gErr error
+		prompt, gErr = g.fn(ctx, prompt)
+		if gErr != nil {
+			return &AgentRun[T]{
+				agent: a,
+				ctx:   ctx,
+				state: state,
+				done:  true,
+				err: &GuardrailError{
+					GuardrailName: g.name,
+					Message:       gErr.Error(),
+				},
+			}
+		}
 	}
 
 	// Gather all tools.
@@ -93,6 +112,9 @@ func (a *Agent[T]) Iter(ctx context.Context, prompt string, opts ...RunOption) *
 // Returns the ModelResponse for that step, or (nil, io.EOF) when done.
 func (ar *AgentRun[T]) Next() (*ModelResponse, error) {
 	if ar.done {
+		if ar.err != nil {
+			return nil, ar.err
+		}
 		return nil, io.EOF
 	}
 

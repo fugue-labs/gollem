@@ -500,6 +500,18 @@ func (a *Agent[T]) RunStream(ctx context.Context, prompt string, opts ...RunOpti
 		settings = cfg.modelSettings
 	}
 
+	// Run input guardrails (must apply to streaming too).
+	for _, g := range a.inputGuardrails {
+		var gErr error
+		prompt, gErr = g.fn(ctx, prompt)
+		if gErr != nil {
+			return nil, &GuardrailError{
+				GuardrailName: g.name,
+				Message:       gErr.Error(),
+			}
+		}
+	}
+
 	// Build the initial request.
 	req := a.buildInitialRequest(prompt)
 	state.messages = append(state.messages, req)

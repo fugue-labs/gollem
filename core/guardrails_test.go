@@ -164,6 +164,49 @@ func TestContentFilter(t *testing.T) {
 	}
 }
 
+// Regression: RunStream did not run input guardrails, allowing bypass.
+func TestInputGuardrail_RunStream(t *testing.T) {
+	guardrail := func(ctx context.Context, prompt string) (string, error) {
+		return "", errors.New("rejected by guardrail")
+	}
+
+	model := NewTestModel(TextResponse("hello"))
+	agent := NewAgent[string](model,
+		WithInputGuardrail[string]("blocker", guardrail),
+	)
+
+	_, err := agent.RunStream(context.Background(), "test")
+	if err == nil {
+		t.Fatal("expected RunStream to run input guardrails")
+	}
+	var gErr *GuardrailError
+	if !errors.As(err, &gErr) {
+		t.Fatalf("expected GuardrailError from RunStream, got %T: %v", err, err)
+	}
+}
+
+// Regression: Iter did not run input guardrails, allowing bypass.
+func TestInputGuardrail_Iter(t *testing.T) {
+	guardrail := func(ctx context.Context, prompt string) (string, error) {
+		return "", errors.New("rejected by guardrail")
+	}
+
+	model := NewTestModel(TextResponse("hello"))
+	agent := NewAgent[string](model,
+		WithInputGuardrail[string]("blocker", guardrail),
+	)
+
+	run := agent.Iter(context.Background(), "test")
+	_, err := run.Next()
+	if err == nil {
+		t.Fatal("expected Iter.Next() to return guardrail error")
+	}
+	var gErr *GuardrailError
+	if !errors.As(err, &gErr) {
+		t.Fatalf("expected GuardrailError from Iter.Next(), got %T: %v", err, err)
+	}
+}
+
 func TestMaxTurns(t *testing.T) {
 	type AddParams struct {
 		A int `json:"a"`
