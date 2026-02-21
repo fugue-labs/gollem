@@ -25,6 +25,7 @@ Thumbs.db
 # Build artifacts
 /bin/
 /dist/
+/gollem
 
 # Dependency directories
 /vendor/
@@ -33,3 +34,6 @@ Thumbs.db
 *.xml
 
 .env
+
+# Claude Code local settings
+.claude/settings.local.json
