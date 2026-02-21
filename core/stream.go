@@ -119,11 +119,13 @@ func (s *StreamResult[T]) Response() *ModelResponse {
 	return s.stream.Response()
 }
 
-// Messages returns the message history at the start of this stream.
+// Messages returns a copy of the message history at the start of this stream.
 func (s *StreamResult[T]) Messages() []ModelMessage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.messages
+	result := make([]ModelMessage, len(s.messages))
+	copy(result, s.messages)
+	return result
 }
 
 // Close releases streaming resources.

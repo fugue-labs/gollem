@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -88,7 +89,11 @@ func (c *CachedModel) ModelName() string {
 }
 
 func (c *CachedModel) Request(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
-	key := cacheKey(messages, settings, params)
+	key, keyErr := cacheKey(messages, settings, params)
+	if keyErr != nil {
+		// Cache key computation failed; bypass cache and call model directly.
+		return c.model.Request(ctx, messages, settings, params)
+	}
 
 	if resp, ok := c.store.Get(key); ok {
 		return resp, nil
@@ -108,11 +113,17 @@ func (c *CachedModel) RequestStream(ctx context.Context, messages []core.ModelMe
 }
 
 // cacheKey computes a SHA-256 hash of the request parameters.
-func cacheKey(messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) string {
+func cacheKey(messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (string, error) {
 	h := sha256.New()
 	enc := json.NewEncoder(h)
-	_ = enc.Encode(messages)
-	_ = enc.Encode(settings)
-	_ = enc.Encode(params)
-	return hex.EncodeToString(h.Sum(nil))
+	if err := enc.Encode(messages); err != nil {
+		return "", fmt.Errorf("cache key: encoding messages: %w", err)
+	}
+	if err := enc.Encode(settings); err != nil {
+		return "", fmt.Errorf("cache key: encoding settings: %w", err)
+	}
+	if err := enc.Encode(params); err != nil {
+		return "", fmt.Errorf("cache key: encoding params: %w", err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

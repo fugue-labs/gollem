@@ -734,3 +734,149 @@ func TestAgentRunFinishReasonLength(t *testing.T) {
 		t.Errorf("expected token limit error, got: %v", err)
 	}
 }
+
+// --- Regression: RunStream missing toolset tools ---
+
+func TestRunStream_IncludesToolsetTools(t *testing.T) {
+	type AddParams struct {
+		A int `json:"a"`
+	}
+	addTool := FuncTool[AddParams]("add", "add numbers", func(ctx context.Context, p AddParams) (int, error) {
+		return p.A, nil
+	})
+	toolset := NewToolset("math", addTool)
+
+	model := NewTestModel(TextResponse("ok"))
+	agent := NewAgent[string](model,
+		WithToolsets[string](toolset),
+	)
+
+	_, err := agent.RunStream(context.Background(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	calls := model.Calls()
+	if len(calls) == 0 {
+		t.Fatal("expected model call")
+	}
+	params := calls[0].Parameters
+	if params == nil {
+		t.Fatal("expected parameters")
+	}
+	found := false
+	for _, td := range params.FunctionTools {
+		if td.Name == "add" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected toolset tool 'add' to be included in RunStream request parameters")
+	}
+}
+
+// --- Regression: RunStream missing dynamic system prompts ---
+
+func TestRunStream_IncludesDynamicSystemPrompts(t *testing.T) {
+	model := NewTestModel(TextResponse("ok"))
+	agent := NewAgent[string](model,
+		WithDynamicSystemPrompt[string](func(_ context.Context, _ *RunContext) (string, error) {
+			return "You are a dynamic assistant.", nil
+		}),
+	)
+
+	_, err := agent.RunStream(context.Background(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	calls := model.Calls()
+	if len(calls) == 0 {
+		t.Fatal("expected model call")
+	}
+	msg := calls[0].Messages[0].(ModelRequest)
+	foundDynamic := false
+	for _, part := range msg.Parts {
+		if sp, ok := part.(SystemPromptPart); ok && sp.Content == "You are a dynamic assistant." {
+			foundDynamic = true
+			break
+		}
+	}
+	if !foundDynamic {
+		t.Error("expected dynamic system prompt to be included in RunStream request")
+	}
+}
+
+// --- Regression: RunStream ignoring toolChoice ---
+
+func TestRunStream_AppliesToolChoice(t *testing.T) {
+	model := NewTestModel(TextResponse("ok"))
+	agent := NewAgent[string](model,
+		WithToolChoice[string](ToolChoiceAuto()),
+	)
+
+	_, err := agent.RunStream(context.Background(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	calls := model.Calls()
+	if len(calls) == 0 {
+		t.Fatal("expected model call")
+	}
+	settings := calls[0].Settings
+	if settings == nil {
+		t.Fatal("expected settings to be non-nil")
+	}
+	if settings.ToolChoice == nil {
+		t.Error("expected tool choice to be set in RunStream settings")
+	}
+}
+
+// --- Regression: Concurrent tool semaphore ignoring context cancellation ---
+
+func TestConcurrentToolSemaphore_RespectsContextCancellation(t *testing.T) {
+	type P struct{}
+
+	// Create a tool that blocks until context is cancelled.
+	blockingTool := FuncTool[P]("blocker", "blocks", func(ctx context.Context, p P) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+
+	// Create a tool that returns immediately.
+	quickTool := FuncTool[P]("quick", "returns quickly", func(ctx context.Context, p P) (string, error) {
+		return "done", nil
+	})
+
+	model := NewTestModel(
+		// Request both tools simultaneously.
+		MultiToolCallResponse(
+			ToolCallPart{ToolName: "blocker", ArgsJSON: `{}`, ToolCallID: "call_blocker"},
+			ToolCallPart{ToolName: "quick", ArgsJSON: `{}`, ToolCallID: "call_quick1"},
+			ToolCallPart{ToolName: "quick", ArgsJSON: `{}`, ToolCallID: "call_quick2"},
+			ToolCallPart{ToolName: "quick", ArgsJSON: `{}`, ToolCallID: "call_quick3"},
+		),
+		TextResponse("done"),
+	)
+
+	agent := NewAgent[string](model,
+		WithTools[string](blockingTool, quickTool),
+		WithMaxConcurrency[string](1), // Only 1 at a time; others wait on semaphore.
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel after a brief delay.
+	go func() {
+		// Small delay to let goroutines start.
+		for i := 0; i < 1000000; i++ {
+		}
+		cancel()
+	}()
+
+	_, err := agent.Run(ctx, "test")
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+}

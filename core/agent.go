@@ -512,12 +512,34 @@ func (a *Agent[T]) RunStream(ctx context.Context, prompt string, opts ...RunOpti
 		}
 	}
 
-	// Build the initial request.
-	req := a.buildInitialRequest(prompt)
+	// Resolve deps: run-level deps override agent-level deps.
+	deps := a.deps
+	if cfg.deps != nil {
+		deps = cfg.deps
+	}
+
+	// Build the initial request with dynamic system prompts.
+	req, err := a.buildInitialRequestWithDynamic(ctx, prompt, state, deps)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build initial request: %w", err)
+	}
 	state.messages = append(state.messages, req)
 
-	// Build model request parameters.
-	params := buildModelRequestParams(a.tools, outputSchema)
+	// Gather all tools (direct + toolsets).
+	allTools := a.allTools()
+
+	// Build model request parameters with all tools.
+	params := buildModelRequestParams(allTools, outputSchema)
+
+	// Apply tool choice to settings.
+	if a.toolChoice != nil {
+		if settings == nil {
+			settings = &ModelSettings{}
+		}
+		if settings.ToolChoice == nil {
+			settings.ToolChoice = a.toolChoice
+		}
+	}
 
 	// Make streaming request.
 	stream, err := a.model.RequestStream(ctx, state.messages, settings, params)
@@ -525,7 +547,7 @@ func (a *Agent[T]) RunStream(ctx context.Context, prompt string, opts ...RunOpti
 		return nil, fmt.Errorf("model stream request failed: %w", err)
 	}
 
-	return newStreamResult[T](stream, outputSchema, a.outputValidators, state.messages), nil
+	return newStreamResult(stream, outputSchema, a.outputValidators, state.messages), nil
 }
 
 // allTools returns all tools from both direct tools and toolsets.
@@ -1215,8 +1237,20 @@ func (a *Agent[T]) executeFunctionTools(
 			go func(ic indexedCall) {
 				defer wg.Done()
 				if sem != nil {
-					sem <- struct{}{}
-					defer func() { <-sem }()
+					select {
+					case sem <- struct{}{}:
+						defer func() { <-sem }()
+					case <-ctx.Done():
+						mu.Lock()
+						results[ic.idx] = ToolReturnPart{
+							ToolName:   ic.call.ToolName,
+							Content:    "error: " + ctx.Err().Error(),
+							ToolCallID: ic.call.ToolCallID,
+							Timestamp:  time.Now(),
+						}
+						mu.Unlock()
+						return
+					}
 				}
 				part := a.executeSingleTool(ctx, state, ic.call, ic.tool, deps, prompt)
 				mu.Lock()
@@ -1345,7 +1379,11 @@ func (a *Agent[T]) executeSingleTool(
 	{
 		var resultStr string
 		if err == nil {
-			resultStr, _ = serializeToolResult(result)
+			var serErr error
+			resultStr, serErr = serializeToolResult(result)
+			if serErr != nil {
+				resultStr = fmt.Sprintf("(serialization error: %v)", serErr)
+			}
 		}
 		a.fireHook(func(h Hook) {
 			if h.OnToolEnd != nil {
