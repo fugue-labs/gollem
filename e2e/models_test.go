@@ -34,10 +34,10 @@ func allModels() []modelEntry {
 		{
 			name: "Anthropic/claude-sonnet-4-5",
 			newFn: func() core.Model {
-				return anthropic.New(
+				return tracked("Anthropic", anthropic.New(
 					anthropic.WithModel("claude-sonnet-4-5-20250929"),
 					anthropic.WithMaxTokens(200),
-				)
+				))
 			},
 			credEnvVar: "ANTHROPIC_API_KEY",
 		},
@@ -58,11 +58,11 @@ func allModels() []modelEntry {
 				if loc == "" {
 					loc = "us-central1"
 				}
-				return vertexai.New(
+				return tracked("VertexAI", vertexai.New(
 					vertexai.WithProject(os.Getenv("GOOGLE_CLOUD_PROJECT")),
 					vertexai.WithLocation(loc),
 					vertexai.WithModel("gemini-2.5-pro"),
-				)
+				))
 			},
 			credEnvVar: "GOOGLE_CLOUD_PROJECT",
 		},
