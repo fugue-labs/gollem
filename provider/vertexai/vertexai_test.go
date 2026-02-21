@@ -371,6 +371,98 @@ func TestParseSSEStreamFunctionCall(t *testing.T) {
 	}
 }
 
+func TestParseSSEStreamMixedTextAndFunctionCallSameChunk(t *testing.T) {
+	sseData := `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Hello"},{"functionCall":{"name":"get_weather","args":{"city":"NYC"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}}
+
+`
+
+	body := io.NopCloser(strings.NewReader(sseData))
+	stream := newStreamedResponse(body, "gemini-2.5-flash")
+
+	event1, err := stream.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start1, ok := event1.(core.PartStartEvent)
+	if !ok {
+		t.Fatalf("expected first event PartStartEvent, got %T", event1)
+	}
+	if _, ok := start1.Part.(core.TextPart); !ok {
+		t.Fatalf("expected first part to be TextPart, got %T", start1.Part)
+	}
+
+	event2, err := stream.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start2, ok := event2.(core.PartStartEvent)
+	if !ok {
+		t.Fatalf("expected second event PartStartEvent, got %T", event2)
+	}
+	tool, ok := start2.Part.(core.ToolCallPart)
+	if !ok {
+		t.Fatalf("expected second part to be ToolCallPart, got %T", start2.Part)
+	}
+	if tool.ToolName != "get_weather" {
+		t.Fatalf("expected tool name get_weather, got %q", tool.ToolName)
+	}
+
+	_, err = stream.Next()
+	if err != io.EOF {
+		t.Fatalf("expected io.EOF, got %v", err)
+	}
+
+	resp := stream.Response()
+	if len(resp.Parts) != 2 {
+		t.Fatalf("expected 2 response parts, got %d", len(resp.Parts))
+	}
+	if _, ok := resp.Parts[0].(core.TextPart); !ok {
+		t.Fatalf("expected response part 0 TextPart, got %T", resp.Parts[0])
+	}
+	if tc, ok := resp.Parts[1].(core.ToolCallPart); !ok {
+		t.Fatalf("expected response part 1 ToolCallPart, got %T", resp.Parts[1])
+	} else {
+		var args map[string]any
+		if err := json.Unmarshal([]byte(tc.ArgsJSON), &args); err != nil {
+			t.Fatalf("failed to parse tool args: %v", err)
+		}
+		if args["city"] != "NYC" {
+			t.Fatalf("expected city NYC, got %v", args["city"])
+		}
+	}
+}
+
+func TestParseSSEStreamFinalPartOrderDeterministic(t *testing.T) {
+	sseData := `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"A"},{"functionCall":{"name":"lookup","args":{"k":"v"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}}
+
+`
+
+	for i := 0; i < 50; i++ {
+		body := io.NopCloser(strings.NewReader(sseData))
+		stream := newStreamedResponse(body, "gemini-2.5-flash")
+		for {
+			_, err := stream.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatalf("iteration %d: unexpected stream error: %v", i, err)
+			}
+		}
+
+		resp := stream.Response()
+		if len(resp.Parts) != 2 {
+			t.Fatalf("iteration %d: expected 2 response parts, got %d", i, len(resp.Parts))
+		}
+		if _, ok := resp.Parts[0].(core.TextPart); !ok {
+			t.Fatalf("iteration %d: expected response part 0 TextPart, got %T", i, resp.Parts[0])
+		}
+		if _, ok := resp.Parts[1].(core.ToolCallPart); !ok {
+			t.Fatalf("iteration %d: expected response part 1 ToolCallPart, got %T", i, resp.Parts[1])
+		}
+	}
+}
+
 func TestNewProviderDefaults(t *testing.T) {
 	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
 	p := New()

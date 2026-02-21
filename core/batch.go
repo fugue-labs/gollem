@@ -29,9 +29,7 @@ func (a *Agent[T]) RunBatch(ctx context.Context, prompts []string, opts ...RunOp
 	}
 
 	// Eagerly build output schema to avoid races from concurrent Run() calls.
-	if a.outputSchema == nil {
-		a.outputSchema = buildOutputSchema[T](a.outputOpts...)
-	}
+	_ = a.ensureOutputSchema()
 
 	cfg := &runConfig{}
 	for _, opt := range opts {

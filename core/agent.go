@@ -41,6 +41,7 @@ type Agent[T any] struct {
 	historyProcessors    []HistoryProcessor
 	tools                []Tool
 	toolsets             []*Toolset
+	outputSchemaMu       sync.Mutex
 	outputSchema         *OutputSchema
 	outputValidators     []OutputValidatorFunc[T]
 	outputOpts           []OutputOption
@@ -324,8 +325,18 @@ type agentRunState struct {
 	toolRetries map[string]int
 	runStep     int
 	runID       string
+	limits      UsageLimits
 	mu          sync.Mutex // protects usage, toolRetries, and traceSteps during concurrent tool execution
 	traceSteps  []TraceStep
+}
+
+func (a *Agent[T]) ensureOutputSchema() *OutputSchema {
+	a.outputSchemaMu.Lock()
+	defer a.outputSchemaMu.Unlock()
+	if a.outputSchema == nil {
+		a.outputSchema = buildOutputSchema[T](a.outputOpts...)
+	}
+	return a.outputSchema
 }
 
 // Run executes the agent loop synchronously and returns the final result.
@@ -336,9 +347,7 @@ func (a *Agent[T]) Run(ctx context.Context, prompt string, opts ...RunOption) (*
 	}
 
 	// Build output schema.
-	if a.outputSchema == nil {
-		a.outputSchema = buildOutputSchema[T](a.outputOpts...)
-	}
+	a.ensureOutputSchema()
 
 	// Initialize state.
 	state := &agentRunState{
@@ -361,6 +370,7 @@ func (a *Agent[T]) Run(ctx context.Context, prompt string, opts ...RunOption) (*
 	if cfg.usageLimits != nil {
 		limits = *cfg.usageLimits
 	}
+	state.limits = limits
 
 	// Resolve deps: run-level deps override agent-level deps.
 	deps := a.deps
@@ -471,9 +481,7 @@ func (a *Agent[T]) RunStream(ctx context.Context, prompt string, opts ...RunOpti
 	}
 
 	// Build output schema.
-	if a.outputSchema == nil {
-		a.outputSchema = buildOutputSchema[T](a.outputOpts...)
-	}
+	outputSchema := a.ensureOutputSchema()
 
 	// Initialize state.
 	state := &agentRunState{
@@ -495,7 +503,7 @@ func (a *Agent[T]) RunStream(ctx context.Context, prompt string, opts ...RunOpti
 	state.messages = append(state.messages, req)
 
 	// Build model request parameters.
-	params := buildModelRequestParams(a.tools, a.outputSchema)
+	params := buildModelRequestParams(a.tools, outputSchema)
 
 	// Make streaming request.
 	stream, err := a.model.RequestStream(ctx, state.messages, settings, params)
@@ -503,7 +511,7 @@ func (a *Agent[T]) RunStream(ctx context.Context, prompt string, opts ...RunOpti
 		return nil, fmt.Errorf("model stream request failed: %w", err)
 	}
 
-	return newStreamResult[T](stream, a.outputSchema, a.outputValidators, state.messages), nil
+	return newStreamResult[T](stream, outputSchema, a.outputValidators, state.messages), nil
 }
 
 // allTools returns all tools from both direct tools and toolsets.
@@ -1104,6 +1112,14 @@ func (a *Agent[T]) processResponse(
 	// Execute function tool calls.
 	var deferredReqs []DeferredToolRequest
 	if len(functionCalls) > 0 {
+		if limit := state.limits.ToolCallsLimit; limit != nil {
+			projected := state.usage.ToolCalls + len(functionCalls)
+			if projected > *limit {
+				return nil, nil, nil, &UsageLimitExceeded{
+					Message: fmt.Sprintf("tool call limit of %d exceeded (used %d, pending %d)", *limit, state.usage.ToolCalls, len(functionCalls)),
+				}
+			}
+		}
 		funcParts, err := a.executeFunctionTools(ctx, state, functionCalls, toolMap, deps, prompt)
 		if err != nil {
 			return nil, nil, nil, err

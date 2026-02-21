@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,6 +28,7 @@ type streamedResponse struct {
 	// Map tool call index to the next part index.
 	toolCallPartIndex map[int]int
 	nextPartIndex     int
+	pendingEvents     []core.ModelResponseStreamEvent
 }
 
 func newStreamedResponse(body io.ReadCloser, model string) *streamedResponse {
@@ -76,6 +78,12 @@ type apiChunkFunction struct {
 // Next returns the next stream event.
 func (s *streamedResponse) Next() (core.ModelResponseStreamEvent, error) {
 	for {
+		if len(s.pendingEvents) > 0 {
+			event := s.pendingEvents[0]
+			s.pendingEvents = s.pendingEvents[1:]
+			return event, nil
+		}
+
 		if s.done {
 			return nil, io.EOF
 		}
@@ -128,22 +136,26 @@ func (s *streamedResponse) Next() (core.ModelResponseStreamEvent, error) {
 			s.stopReason = mapFinishReasonStr(*choice.FinishReason)
 		}
 
+		var events []core.ModelResponseStreamEvent
+
 		// Handle text content delta.
 		if choice.Delta.Content != "" {
 			event := s.handleTextDelta(choice.Delta.Content)
 			if event != nil {
-				return event, nil
+				events = append(events, event)
 			}
 		}
 
 		// Handle tool call deltas.
 		if len(choice.Delta.ToolCalls) > 0 {
-			events := s.handleToolCallDeltas(choice.Delta.ToolCalls)
-			if len(events) > 0 {
-				// Return the first event; queue others would be complex,
-				// but typically there's only one delta per chunk.
-				return events[0], nil
+			events = append(events, s.handleToolCallDeltas(choice.Delta.ToolCalls)...)
+		}
+
+		if len(events) > 0 {
+			if len(events) > 1 {
+				s.pendingEvents = append(s.pendingEvents, events[1:]...)
 			}
+			return events[0], nil
 		}
 	}
 }
@@ -231,7 +243,14 @@ func (s *streamedResponse) getToolCallPartIndex(tcIndex int) (int, bool) {
 
 // finalizeAll finalizes all remaining parts.
 func (s *streamedResponse) finalizeAll() {
-	for idx, part := range s.currentParts {
+	keys := make([]int, 0, len(s.currentParts))
+	for idx := range s.currentParts {
+		keys = append(keys, idx)
+	}
+	sort.Ints(keys)
+
+	for _, idx := range keys {
+		part := s.currentParts[idx]
 		if tc, ok := part.(core.ToolCallPart); ok {
 			// Find the tool call index for this part.
 			for tcIdx, partIdx := range s.toolCallPartIndex {
@@ -250,6 +269,8 @@ func (s *streamedResponse) finalizeAll() {
 		s.parts = append(s.parts, part)
 	}
 	s.currentParts = make(map[int]core.ModelResponsePart)
+	s.argsBuffers = make(map[int]*strings.Builder)
+	s.toolCallPartIndex = make(map[int]int)
 }
 
 // Response returns the complete ModelResponse built from the stream.

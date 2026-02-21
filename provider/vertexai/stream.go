@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ type streamedResponse struct {
 	// State for tracking current parts being built.
 	currentParts  map[int]core.ModelResponsePart
 	nextPartIndex int
+	pendingEvents []core.ModelResponseStreamEvent
 }
 
 func newStreamedResponse(body io.ReadCloser, model string) *streamedResponse {
@@ -39,6 +41,12 @@ func newStreamedResponse(body io.ReadCloser, model string) *streamedResponse {
 // Next returns the next stream event.
 func (s *streamedResponse) Next() (core.ModelResponseStreamEvent, error) {
 	for {
+		if len(s.pendingEvents) > 0 {
+			event := s.pendingEvents[0]
+			s.pendingEvents = s.pendingEvents[1:]
+			return event, nil
+		}
+
 		if s.done {
 			return nil, io.EOF
 		}
@@ -83,20 +91,28 @@ func (s *streamedResponse) Next() (core.ModelResponseStreamEvent, error) {
 			s.stopReason = mapFinishReasonStr(candidate.FinishReason)
 		}
 
+		var events []core.ModelResponseStreamEvent
+
 		// Process parts in this chunk.
 		for _, p := range candidate.Content.Parts {
 			if p.Text != "" {
 				event := s.handleTextDelta(p.Text)
 				if event != nil {
-					return event, nil
+					events = append(events, event)
 				}
 			}
 			if p.FunctionCall != nil {
 				event := s.handleFunctionCall(p.FunctionCall, p.ThoughtSignature)
 				if event != nil {
-					return event, nil
+					events = append(events, event)
 				}
 			}
+		}
+		if len(events) > 0 {
+			if len(events) > 1 {
+				s.pendingEvents = append(s.pendingEvents, events[1:]...)
+			}
+			return events[0], nil
 		}
 	}
 }
@@ -164,8 +180,13 @@ func (s *streamedResponse) handleFunctionCall(fc *geminiFunctionCall, thoughtSig
 
 // finalizeAll moves current parts into the finalized parts list.
 func (s *streamedResponse) finalizeAll() {
-	for _, part := range s.currentParts {
-		s.parts = append(s.parts, part)
+	keys := make([]int, 0, len(s.currentParts))
+	for idx := range s.currentParts {
+		keys = append(keys, idx)
+	}
+	sort.Ints(keys)
+	for _, idx := range keys {
+		s.parts = append(s.parts, s.currentParts[idx])
 	}
 	s.currentParts = make(map[int]core.ModelResponsePart)
 }

@@ -552,6 +552,94 @@ data: [DONE]
 	}
 }
 
+func TestParseSSEStreamMixedTextAndToolCallSameChunk(t *testing.T) {
+	sseData := `data: {"id":"chatcmpl-mixed","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hi","tool_calls":[{"index":0,"id":"call_mix","type":"function","function":{"name":"search","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+
+	body := io.NopCloser(strings.NewReader(sseData))
+	stream := newStreamedResponse(body, "gpt-4o")
+
+	event1, err := stream.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start1, ok := event1.(core.PartStartEvent)
+	if !ok {
+		t.Fatalf("expected first event PartStartEvent, got %T", event1)
+	}
+	if _, ok := start1.Part.(core.TextPart); !ok {
+		t.Fatalf("expected first part to be TextPart, got %T", start1.Part)
+	}
+
+	event2, err := stream.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start2, ok := event2.(core.PartStartEvent)
+	if !ok {
+		t.Fatalf("expected second event PartStartEvent, got %T", event2)
+	}
+	tool, ok := start2.Part.(core.ToolCallPart)
+	if !ok {
+		t.Fatalf("expected second part to be ToolCallPart, got %T", start2.Part)
+	}
+	if tool.ToolName != "search" {
+		t.Fatalf("expected tool name search, got %q", tool.ToolName)
+	}
+
+	_, err = stream.Next()
+	if err != io.EOF {
+		t.Fatalf("expected io.EOF, got %v", err)
+	}
+
+	resp := stream.Response()
+	if len(resp.Parts) != 2 {
+		t.Fatalf("expected 2 response parts, got %d", len(resp.Parts))
+	}
+	if _, ok := resp.Parts[0].(core.TextPart); !ok {
+		t.Fatalf("expected response part 0 to be TextPart, got %T", resp.Parts[0])
+	}
+	if _, ok := resp.Parts[1].(core.ToolCallPart); !ok {
+		t.Fatalf("expected response part 1 to be ToolCallPart, got %T", resp.Parts[1])
+	}
+}
+
+func TestParseSSEStreamFinalPartOrderDeterministic(t *testing.T) {
+	sseData := `data: {"id":"chatcmpl-order","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"A","tool_calls":[{"index":0,"id":"call_order","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+
+	for i := 0; i < 50; i++ {
+		body := io.NopCloser(strings.NewReader(sseData))
+		stream := newStreamedResponse(body, "gpt-4o")
+		for {
+			_, err := stream.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatalf("iteration %d: unexpected stream error: %v", i, err)
+			}
+		}
+
+		resp := stream.Response()
+		if len(resp.Parts) != 2 {
+			t.Fatalf("iteration %d: expected 2 response parts, got %d", i, len(resp.Parts))
+		}
+		if _, ok := resp.Parts[0].(core.TextPart); !ok {
+			t.Fatalf("iteration %d: expected response part 0 TextPart, got %T", i, resp.Parts[0])
+		}
+		if _, ok := resp.Parts[1].(core.ToolCallPart); !ok {
+			t.Fatalf("iteration %d: expected response part 1 ToolCallPart, got %T", i, resp.Parts[1])
+		}
+	}
+}
+
 func TestNewProviderDefaults(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key-123")
 	p := New()

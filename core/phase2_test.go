@@ -446,6 +446,78 @@ func TestAgentIter_EarlyTermination(t *testing.T) {
 	}
 }
 
+func TestAgentIter_AppliesTurnGuardrails(t *testing.T) {
+	model := NewTestModel(TextResponse("should not run"))
+	agent := NewAgent[string](model,
+		WithTurnGuardrail[string]("max_turns", MaxTurns(0)),
+	)
+
+	run := agent.Iter(context.Background(), "Hi")
+	_, err := run.Next()
+	if err == nil {
+		t.Fatal("expected turn guardrail error")
+	}
+
+	var guardrailErr *GuardrailError
+	if !errors.As(err, &guardrailErr) {
+		t.Fatalf("expected GuardrailError, got %T: %v", err, err)
+	}
+	if len(model.Calls()) != 0 {
+		t.Fatalf("expected model to not be called, got %d calls", len(model.Calls()))
+	}
+}
+
+func TestAgentIter_AppliesMessageInterceptors(t *testing.T) {
+	model := NewTestModel(TextResponse("should not run"))
+	agent := NewAgent[string](model,
+		WithMessageInterceptor[string](func(_ context.Context, _ []ModelMessage) InterceptResult {
+			return InterceptResult{Action: MessageDrop}
+		}),
+	)
+
+	run := agent.Iter(context.Background(), "Hi")
+	_, err := run.Next()
+	if err == nil {
+		t.Fatal("expected interceptor drop error")
+	}
+	if err.Error() != "message interceptor dropped the request" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(model.Calls()) != 0 {
+		t.Fatalf("expected model to not be called, got %d calls", len(model.Calls()))
+	}
+}
+
+func TestAgentIter_AppliesMiddleware(t *testing.T) {
+	model := NewTestModel(TextResponse("ok"))
+	var middlewareCalls atomic.Int32
+
+	mw := func(
+		ctx context.Context,
+		messages []ModelMessage,
+		settings *ModelSettings,
+		params *ModelRequestParameters,
+		next func(context.Context, []ModelMessage, *ModelSettings, *ModelRequestParameters) (*ModelResponse, error),
+	) (*ModelResponse, error) {
+		middlewareCalls.Add(1)
+		return next(ctx, messages, settings, params)
+	}
+
+	agent := NewAgent[string](model, WithAgentMiddleware[string](mw))
+	run := agent.Iter(context.Background(), "Hi")
+
+	resp, err := run.Next()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.TextContent() != "ok" {
+		t.Fatalf("response text = %q", resp.TextContent())
+	}
+	if middlewareCalls.Load() != 1 {
+		t.Fatalf("expected middleware to be called once, got %d", middlewareCalls.Load())
+	}
+}
+
 // --- Test: Tool Call Limits ---
 
 func TestToolCallLimit(t *testing.T) {
@@ -477,6 +549,46 @@ func TestToolCallLimit(t *testing.T) {
 	var limitErr *UsageLimitExceeded
 	if !errors.As(err, &limitErr) {
 		t.Errorf("expected UsageLimitExceeded, got %T: %v", err, err)
+	}
+}
+
+func TestToolCallLimit_PreventsOverflowWithinSingleResponse(t *testing.T) {
+	model := NewTestModel(
+		MultiToolCallResponse(
+			ToolCallPart{ToolName: "action", ArgsJSON: `{}`, ToolCallID: "c1"},
+			ToolCallPart{ToolName: "action", ArgsJSON: `{}`, ToolCallID: "c2"},
+			ToolCallPart{ToolName: "action", ArgsJSON: `{}`, ToolCallID: "c3"},
+		),
+	)
+
+	type Params struct{}
+	var executed atomic.Int32
+	actionTool := FuncTool[Params]("action", "Action",
+		func(_ context.Context, _ Params) (string, error) {
+			executed.Add(1)
+			return "ok", nil
+		},
+	)
+
+	limit := 2
+	agent := NewAgent[string](model,
+		WithTools[string](actionTool),
+		WithUsageLimits[string](UsageLimits{
+			RequestLimit:   IntPtr(50),
+			ToolCallsLimit: &limit,
+		}),
+	)
+
+	_, err := agent.Run(context.Background(), "Do many things")
+	if err == nil {
+		t.Fatal("expected error for tool call limit exceeded")
+	}
+	var limitErr *UsageLimitExceeded
+	if !errors.As(err, &limitErr) {
+		t.Fatalf("expected UsageLimitExceeded, got %T: %v", err, err)
+	}
+	if got := executed.Load(); got != 0 {
+		t.Fatalf("expected zero tool executions when projected tool calls exceed limit, got %d", got)
 	}
 }
 
