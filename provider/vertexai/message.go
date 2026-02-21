@@ -28,6 +28,9 @@ type geminiPart struct {
 	FunctionCall *geminiFunctionCall `json:"functionCall,omitempty"`
 	// Function response from user.
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
+	// ThoughtSignature is required by Gemini 3.x models. The model returns it
+	// with function calls, and it must be sent back with the conversation history.
+	ThoughtSignature string `json:"thoughtSignature,omitempty"`
 }
 
 type geminiFunctionCall struct {
@@ -194,12 +197,19 @@ func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, pa
 					if p.ArgsJSON != "" && p.ArgsJSON != "{}" {
 						_ = json.Unmarshal([]byte(p.ArgsJSON), &args)
 					}
-					modelParts = append(modelParts, geminiPart{
+					gp := geminiPart{
 						FunctionCall: &geminiFunctionCall{
 							Name: p.ToolName,
 							Args: args,
 						},
-					})
+					}
+					// Round-trip thought signature for Gemini 3.x.
+					if p.Metadata != nil {
+						if sig, ok := p.Metadata["thoughtSignature"]; ok {
+							gp.ThoughtSignature = sig
+						}
+					}
+					modelParts = append(modelParts, gp)
 				}
 			}
 			if len(modelParts) > 0 {
@@ -230,11 +240,18 @@ func parseResponse(resp *geminiResponse, modelName string) *core.ModelResponse {
 					b, _ := json.Marshal(p.FunctionCall.Args)
 					argsJSON = string(b)
 				}
-				parts = append(parts, core.ToolCallPart{
+				tc := core.ToolCallPart{
 					ToolName:   p.FunctionCall.Name,
 					ArgsJSON:   argsJSON,
 					ToolCallID: p.FunctionCall.Name, // Gemini doesn't use tool call IDs
-				})
+				}
+				// Preserve thought signature for Gemini 3.x round-tripping.
+				if p.ThoughtSignature != "" {
+					tc.Metadata = map[string]string{
+						"thoughtSignature": p.ThoughtSignature,
+					}
+				}
+				parts = append(parts, tc)
 			}
 		}
 	}

@@ -52,6 +52,28 @@ func allModels() []modelEntry {
 			credEnvVar: "GOOGLE_CLOUD_PROJECT",
 		},
 		{
+			name: "VertexAI/gemini-3.1-pro-preview",
+			newFn: func() core.Model {
+				return tracked("VertexAI", vertexai.New(
+					vertexai.WithProject(os.Getenv("GOOGLE_CLOUD_PROJECT")),
+					vertexai.WithLocation("global"),
+					vertexai.WithModel(vertexai.Gemini31ProPreview),
+				))
+			},
+			credEnvVar: "GOOGLE_CLOUD_PROJECT",
+		},
+		{
+			name: "VertexAI/gemini-3-flash-preview",
+			newFn: func() core.Model {
+				return tracked("VertexAI", vertexai.New(
+					vertexai.WithProject(os.Getenv("GOOGLE_CLOUD_PROJECT")),
+					vertexai.WithLocation("global"),
+					vertexai.WithModel(vertexai.Gemini3FlashPreview),
+				))
+			},
+			credEnvVar: "GOOGLE_CLOUD_PROJECT",
+		},
+		{
 			name: "VertexAI/gemini-2.5-pro",
 			newFn: func() core.Model {
 				loc := os.Getenv("VERTEX_AI_LOCATION")

@@ -21,9 +21,11 @@ import (
 
 // Model constants for Gemini models.
 const (
-	Gemini25Pro   = "gemini-2.5-pro"
-	Gemini25Flash = "gemini-2.5-flash"
-	Gemini20Flash = "gemini-2.0-flash"
+	Gemini31ProPreview   = "gemini-3.1-pro-preview"
+	Gemini3FlashPreview  = "gemini-3-flash-preview"
+	Gemini25Pro          = "gemini-2.5-pro"
+	Gemini25Flash        = "gemini-2.5-flash"
+	Gemini20Flash        = "gemini-2.0-flash"
 )
 
 const (

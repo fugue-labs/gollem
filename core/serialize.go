@@ -88,9 +88,10 @@ type textPartJSON struct {
 }
 
 type toolCallPartJSON struct {
-	ToolName   string `json:"tool_name"`
-	ArgsJSON   string `json:"args_json"`
-	ToolCallID string `json:"tool_call_id"`
+	ToolName   string            `json:"tool_name"`
+	ArgsJSON   string            `json:"args_json"`
+	ToolCallID string            `json:"tool_call_id"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
 }
 
 type thinkingPartJSON struct {
@@ -311,7 +312,12 @@ func encodeResponsePart(part ModelResponsePart) (partEnvelope, error) {
 		return partEnvelope{Type: "text", Data: data}, nil
 
 	case ToolCallPart:
-		data, err := json.Marshal(toolCallPartJSON(p))
+		data, err := json.Marshal(toolCallPartJSON{
+			ToolName:   p.ToolName,
+			ArgsJSON:   p.ArgsJSON,
+			ToolCallID: p.ToolCallID,
+			Metadata:   p.Metadata,
+		})
 		if err != nil {
 			return partEnvelope{}, err
 		}
@@ -435,7 +441,12 @@ func decodeResponsePart(env partEnvelope) (ModelResponsePart, error) {
 		if err := json.Unmarshal(env.Data, &p); err != nil {
 			return nil, fmt.Errorf("unmarshaling tool-call: %w", err)
 		}
-		return ToolCallPart(p), nil
+		return ToolCallPart{
+			ToolName:   p.ToolName,
+			ArgsJSON:   p.ArgsJSON,
+			ToolCallID: p.ToolCallID,
+			Metadata:   p.Metadata,
+		}, nil
 
 	case "thinking":
 		var p thinkingPartJSON

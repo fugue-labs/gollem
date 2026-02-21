@@ -92,7 +92,7 @@ func (s *streamedResponse) Next() (core.ModelResponseStreamEvent, error) {
 				}
 			}
 			if p.FunctionCall != nil {
-				event := s.handleFunctionCall(p.FunctionCall)
+				event := s.handleFunctionCall(p.FunctionCall, p.ThoughtSignature)
 				if event != nil {
 					return event, nil
 				}
@@ -133,7 +133,7 @@ func (s *streamedResponse) handleTextDelta(content string) core.ModelResponseStr
 }
 
 // handleFunctionCall processes a function call from a streaming chunk.
-func (s *streamedResponse) handleFunctionCall(fc *geminiFunctionCall) core.ModelResponseStreamEvent {
+func (s *streamedResponse) handleFunctionCall(fc *geminiFunctionCall, thoughtSig string) core.ModelResponseStreamEvent {
 	idx := s.nextPartIndex
 	s.nextPartIndex++
 
@@ -147,6 +147,12 @@ func (s *streamedResponse) handleFunctionCall(fc *geminiFunctionCall) core.Model
 		ToolName:   fc.Name,
 		ArgsJSON:   argsJSON,
 		ToolCallID: fc.Name,
+	}
+	// Preserve thought signature for Gemini 3.x round-tripping.
+	if thoughtSig != "" {
+		part.Metadata = map[string]string{
+			"thoughtSignature": thoughtSig,
+		}
 	}
 	s.currentParts[idx] = part
 

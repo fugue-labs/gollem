@@ -111,6 +111,10 @@ type ToolCallPart struct {
 	ToolName   string
 	ArgsJSON   string // raw JSON arguments
 	ToolCallID string
+	// Metadata carries provider-specific opaque data that must be round-tripped
+	// (e.g., Gemini 3.x thought signatures). Providers set this on parse and
+	// read it back when serializing tool calls in conversation history.
+	Metadata map[string]string
 }
 
 func (p ToolCallPart) responsePartKind() string { return "tool-call" }
