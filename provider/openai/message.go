@@ -13,6 +13,7 @@ type apiRequest struct {
 	Model            string             `json:"model"`
 	Messages         []apiMessage       `json:"messages"`
 	Tools            []apiToolDef       `json:"tools,omitempty"`
+	ToolChoice       any                `json:"tool_choice,omitempty"`
 	Stream           bool               `json:"stream,omitempty"`
 	StreamOptions    *apiStreamOptions  `json:"stream_options,omitempty"`
 	MaxTokens        int                `json:"max_completion_tokens,omitempty"`
@@ -159,6 +160,26 @@ func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, pa
 					Strict: strict,
 				},
 			}
+		}
+	}
+
+	// Apply tool choice from settings.
+	if settings != nil && settings.ToolChoice != nil {
+		tc := settings.ToolChoice
+		switch {
+		case tc.Mode == "none":
+			req.ToolChoice = "none"
+		case tc.Mode == "required":
+			req.ToolChoice = "required"
+		case tc.ToolName != "":
+			req.ToolChoice = map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name": tc.ToolName,
+				},
+			}
+		case tc.Mode == "auto":
+			req.ToolChoice = "auto"
 		}
 	}
 

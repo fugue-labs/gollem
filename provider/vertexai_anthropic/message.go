@@ -15,12 +15,18 @@ type apiRequest struct {
 	System      []apiSystemBlock `json:"system,omitempty"`
 	Messages    []apiMessage     `json:"messages"`
 	Tools       []apiTool        `json:"tools,omitempty"`
+	ToolChoice  *apiToolChoice   `json:"tool_choice,omitempty"`
 	Stream      bool             `json:"stream,omitempty"`
 	Temperature *float64         `json:"temperature,omitempty"`
 	TopP        *float64         `json:"top_p,omitempty"`
 	Thinking    *apiThinking     `json:"thinking,omitempty"`
 	// AnthropicVersion is sent in the request body for Vertex AI.
 	AnthropicVersion string `json:"anthropic_version"`
+}
+
+type apiToolChoice struct {
+	Type string `json:"type"`           // "auto", "any", "tool"
+	Name string `json:"name,omitempty"` // required when type is "tool"
 }
 
 type apiThinking struct {
@@ -113,6 +119,21 @@ func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, pa
 				Description: td.Description,
 				InputSchema: schemaJSON,
 			})
+		}
+	}
+
+	// Apply tool choice from settings.
+	if settings != nil && settings.ToolChoice != nil {
+		tc := settings.ToolChoice
+		switch {
+		case tc.Mode == "none":
+			req.Tools = nil
+		case tc.Mode == "required":
+			req.ToolChoice = &apiToolChoice{Type: "any"}
+		case tc.ToolName != "":
+			req.ToolChoice = &apiToolChoice{Type: "tool", Name: tc.ToolName}
+		case tc.Mode == "auto":
+			req.ToolChoice = &apiToolChoice{Type: "auto"}
 		}
 	}
 

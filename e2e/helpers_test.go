@@ -235,6 +235,9 @@ func skipOnAccountError(t *testing.T, err error) {
 		"Permission denied",
 		"PERMISSION_DENIED",
 		"Quota exceeded",
+		"RESOURCE_EXHAUSTED",
+		"Resource exhausted",
+		"status 429",
 	}
 	for _, pattern := range skipPatterns {
 		if strings.Contains(errStr, pattern) {

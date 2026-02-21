@@ -591,14 +591,9 @@ func (a *Agent[T]) hasToolPrepareFuncs(tools []Tool) bool {
 
 // runLoop is the core agent loop.
 func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt string, settings *ModelSettings, limits UsageLimits, deps any, deferredResults []DeferredToolResult) (*RunResult[T], error) {
-	// Build the initial request with dynamic system prompts.
-	req, err := a.buildInitialRequestWithDynamic(ctx, prompt, state, deps)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build initial request: %w", err)
-	}
-	state.messages = append(state.messages, req)
-
-	// Inject deferred tool results as ToolReturnParts before the first model call.
+	// When deferred results are provided, inject them BEFORE the new initial request.
+	// This ensures tool_result blocks immediately follow the tool_use blocks in the
+	// existing message history, which providers like Anthropic require.
 	if len(deferredResults) > 0 {
 		var deferredParts []ModelRequestPart
 		for _, dr := range deferredResults {
@@ -621,6 +616,13 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 			Timestamp: time.Now(),
 		})
 	}
+
+	// Build the initial request with dynamic system prompts.
+	req, err := a.buildInitialRequestWithDynamic(ctx, prompt, state, deps)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build initial request: %w", err)
+	}
+	state.messages = append(state.messages, req)
 
 	// Gather all tools (direct + toolsets).
 	allTools := a.allTools()

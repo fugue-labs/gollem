@@ -12,8 +12,18 @@ import (
 type geminiRequest struct {
 	Contents         []geminiContent         `json:"contents"`
 	Tools            []geminiToolDecl        `json:"tools,omitempty"`
+	ToolConfig       *geminiToolConfig       `json:"toolConfig,omitempty"`
 	SystemInstruction *geminiContent         `json:"systemInstruction,omitempty"`
 	GenerationConfig *geminiGenerationConfig `json:"generationConfig,omitempty"`
+}
+
+type geminiToolConfig struct {
+	FunctionCallingConfig geminiFunctionCallingConfig `json:"functionCallingConfig"`
+}
+
+type geminiFunctionCallingConfig struct {
+	Mode                 string   `json:"mode"`                           // "AUTO", "ANY", "NONE"
+	AllowedFunctionNames []string `json:"allowedFunctionNames,omitempty"` // for forcing specific tools
 }
 
 type geminiContent struct {
@@ -132,6 +142,32 @@ func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, pa
 				})
 			}
 			req.Tools = []geminiToolDecl{{FunctionDeclarations: funcs}}
+		}
+	}
+
+	// Apply tool choice from settings.
+	if settings != nil && settings.ToolChoice != nil {
+		tc := settings.ToolChoice
+		switch {
+		case tc.Mode == "none":
+			req.ToolConfig = &geminiToolConfig{
+				FunctionCallingConfig: geminiFunctionCallingConfig{Mode: "NONE"},
+			}
+		case tc.Mode == "required":
+			req.ToolConfig = &geminiToolConfig{
+				FunctionCallingConfig: geminiFunctionCallingConfig{Mode: "ANY"},
+			}
+		case tc.ToolName != "":
+			req.ToolConfig = &geminiToolConfig{
+				FunctionCallingConfig: geminiFunctionCallingConfig{
+					Mode:                 "ANY",
+					AllowedFunctionNames: []string{tc.ToolName},
+				},
+			}
+		case tc.Mode == "auto":
+			req.ToolConfig = &geminiToolConfig{
+				FunctionCallingConfig: geminiFunctionCallingConfig{Mode: "AUTO"},
+			}
 		}
 	}
 

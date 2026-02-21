@@ -137,6 +137,7 @@ func TestToolChoiceModes(t *testing.T) {
 		agent := core.NewAgent[string](p.newFn(),
 			core.WithTools[string](addTool),
 			core.WithToolChoice[string](core.ToolChoiceRequired()),
+			core.WithToolChoiceAutoReset[string](),
 		)
 
 		result, err := agent.Run(ctx, "Add 1 and 2.")
