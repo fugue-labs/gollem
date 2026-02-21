@@ -44,7 +44,7 @@ func And(conditions ...RunCondition) RunCondition {
 // when used as an AgentOption or shared across multiple runs.
 func MaxRunDuration(d time.Duration) RunCondition {
 	return func(_ context.Context, rc *RunContext, _ *ModelResponse) (bool, string) {
-		if time.Since(rc.RunStartTime) > d {
+		if time.Since(rc.RunStartTime) >= d {
 			return true, "max run duration exceeded"
 		}
 		return false, ""
