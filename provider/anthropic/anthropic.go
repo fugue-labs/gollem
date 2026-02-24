@@ -34,11 +34,12 @@ const (
 
 // Provider implements core.Model for Anthropic's Messages API.
 type Provider struct {
-	apiKey     string
-	model      string
-	baseURL    string
-	httpClient *http.Client
-	maxTokens  int
+	apiKey         string
+	model          string
+	baseURL        string
+	httpClient     *http.Client
+	maxTokens      int
+	promptCaching  bool
 }
 
 // Option configures the Anthropic provider.
@@ -79,6 +80,15 @@ func WithMaxTokens(n int) Option {
 	}
 }
 
+// WithPromptCaching enables Anthropic prompt caching. When enabled, cache_control
+// breakpoints are added to system blocks and tool definitions to maximize cache
+// hit rate across turns.
+func WithPromptCaching(enabled bool) Option {
+	return func(p *Provider) {
+		p.promptCaching = enabled
+	}
+}
+
 // New creates a new Anthropic provider with the given options.
 func New(opts ...Option) *Provider {
 	p := &Provider{
@@ -93,6 +103,11 @@ func New(opts ...Option) *Provider {
 	if p.apiKey == "" {
 		p.apiKey = os.Getenv("ANTHROPIC_API_KEY")
 	}
+	if !p.promptCaching {
+		if v := os.Getenv("ANTHROPIC_PROMPT_CACHING"); v == "1" || v == "true" {
+			p.promptCaching = true
+		}
+	}
 	return p
 }
 
@@ -106,6 +121,9 @@ func (p *Provider) Request(ctx context.Context, messages []core.ModelMessage, se
 	req, err := buildRequest(messages, settings, params, p.model, p.maxTokens, false)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: failed to build request: %w", err)
+	}
+	if p.promptCaching {
+		applyCacheBreakpoints(req)
 	}
 
 	body, err := json.Marshal(req)
@@ -132,6 +150,9 @@ func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessa
 	req, err := buildRequest(messages, settings, params, p.model, p.maxTokens, true)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: failed to build request: %w", err)
+	}
+	if p.promptCaching {
+		applyCacheBreakpoints(req)
 	}
 
 	body, err := json.Marshal(req)

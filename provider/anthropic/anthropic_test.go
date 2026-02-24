@@ -999,3 +999,164 @@ func TestBuildRequestSystemOnlyRequestAlternation(t *testing.T) {
 		t.Errorf("expected system block with context, got %v", req.System)
 	}
 }
+
+// --- Prompt caching tests ---
+
+func TestWithPromptCachingOption(t *testing.T) {
+	p := New(WithAPIKey("test"), WithPromptCaching(true))
+	if !p.promptCaching {
+		t.Error("expected promptCaching=true")
+	}
+}
+
+func TestPromptCachingEnvVar(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test")
+	t.Setenv("ANTHROPIC_PROMPT_CACHING", "true")
+	p := New()
+	if !p.promptCaching {
+		t.Error("expected promptCaching=true from env")
+	}
+}
+
+func TestPromptCachingEnvVar1(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test")
+	t.Setenv("ANTHROPIC_PROMPT_CACHING", "1")
+	p := New()
+	if !p.promptCaching {
+		t.Error("expected promptCaching=true from env '1'")
+	}
+}
+
+func TestPromptCachingDisabledByDefault(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test")
+	p := New()
+	if p.promptCaching {
+		t.Error("expected promptCaching=false by default")
+	}
+}
+
+func TestApplyCacheBreakpointsSystemAndTools(t *testing.T) {
+	messages := []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.SystemPromptPart{Content: "System A"},
+				core.SystemPromptPart{Content: "System B"},
+				core.UserPromptPart{Content: "Hello"},
+			},
+		},
+	}
+	params := &core.ModelRequestParameters{
+		FunctionTools: []core.ToolDefinition{
+			{Name: "tool1", ParametersSchema: core.Schema{"type": "object"}},
+			{Name: "tool2", ParametersSchema: core.Schema{"type": "object"}},
+		},
+	}
+
+	req, err := buildRequest(messages, nil, params, Claude4Sonnet, 4096, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyCacheBreakpoints(req)
+
+	// Last system block should have cache_control.
+	if req.System[0].CacheControl != nil {
+		t.Error("first system block should not have cache_control")
+	}
+	if req.System[1].CacheControl == nil || req.System[1].CacheControl.Type != "ephemeral" {
+		t.Error("last system block should have cache_control ephemeral")
+	}
+	// Last tool should have cache_control.
+	if req.Tools[0].CacheControl != nil {
+		t.Error("first tool should not have cache_control")
+	}
+	if req.Tools[1].CacheControl == nil || req.Tools[1].CacheControl.Type != "ephemeral" {
+		t.Error("last tool should have cache_control ephemeral")
+	}
+}
+
+func TestApplyCacheBreakpointsNoSystemNoTools(t *testing.T) {
+	req := &apiRequest{Model: Claude4Sonnet}
+	applyCacheBreakpoints(req) // Should not panic.
+}
+
+func TestCacheBreakpointsOmittedWhenDisabled(t *testing.T) {
+	messages := []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.SystemPromptPart{Content: "System"},
+				core.UserPromptPart{Content: "Hello"},
+			},
+		},
+	}
+	req, err := buildRequest(messages, nil, nil, Claude4Sonnet, 4096, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Don't call applyCacheBreakpoints — simulating disabled state.
+	if req.System[0].CacheControl != nil {
+		t.Error("cache_control should be nil when caching disabled")
+	}
+}
+
+func TestCacheBreakpointsInPayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var raw map[string]any
+		json.NewDecoder(r.Body).Decode(&raw)
+		system, _ := raw["system"].([]any)
+		if len(system) == 0 {
+			t.Fatal("expected system blocks")
+		}
+		lastSys, _ := system[len(system)-1].(map[string]any)
+		cc, _ := lastSys["cache_control"].(map[string]any)
+		if cc == nil || cc["type"] != "ephemeral" {
+			t.Errorf("expected cache_control ephemeral on last system block, got %v", cc)
+		}
+		resp := apiResponse{
+			ID: "msg_1", Role: "assistant",
+			Content:    []apiContentBlock{{Type: "text", Text: "ok"}},
+			StopReason: "end_turn",
+			Usage:      apiUsage{InputTokens: 5, OutputTokens: 1},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := New(WithAPIKey("k"), WithBaseURL(server.URL), WithPromptCaching(true))
+	_, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{
+			core.SystemPromptPart{Content: "System prompt"},
+			core.UserPromptPart{Content: "hi"},
+		}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCacheControlOmittedFromPayloadWhenDisabled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "cache_control") {
+			t.Error("cache_control should not appear in payload when disabled")
+		}
+		resp := apiResponse{
+			ID: "msg_1", Role: "assistant",
+			Content:    []apiContentBlock{{Type: "text", Text: "ok"}},
+			StopReason: "end_turn",
+			Usage:      apiUsage{InputTokens: 5, OutputTokens: 1},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := New(WithAPIKey("k"), WithBaseURL(server.URL)) // caching not enabled
+	_, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{
+			core.SystemPromptPart{Content: "System prompt"},
+			core.UserPromptPart{Content: "hi"},
+		}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+}

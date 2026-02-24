@@ -33,9 +33,14 @@ type apiThinking struct {
 	BudgetTokens int    `json:"budget_tokens"`  // Max tokens for thinking
 }
 
+type apiCacheControl struct {
+	Type string `json:"type"` // "ephemeral"
+}
+
 type apiSystemBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type         string            `json:"type"`
+	Text         string            `json:"text"`
+	CacheControl *apiCacheControl  `json:"cache_control,omitempty"`
 }
 
 type apiMessage struct {
@@ -61,9 +66,10 @@ type apiContentBlock struct {
 }
 
 type apiTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Name         string           `json:"name"`
+	Description  string           `json:"description,omitempty"`
+	InputSchema  json.RawMessage  `json:"input_schema"`
+	CacheControl *apiCacheControl `json:"cache_control,omitempty"`
 }
 
 // --- API response types ---
@@ -311,6 +317,20 @@ func mapStopReason(reason string) core.FinishReason {
 		return core.FinishReasonContentFilter
 	default:
 		return core.FinishReasonStop
+	}
+}
+
+// applyCacheBreakpoints adds cache_control breakpoints to stable request content.
+// The strategy marks the last system block and the last tool definition with
+// ephemeral cache control. This is deterministic and maximizes cache hit rate
+// across turns since system prompts and tool schemas are typically static.
+func applyCacheBreakpoints(req *apiRequest) {
+	ephemeral := &apiCacheControl{Type: "ephemeral"}
+	if len(req.System) > 0 {
+		req.System[len(req.System)-1].CacheControl = ephemeral
+	}
+	if len(req.Tools) > 0 {
+		req.Tools[len(req.Tools)-1].CacheControl = ephemeral
 	}
 }
 
