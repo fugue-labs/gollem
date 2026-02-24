@@ -44,6 +44,7 @@ type Provider struct {
 	httpClient      *http.Client
 	credentialsFile string
 	credentialsJSON []byte
+	cachedContent   string
 
 	mu          sync.Mutex
 	tokenSource oauth2.TokenSource
@@ -87,6 +88,16 @@ func WithCredentialsJSON(data []byte) Option {
 	}
 }
 
+// WithCachedContent sets the resource name of an existing context cache to
+// attach to requests (e.g., "projects/.../locations/.../cachedContents/...").
+// When set, the Gemini API uses the cached content instead of re-processing
+// the corresponding prefix tokens, reducing cost and latency.
+func WithCachedContent(name string) Option {
+	return func(p *Provider) {
+		p.cachedContent = name
+	}
+}
+
 // WithHTTPClient sets a custom HTTP client.
 func WithHTTPClient(c *http.Client) Option {
 	return func(p *Provider) {
@@ -106,6 +117,9 @@ func New(opts ...Option) *Provider {
 	}
 	if p.project == "" {
 		p.project = os.Getenv("GOOGLE_CLOUD_PROJECT")
+	}
+	if p.cachedContent == "" {
+		p.cachedContent = os.Getenv("VERTEXAI_CACHED_CONTENT")
 	}
 	return p
 }
@@ -179,6 +193,9 @@ func (p *Provider) Request(ctx context.Context, messages []core.ModelMessage, se
 	if err != nil {
 		return nil, fmt.Errorf("vertexai: failed to build request: %w", err)
 	}
+	if p.cachedContent != "" {
+		req.CachedContent = p.cachedContent
+	}
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -217,6 +234,9 @@ func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessa
 	req, err := buildRequest(messages, settings, params)
 	if err != nil {
 		return nil, fmt.Errorf("vertexai: failed to build request: %w", err)
+	}
+	if p.cachedContent != "" {
+		req.CachedContent = p.cachedContent
 	}
 
 	body, err := json.Marshal(req)

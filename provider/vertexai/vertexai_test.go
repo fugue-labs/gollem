@@ -1699,3 +1699,194 @@ func TestBuildRequestWithTopP(t *testing.T) {
 		t.Errorf("expected TopP 0.95, got %v", req.GenerationConfig.TopP)
 	}
 }
+
+// --- Cached content tests ---
+
+func TestWithCachedContentOption(t *testing.T) {
+	p := New(WithCachedContent("projects/my-project/locations/us-central1/cachedContents/abc123"))
+	if p.cachedContent != "projects/my-project/locations/us-central1/cachedContents/abc123" {
+		t.Errorf("expected cachedContent to be set, got %q", p.cachedContent)
+	}
+}
+
+func TestCachedContentEnvVar(t *testing.T) {
+	t.Setenv("VERTEXAI_CACHED_CONTENT", "projects/test/locations/us/cachedContents/env123")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+	p := New()
+	if p.cachedContent != "projects/test/locations/us/cachedContents/env123" {
+		t.Errorf("expected cachedContent from env, got %q", p.cachedContent)
+	}
+}
+
+func TestCachedContentOptionOverridesEnv(t *testing.T) {
+	t.Setenv("VERTEXAI_CACHED_CONTENT", "from-env")
+	p := New(WithCachedContent("from-option"))
+	if p.cachedContent != "from-option" {
+		t.Errorf("expected option to override env, got %q", p.cachedContent)
+	}
+}
+
+func TestCachedContentDisabledByDefault(t *testing.T) {
+	t.Setenv("VERTEXAI_CACHED_CONTENT", "")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+	p := New()
+	if p.cachedContent != "" {
+		t.Errorf("expected empty cachedContent by default, got %q", p.cachedContent)
+	}
+}
+
+func TestCachedContentInRequestPayload(t *testing.T) {
+	var captured []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		resp := geminiResponse{
+			Candidates: []geminiCandidate{{
+				Content:      geminiContent{Role: "model", Parts: []geminiPart{{Text: "cached response"}}},
+				FinishReason: "STOP",
+			}},
+			UsageMetadata: geminiUsage{PromptTokenCount: 5, CandidatesTokenCount: 3},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := New(
+		WithProject("test-project"),
+		WithLocation("us-central1"),
+		WithCachedContent("projects/test-project/locations/us-central1/cachedContents/cache-abc"),
+	)
+	p.tokenSource = &staticTokenSource{token: "test-token"}
+	p.httpClient = &http.Client{
+		Transport: &rewriteTransport{base: server.Client().Transport, targetURL: server.URL},
+	}
+
+	_, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "Hello"}}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(captured, &payload); err != nil {
+		t.Fatal(err)
+	}
+	cc, ok := payload["cachedContent"].(string)
+	if !ok || cc != "projects/test-project/locations/us-central1/cachedContents/cache-abc" {
+		t.Errorf("expected cachedContent in payload, got %v", payload["cachedContent"])
+	}
+}
+
+func TestCachedContentOmittedFromPayloadWhenUnset(t *testing.T) {
+	var captured []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		resp := geminiResponse{
+			Candidates: []geminiCandidate{{
+				Content:      geminiContent{Role: "model", Parts: []geminiPart{{Text: "no cache"}}},
+				FinishReason: "STOP",
+			}},
+			UsageMetadata: geminiUsage{PromptTokenCount: 5, CandidatesTokenCount: 3},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := New(WithProject("test-project"), WithLocation("us-central1"))
+	p.tokenSource = &staticTokenSource{token: "test-token"}
+	p.httpClient = &http.Client{
+		Transport: &rewriteTransport{base: server.Client().Transport, targetURL: server.URL},
+	}
+
+	_, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "Hello"}}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(captured, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := payload["cachedContent"]; exists {
+		t.Error("cachedContent should be omitted from payload when not configured")
+	}
+}
+
+func TestCachedContentInStreamingPayload(t *testing.T) {
+	var captured []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hi\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":1}}\n\n")
+	}))
+	defer server.Close()
+
+	p := New(
+		WithProject("test-project"),
+		WithLocation("us-central1"),
+		WithCachedContent("projects/test-project/locations/us-central1/cachedContents/stream-cache"),
+	)
+	p.tokenSource = &staticTokenSource{token: "test-token"}
+	p.httpClient = &http.Client{
+		Transport: &rewriteTransport{base: server.Client().Transport, targetURL: server.URL},
+	}
+
+	stream, err := p.RequestStream(context.Background(), []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "Hello"}}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for {
+		_, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(captured, &payload); err != nil {
+		t.Fatal(err)
+	}
+	cc, ok := payload["cachedContent"].(string)
+	if !ok || cc != "projects/test-project/locations/us-central1/cachedContents/stream-cache" {
+		t.Errorf("expected cachedContent in streaming payload, got %v", payload["cachedContent"])
+	}
+}
+
+func TestMapUsageWithCachedContentTokens(t *testing.T) {
+	u := geminiUsage{
+		PromptTokenCount:        100,
+		CandidatesTokenCount:    50,
+		TotalTokenCount:         150,
+		CachedContentTokenCount: 80,
+	}
+	usage := mapUsage(u)
+	if usage.InputTokens != 100 {
+		t.Errorf("expected InputTokens 100, got %d", usage.InputTokens)
+	}
+	if usage.OutputTokens != 50 {
+		t.Errorf("expected OutputTokens 50, got %d", usage.OutputTokens)
+	}
+	if usage.CacheReadTokens != 80 {
+		t.Errorf("expected CacheReadTokens 80, got %d", usage.CacheReadTokens)
+	}
+}
+
+func TestMapUsageWithoutCachedContentTokens(t *testing.T) {
+	u := geminiUsage{
+		PromptTokenCount:     100,
+		CandidatesTokenCount: 50,
+		TotalTokenCount:      150,
+	}
+	usage := mapUsage(u)
+	if usage.CacheReadTokens != 0 {
+		t.Errorf("expected CacheReadTokens 0 when not set, got %d", usage.CacheReadTokens)
+	}
+}
