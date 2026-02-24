@@ -193,9 +193,7 @@ func (p *Provider) Request(ctx context.Context, messages []core.ModelMessage, se
 	if err != nil {
 		return nil, fmt.Errorf("vertexai: failed to build request: %w", err)
 	}
-	if p.cachedContent != "" {
-		req.CachedContent = p.cachedContent
-	}
+	p.applyCacheSettings(req)
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -235,9 +233,7 @@ func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessa
 	if err != nil {
 		return nil, fmt.Errorf("vertexai: failed to build request: %w", err)
 	}
-	if p.cachedContent != "" {
-		req.CachedContent = p.cachedContent
-	}
+	p.applyCacheSettings(req)
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -273,6 +269,14 @@ func (p *Provider) setHeaders(ctx context.Context, req *http.Request) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	return nil
+}
+
+// applyCacheSettings attaches the cached content reference to the request
+// if configured on the provider.
+func (p *Provider) applyCacheSettings(req *geminiRequest) {
+	if p.cachedContent != "" {
+		req.CachedContent = p.cachedContent
+	}
 }
 
 // parseHTTPError constructs a ModelHTTPError from a non-200 response,
