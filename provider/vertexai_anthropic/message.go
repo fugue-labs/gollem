@@ -318,12 +318,11 @@ func mapStopReason(reason string) core.FinishReason {
 // ephemeral cache control. This is deterministic and maximizes cache hit rate
 // across turns since system prompts and tool schemas are typically static.
 func applyCacheBreakpoints(req *apiRequest) {
-	ephemeral := &apiCacheControl{Type: "ephemeral"}
 	if len(req.System) > 0 {
-		req.System[len(req.System)-1].CacheControl = ephemeral
+		req.System[len(req.System)-1].CacheControl = &apiCacheControl{Type: "ephemeral"}
 	}
 	if len(req.Tools) > 0 {
-		req.Tools[len(req.Tools)-1].CacheControl = ephemeral
+		req.Tools[len(req.Tools)-1].CacheControl = &apiCacheControl{Type: "ephemeral"}
 	}
 }
 
