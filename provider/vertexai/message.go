@@ -66,11 +66,11 @@ type geminiFunction struct {
 }
 
 type geminiGenerationConfig struct {
-	MaxOutputTokens  int                  `json:"maxOutputTokens,omitempty"`
-	Temperature      *float64             `json:"temperature,omitempty"`
-	TopP             *float64             `json:"topP,omitempty"`
-	ResponseMimeType string               `json:"responseMimeType,omitempty"`
-	ResponseSchema   any                  `json:"responseSchema,omitempty"`
+	MaxOutputTokens  int                   `json:"maxOutputTokens,omitempty"`
+	Temperature      *float64              `json:"temperature,omitempty"`
+	TopP             *float64              `json:"topP,omitempty"`
+	ResponseMimeType string                `json:"responseMimeType,omitempty"`
+	ResponseSchema   any                   `json:"responseSchema,omitempty"`
 	ThinkingConfig   *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
 }
 
@@ -102,9 +102,9 @@ type geminiCandidate struct {
 }
 
 type geminiUsage struct {
-	PromptTokenCount     int `json:"promptTokenCount"`
-	CandidatesTokenCount int `json:"candidatesTokenCount"`
-	TotalTokenCount      int `json:"totalTokenCount"`
+	PromptTokenCount        int `json:"promptTokenCount"`
+	CandidatesTokenCount    int `json:"candidatesTokenCount"`
+	TotalTokenCount         int `json:"totalTokenCount"`
 	CachedContentTokenCount int `json:"cachedContentTokenCount,omitempty"`
 }
 
