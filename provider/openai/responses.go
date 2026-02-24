@@ -11,15 +11,17 @@ import (
 )
 
 type responsesRequest struct {
-	Model           string              `json:"model"`
-	Input           []map[string]any    `json:"input"`
-	Tools           []responsesToolDef  `json:"tools,omitempty"`
-	ToolChoice      any                 `json:"tool_choice,omitempty"`
-	MaxOutputTokens int                 `json:"max_output_tokens,omitempty"`
-	Temperature     *float64            `json:"temperature,omitempty"`
-	TopP            *float64            `json:"top_p,omitempty"`
-	Reasoning       *responsesReasoning `json:"reasoning,omitempty"`
-	Text            *responsesText      `json:"text,omitempty"`
+	Model                string              `json:"model"`
+	Input                []map[string]any    `json:"input"`
+	Tools                []responsesToolDef  `json:"tools,omitempty"`
+	ToolChoice           any                 `json:"tool_choice,omitempty"`
+	MaxOutputTokens      int                 `json:"max_output_tokens,omitempty"`
+	Temperature          *float64            `json:"temperature,omitempty"`
+	TopP                 *float64            `json:"top_p,omitempty"`
+	Reasoning            *responsesReasoning `json:"reasoning,omitempty"`
+	Text                 *responsesText      `json:"text,omitempty"`
+	PromptCacheKey       string              `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention string              `json:"prompt_cache_retention,omitempty"`
 }
 
 type responsesReasoning struct {
@@ -93,6 +95,7 @@ func (p *Provider) requestViaResponses(ctx context.Context, messages []core.Mode
 	if err != nil {
 		return nil, fmt.Errorf("openai: failed to build responses request: %w", err)
 	}
+	p.applyCacheSettingsResponses(req)
 
 	body, err := json.Marshal(req)
 	if err != nil {

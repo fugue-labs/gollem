@@ -2124,3 +2124,177 @@ data: [DONE]
 		t.Errorf("expected empty args to be '{}', got %q", tc.ArgsJSON)
 	}
 }
+
+// --- Prompt cache control tests ---
+
+func TestPromptCacheKeyOption(t *testing.T) {
+	p := New(WithAPIKey("test"), WithPromptCacheKey("my-cache-key"))
+	if p.promptCacheKey != "my-cache-key" {
+		t.Errorf("promptCacheKey = %q, want 'my-cache-key'", p.promptCacheKey)
+	}
+}
+
+func TestPromptCacheRetentionOption(t *testing.T) {
+	p := New(WithAPIKey("test"), WithPromptCacheRetention("auto"))
+	if p.promptCacheRetention != "auto" {
+		t.Errorf("promptCacheRetention = %q, want 'auto'", p.promptCacheRetention)
+	}
+}
+
+func TestPromptCacheEnvVars(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test")
+	t.Setenv("OPENAI_PROMPT_CACHE_KEY", "env-cache-key")
+	t.Setenv("OPENAI_PROMPT_CACHE_RETENTION", "auto")
+	p := New()
+	if p.promptCacheKey != "env-cache-key" {
+		t.Errorf("promptCacheKey = %q, want 'env-cache-key'", p.promptCacheKey)
+	}
+	if p.promptCacheRetention != "auto" {
+		t.Errorf("promptCacheRetention = %q, want 'auto'", p.promptCacheRetention)
+	}
+}
+
+func TestPromptCacheOptionOverridesEnv(t *testing.T) {
+	t.Setenv("OPENAI_PROMPT_CACHE_KEY", "env-key")
+	p := New(WithAPIKey("test"), WithPromptCacheKey("opt-key"))
+	if p.promptCacheKey != "opt-key" {
+		t.Errorf("promptCacheKey = %q, want 'opt-key' (option should override env)", p.promptCacheKey)
+	}
+}
+
+func TestApplyCacheSettingsChatCompletions(t *testing.T) {
+	p := New(WithAPIKey("test"), WithPromptCacheKey("ck"), WithPromptCacheRetention("auto"))
+	req := &apiRequest{Model: "gpt-4o"}
+	p.applyCacheSettings(req)
+	if req.PromptCacheKey != "ck" {
+		t.Errorf("PromptCacheKey = %q, want 'ck'", req.PromptCacheKey)
+	}
+	if req.PromptCacheRetention != "auto" {
+		t.Errorf("PromptCacheRetention = %q, want 'auto'", req.PromptCacheRetention)
+	}
+}
+
+func TestApplyCacheSettingsOmittedWhenUnset(t *testing.T) {
+	p := New(WithAPIKey("test"))
+	req := &apiRequest{Model: "gpt-4o"}
+	p.applyCacheSettings(req)
+	if req.PromptCacheKey != "" {
+		t.Errorf("PromptCacheKey should be empty, got %q", req.PromptCacheKey)
+	}
+	if req.PromptCacheRetention != "" {
+		t.Errorf("PromptCacheRetention should be empty, got %q", req.PromptCacheRetention)
+	}
+}
+
+func TestPromptCacheFieldsInChatCompletionsPayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		json.Unmarshal(body, &req)
+		if req["prompt_cache_key"] != "test-key-123" {
+			t.Errorf("prompt_cache_key = %v, want 'test-key-123'", req["prompt_cache_key"])
+		}
+		if req["prompt_cache_retention"] != "auto" {
+			t.Errorf("prompt_cache_retention = %v, want 'auto'", req["prompt_cache_retention"])
+		}
+		resp := apiResponse{
+			Choices: []apiChoice{{Message: apiChatMsg{Role: "assistant", Content: "ok"}, FinishReason: "stop"}},
+			Usage:   apiUsage{PromptTokens: 5, CompletionTokens: 1},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := New(WithAPIKey("k"), WithBaseURL(server.URL), WithPromptCacheKey("test-key-123"), WithPromptCacheRetention("auto"))
+	_, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "hi"}}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPromptCacheFieldsOmittedFromPayloadWhenUnset(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodyStr := string(body)
+		if strings.Contains(bodyStr, "prompt_cache_key") {
+			t.Error("prompt_cache_key should not appear in payload when unset")
+		}
+		if strings.Contains(bodyStr, "prompt_cache_retention") {
+			t.Error("prompt_cache_retention should not appear in payload when unset")
+		}
+		resp := apiResponse{
+			Choices: []apiChoice{{Message: apiChatMsg{Role: "assistant", Content: "ok"}, FinishReason: "stop"}},
+			Usage:   apiUsage{PromptTokens: 5, CompletionTokens: 1},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := New(WithAPIKey("k"), WithBaseURL(server.URL))
+	_, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "hi"}}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPromptCacheFieldsInResponsesPayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		json.Unmarshal(body, &req)
+		if req["prompt_cache_key"] != "resp-key" {
+			t.Errorf("prompt_cache_key = %v, want 'resp-key'", req["prompt_cache_key"])
+		}
+		resp := responsesAPIResponse{
+			ID: "resp_1", Model: "gpt-5.2-codex",
+			Output: []responsesOutputItem{{Type: "message", Role: "assistant", Content: []responsesContentItem{{Type: "output_text", Text: "ok"}}}},
+			Usage:  responsesUsage{InputTokens: 5, OutputTokens: 1},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := New(WithAPIKey("k"), WithBaseURL(server.URL), WithModel("gpt-5.2-codex"), WithPromptCacheKey("resp-key"))
+	_, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "hi"}}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPromptCacheFieldsInStreamingPayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		json.Unmarshal(body, &req)
+		if req["prompt_cache_key"] != "stream-key" {
+			t.Errorf("prompt_cache_key = %v, want 'stream-key'", req["prompt_cache_key"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	p := New(WithAPIKey("k"), WithBaseURL(server.URL), WithPromptCacheKey("stream-key"))
+	stream, err := p.RequestStream(context.Background(), []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "hi"}}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for {
+		_, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}

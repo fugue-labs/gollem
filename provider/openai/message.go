@@ -11,17 +11,19 @@ import (
 // --- API request types ---
 
 type apiRequest struct {
-	Model            string             `json:"model"`
-	Messages         []apiMessage       `json:"messages"`
-	Tools            []apiToolDef       `json:"tools,omitempty"`
-	ToolChoice       any                `json:"tool_choice,omitempty"`
-	Stream           bool               `json:"stream,omitempty"`
-	StreamOptions    *apiStreamOptions  `json:"stream_options,omitempty"`
-	MaxTokens        int                `json:"max_completion_tokens,omitempty"`
-	Temperature      *float64           `json:"temperature,omitempty"`
-	TopP             *float64           `json:"top_p,omitempty"`
-	ResponseFormat   *apiResponseFormat `json:"response_format,omitempty"`
-	ReasoningEffort  *string            `json:"reasoning_effort,omitempty"`
+	Model                string             `json:"model"`
+	Messages             []apiMessage       `json:"messages"`
+	Tools                []apiToolDef       `json:"tools,omitempty"`
+	ToolChoice           any                `json:"tool_choice,omitempty"`
+	Stream               bool               `json:"stream,omitempty"`
+	StreamOptions        *apiStreamOptions  `json:"stream_options,omitempty"`
+	MaxTokens            int                `json:"max_completion_tokens,omitempty"`
+	Temperature          *float64           `json:"temperature,omitempty"`
+	TopP                 *float64           `json:"top_p,omitempty"`
+	ResponseFormat       *apiResponseFormat `json:"response_format,omitempty"`
+	ReasoningEffort      *string            `json:"reasoning_effort,omitempty"`
+	PromptCacheKey       string             `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention string             `json:"prompt_cache_retention,omitempty"`
 }
 
 type apiStreamOptions struct {
