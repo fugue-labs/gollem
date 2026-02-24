@@ -1264,6 +1264,248 @@ func TestWithHTTPClientOption(t *testing.T) {
 	}
 }
 
+// --- Prompt caching tests ---
+
+func TestWithPromptCachingOption(t *testing.T) {
+	p := New(WithPromptCaching(true))
+	if !p.promptCaching {
+		t.Error("expected promptCaching to be true")
+	}
+}
+
+func TestPromptCachingEnvVarTrue(t *testing.T) {
+	t.Setenv("VERTEXAI_ANTHROPIC_PROMPT_CACHING", "true")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+	p := New()
+	if !p.promptCaching {
+		t.Error("expected promptCaching from env 'true'")
+	}
+}
+
+func TestPromptCachingEnvVar1(t *testing.T) {
+	t.Setenv("VERTEXAI_ANTHROPIC_PROMPT_CACHING", "1")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+	p := New()
+	if !p.promptCaching {
+		t.Error("expected promptCaching from env '1'")
+	}
+}
+
+func TestPromptCachingDisabledByDefault(t *testing.T) {
+	t.Setenv("VERTEXAI_ANTHROPIC_PROMPT_CACHING", "")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+	p := New()
+	if p.promptCaching {
+		t.Error("expected promptCaching false by default")
+	}
+}
+
+func TestApplyCacheBreakpointsSystemAndTools(t *testing.T) {
+	req := &apiRequest{
+		System: []apiSystemBlock{
+			{Type: "text", Text: "system1"},
+			{Type: "text", Text: "system2"},
+		},
+		Tools: []apiTool{
+			{Name: "tool1", InputSchema: json.RawMessage(`{}`)},
+			{Name: "tool2", InputSchema: json.RawMessage(`{}`)},
+		},
+	}
+	applyCacheBreakpoints(req)
+
+	// Only last system block should have cache_control.
+	if req.System[0].CacheControl != nil {
+		t.Error("first system block should not have cache_control")
+	}
+	if req.System[1].CacheControl == nil || req.System[1].CacheControl.Type != "ephemeral" {
+		t.Error("last system block should have ephemeral cache_control")
+	}
+	// Only last tool should have cache_control.
+	if req.Tools[0].CacheControl != nil {
+		t.Error("first tool should not have cache_control")
+	}
+	if req.Tools[1].CacheControl == nil || req.Tools[1].CacheControl.Type != "ephemeral" {
+		t.Error("last tool should have ephemeral cache_control")
+	}
+}
+
+func TestApplyCacheBreakpointsNoSystemNoTools(t *testing.T) {
+	req := &apiRequest{}
+	// Should not panic with empty system/tools.
+	applyCacheBreakpoints(req)
+}
+
+func TestCacheBreakpointsOmittedWhenDisabled(t *testing.T) {
+	messages := []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.SystemPromptPart{Content: "You are helpful."},
+				core.UserPromptPart{Content: "Hello"},
+			},
+		},
+	}
+	params := &core.ModelRequestParameters{
+		FunctionTools: []core.ToolDefinition{{
+			Name:             "search",
+			ParametersSchema: core.Schema{"type": "object"},
+		}},
+	}
+	req, err := buildRequest(messages, nil, params, Claude4Sonnet, 4096, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Without applyCacheBreakpoints, no cache_control should be set.
+	for _, s := range req.System {
+		if s.CacheControl != nil {
+			t.Error("cache_control should not be set when caching is disabled")
+		}
+	}
+	for _, tool := range req.Tools {
+		if tool.CacheControl != nil {
+			t.Error("tool cache_control should not be set when caching is disabled")
+		}
+	}
+}
+
+func TestCacheBreakpointsInPayload(t *testing.T) {
+	var captured []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		resp := apiResponse{
+			Content:    []apiContentBlock{{Type: "text", Text: "cached"}},
+			StopReason: "end_turn",
+			Usage:      apiUsage{InputTokens: 5, OutputTokens: 3},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := New(
+		WithProject("test-project"),
+		WithLocation("us-east5"),
+		WithPromptCaching(true),
+	)
+	p.tokenSource = &staticTokenSource{token: "test-token"}
+	p.httpClient = &http.Client{
+		Transport: &rewriteTransport{base: server.Client().Transport, targetURL: server.URL},
+	}
+
+	params := &core.ModelRequestParameters{
+		FunctionTools: []core.ToolDefinition{{
+			Name:             "search",
+			Description:      "Search the web",
+			ParametersSchema: core.Schema{"type": "object"},
+		}},
+	}
+
+	_, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.SystemPromptPart{Content: "You are helpful."},
+				core.UserPromptPart{Content: "Hello"},
+			},
+		},
+	}, nil, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(captured, &payload); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify system block has cache_control.
+	system, ok := payload["system"].([]any)
+	if !ok || len(system) == 0 {
+		t.Fatal("expected system blocks in payload")
+	}
+	lastSystem := system[len(system)-1].(map[string]any)
+	cc, ok := lastSystem["cache_control"].(map[string]any)
+	if !ok {
+		t.Fatal("expected cache_control on last system block")
+	}
+	if cc["type"] != "ephemeral" {
+		t.Errorf("expected ephemeral cache_control, got %v", cc["type"])
+	}
+
+	// Verify tool has cache_control.
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		t.Fatal("expected tools in payload")
+	}
+	lastTool := tools[len(tools)-1].(map[string]any)
+	toolCC, ok := lastTool["cache_control"].(map[string]any)
+	if !ok {
+		t.Fatal("expected cache_control on last tool")
+	}
+	if toolCC["type"] != "ephemeral" {
+		t.Errorf("expected ephemeral cache_control on tool, got %v", toolCC["type"])
+	}
+}
+
+func TestCacheControlOmittedFromPayloadWhenDisabled(t *testing.T) {
+	var captured []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		resp := apiResponse{
+			Content:    []apiContentBlock{{Type: "text", Text: "no cache"}},
+			StopReason: "end_turn",
+			Usage:      apiUsage{InputTokens: 5, OutputTokens: 3},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := New(WithProject("test-project"), WithLocation("us-east5"))
+	p.tokenSource = &staticTokenSource{token: "test-token"}
+	p.httpClient = &http.Client{
+		Transport: &rewriteTransport{base: server.Client().Transport, targetURL: server.URL},
+	}
+
+	params := &core.ModelRequestParameters{
+		FunctionTools: []core.ToolDefinition{{
+			Name:             "search",
+			ParametersSchema: core.Schema{"type": "object"},
+		}},
+	}
+
+	_, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.SystemPromptPart{Content: "You are helpful."},
+				core.UserPromptPart{Content: "Hello"},
+			},
+		},
+	}, nil, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(captured, &payload); err != nil {
+		t.Fatal(err)
+	}
+
+	// System blocks should not have cache_control.
+	system, _ := payload["system"].([]any)
+	for _, s := range system {
+		sb := s.(map[string]any)
+		if _, exists := sb["cache_control"]; exists {
+			t.Error("cache_control should not be present when caching is disabled")
+		}
+	}
+
+	// Tools should not have cache_control.
+	tools, _ := payload["tools"].([]any)
+	for _, tool := range tools {
+		tb := tool.(map[string]any)
+		if _, exists := tb["cache_control"]; exists {
+			t.Error("tool cache_control should not be present when caching is disabled")
+		}
+	}
+}
+
 func TestRequestStreamHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
