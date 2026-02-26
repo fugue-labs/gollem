@@ -132,7 +132,7 @@ func (p *Provider) ensureResponsesWebSocketLocked(ctx context.Context) (*respons
 		}
 		if statusCode != 0 {
 			return nil, &core.ModelHTTPError{
-				Message:    fmt.Sprintf("openai websocket connect error: %s", body),
+				Message:    "openai websocket connect error: " + body,
 				StatusCode: statusCode,
 				Body:       body,
 				ModelName:  p.model,
@@ -194,7 +194,7 @@ func (p *Provider) sendResponsesCreateLocked(ctx context.Context, conn *response
 		switch event.Type {
 		case "response.done":
 			if event.Response == nil {
-				return nil, fmt.Errorf("openai websocket: response.done missing response payload")
+				return nil, errors.New("openai websocket: response.done missing response payload")
 			}
 			return event.Response, nil
 		case "error":
@@ -280,7 +280,7 @@ func responsesWebSocketError(event responsesWSEvent, model string) error {
 	}
 	raw, _ := json.Marshal(event)
 	return &core.ModelHTTPError{
-		Message:    fmt.Sprintf("openai websocket error: %s", msg),
+		Message:    "openai websocket error: " + msg,
 		StatusCode: status,
 		Body:       string(raw),
 		ModelName:  model,
