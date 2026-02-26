@@ -2424,7 +2424,8 @@ func detectTaskGuidance(workDir string) string {
 		hints = append(hints, "This task likely requires a service that PERSISTS after your session ends.")
 		hints = append(hints, "Key strategies:")
 		hints = append(hints, "- Use systemd (`systemctl enable/start`), supervisord, or init scripts to ensure the service starts on boot")
-		hints = append(hints, "- If systemd is unavailable, use `nohup <command> &` with a startup script in /etc/rc.local or crontab @reboot")
+		hints = append(hints, "- If systemd is unavailable, use `nohup <command> > /tmp/<name>.log 2>&1 &` and record PID in `/tmp/<name>.pid`")
+		hints = append(hints, "- Avoid broad kill patterns (`pkill -f`, `killall`); stop only exact PID-file processes (`kill $(cat /tmp/<name>.pid)`)")
 		// Detect specific ports from test scripts for actionable verification.
 		if ports := detectTestPorts(workDir); len(ports) > 0 {
 			hints = append(hints, fmt.Sprintf("- Tests connect to port(s): %s — your service MUST listen on %s",

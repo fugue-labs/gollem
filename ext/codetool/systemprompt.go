@@ -135,7 +135,7 @@ You MUST run verification commands using bash before stopping:
 3. Run all relevant tests and confirm they pass (e.g., ` + "`go test ./...`" + `, ` + "`pytest`" + `, ` + "`npm test`" + `)
 4. If you modified a config, verify it loads correctly
 5. If you fixed a bug, confirm the fix with a test or manual verification
-6. **Build intermediates are auto-cleaned**: __pycache__, *.pyc, *.o, and a.out are automatically removed at completion. **DO NOT** manually delete other files — especially not compiled executables, source files, or output data.
+6. **Build intermediates are auto-cleaned**: __pycache__, *.pyc, *.o, and a.out are automatically removed at completion. Avoid broad manual deletion. Exception: if requirements explicitly demand exact output file/dir contents, remove only known intermediate artifacts that violate that contract.
 7. **Browser-dependent tests**: If a verifier test uses Selenium, Playwright, or browser automation, do NOT try to set up or run the browser yourself. Focus on the core task — create the required files, verify them with available tools (run scripts, check output). The verifier handles browser testing.
 
 NEVER declare the task complete without running tests and builds. The most common failure mode is writing a solution, glancing at it, deciding "looks good," and stopping without actually testing it. You will be rejected if you try to complete without evidence of verification.
@@ -172,8 +172,8 @@ When a task requires setting up servers, daemons, or background services:
 1. **Ensure services persist**: After configuration, the verifier will test your setup AFTER your session ends. Services must be running when the verifier checks. Try these in order:
    - ` + "`service <name> start`" + ` (SysV init — works in most containers)
    - ` + "`systemctl enable --now <name>`" + ` (systemd — may not be available in containers)
-   - If both fail: start the daemon directly (e.g., ` + "`nginx`" + `, ` + "`sshd`" + `, ` + "`postgres`" + ` — most server programs daemonize by default)
-   - Do NOT start services in the foreground or with ` + "`&`" + ` — they die when your session ends. Use the program's native daemon mode.
+   - If both fail: start in background with ` + "`nohup <command> > /tmp/<name>.log 2>&1 &`" + ` and record PID in ` + "`/tmp/<name>.pid`" + `.
+   - Avoid broad kill patterns (` + "`pkill -f`" + `, ` + "`killall`" + `). Stop only exact PID-file processes (` + "`kill $(cat /tmp/<name>.pid)`" + `).
 2. **Wait for startup before testing**: After starting a service, it needs time to initialize. Use ` + "`sleep 2`" + ` or a readiness loop (` + "`for i in $(seq 1 10); do curl -s localhost:PORT && break; sleep 1; done`" + `) before running tests. "Connection refused" usually means the service isn't ready yet — don't immediately debug, wait first.
 3. **Verify from a clean state**: Test your service by connecting to it the way the verifier will (e.g., ` + "`curl localhost:8080`" + `, ` + "`ssh user@host`" + `). Don't just check if the process is running.
 4. **Deploy files permanently**: If a web server needs to serve files, make sure the files are in the correct document root and will persist. Don't serve from /tmp.

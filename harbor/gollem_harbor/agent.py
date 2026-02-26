@@ -636,7 +636,13 @@ class GollemAgent(BaseInstalledAgent):
                 "- Only verifier results determine success.\n"
                 "- Prioritize passing verifier checks over self-reported completion.\n"
                 "- Read verifier tests/scripts early and validate against them before finishing.\n"
-                "- Optimize for both correctness and runtime under timeout.\n\n"
+                "- Optimize for both correctness and runtime under timeout.\n"
+                "- For service tasks, do NOT use broad kill commands (pkill -f, killall). "
+                "Use PID files and exact PID-based stop/start.\n"
+                "- For service tasks, verify readiness before finishing (port listening + "
+                "real protocol request, not just process existence).\n"
+                "- If requirements specify exact output files/dir contents, remove intermediate "
+                "artifacts before finalizing.\n\n"
                 f"{instruction}"
             )
 

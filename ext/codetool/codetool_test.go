@@ -1692,6 +1692,160 @@ func TestIsVerificationCode(t *testing.T) {
 	}
 }
 
+func TestVerificationCheckpoint_ServiceTaskRequiresReadinessProof(t *testing.T) {
+	mw, validator := VerificationCheckpoint("")
+	ctx := context.Background()
+
+	messages := []core.ModelMessage{
+		core.ModelResponse{
+			Parts: []core.ModelResponsePart{
+				core.ToolCallPart{
+					ToolName:   "bash",
+					ToolCallID: "start1",
+					ArgsJSON:   `{"command":"nohup python3 /app/server.py >/tmp/server.log 2>&1 & echo $! > /tmp/server.pid"}`,
+				},
+			},
+		},
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.ToolReturnPart{
+					ToolName:   "bash",
+					ToolCallID: "start1",
+					Content:    "started",
+				},
+			},
+		},
+		core.ModelResponse{
+			Parts: []core.ModelResponsePart{
+				core.ToolCallPart{
+					ToolName:   "bash",
+					ToolCallID: "verify1",
+					ArgsJSON:   `{"command":"pytest -q"}`,
+				},
+			},
+		},
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.ToolReturnPart{
+					ToolName:   "bash",
+					ToolCallID: "verify1",
+					Content:    "3 passed",
+				},
+			},
+		},
+	}
+
+	next := func(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (*core.ModelResponse, error) {
+		return &core.ModelResponse{}, nil
+	}
+	if _, err := mw(ctx, messages, nil, nil, next); err != nil {
+		t.Fatalf("middleware error: %v", err)
+	}
+
+	_, err := validator(ctx, &core.RunContext{}, "done")
+	if err == nil {
+		t.Fatal("expected readiness gate to reject completion")
+	}
+	var retryErr *core.ModelRetryError
+	if !errors.As(err, &retryErr) {
+		t.Fatalf("expected ModelRetryError, got %T: %v", err, err)
+	}
+	assertContains(t, retryErr.Message, "readiness")
+}
+
+func TestVerificationCheckpoint_ServiceTaskAcceptsAfterReadinessProof(t *testing.T) {
+	mw, validator := VerificationCheckpoint("")
+	ctx := context.Background()
+
+	messages := []core.ModelMessage{
+		core.ModelResponse{
+			Parts: []core.ModelResponsePart{
+				core.ToolCallPart{
+					ToolName:   "bash",
+					ToolCallID: "start1",
+					ArgsJSON:   `{"command":"nohup python3 /app/server.py >/tmp/server.log 2>&1 & echo $! > /tmp/server.pid"}`,
+				},
+			},
+		},
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.ToolReturnPart{
+					ToolName:   "bash",
+					ToolCallID: "start1",
+					Content:    "started",
+				},
+			},
+		},
+		core.ModelResponse{
+			Parts: []core.ModelResponsePart{
+				core.ToolCallPart{
+					ToolName:   "bash",
+					ToolCallID: "ready1",
+					ArgsJSON:   `{"command":"ss -tlnp | grep 5328"}`,
+				},
+			},
+		},
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.ToolReturnPart{
+					ToolName:   "bash",
+					ToolCallID: "ready1",
+					Content:    "LISTEN 0 128 127.0.0.1:5328",
+				},
+			},
+		},
+		core.ModelResponse{
+			Parts: []core.ModelResponsePart{
+				core.ToolCallPart{
+					ToolName:   "bash",
+					ToolCallID: "verify1",
+					ArgsJSON:   `{"command":"pytest -q"}`,
+				},
+			},
+		},
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.ToolReturnPart{
+					ToolName:   "bash",
+					ToolCallID: "verify1",
+					Content:    "3 passed",
+				},
+			},
+		},
+	}
+
+	next := func(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (*core.ModelResponse, error) {
+		return &core.ModelResponse{}, nil
+	}
+	if _, err := mw(ctx, messages, nil, nil, next); err != nil {
+		t.Fatalf("middleware error: %v", err)
+	}
+
+	if _, err := validator(ctx, &core.RunContext{}, "done"); err != nil {
+		t.Fatalf("validator should accept after readiness proof, got: %v", err)
+	}
+}
+
+func TestIsServiceReadinessResultSuccessful(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"success output", "LISTEN 0 128 127.0.0.1:5328", true},
+		{"exit code failure", "connection refused\n[exit code: 1]", false},
+		{"timeout failure", "[timed out after 2m0s]", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isServiceReadinessResultSuccessful(tt.content)
+			if got != tt.want {
+				t.Errorf("isServiceReadinessResultSuccessful(%q) = %v, want %v", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsVerificationString(t *testing.T) {
 	tests := []struct {
 		cmd  string
@@ -1817,6 +1971,29 @@ func TestIsDestructiveTestCommand(t *testing.T) {
 			got := isDestructiveTestCommand(tt.cmd)
 			if got != tt.want {
 				t.Errorf("isDestructiveTestCommand(%q) = %v, want %v", tt.cmd, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsRiskyProcessKillCommand(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+		want bool
+	}{
+		{"pkill full match", "pkill -f '/app/server.py' || true", true},
+		{"pkill long form", "pkill --full server.py", true},
+		{"killall broad", "killall python3", true},
+		{"pid file stop", "kill \"$(cat /tmp/server.pid)\"", false},
+		{"exact process name", "pkill -x nginx", false},
+		{"plain pid kill", "kill -9 1234", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isRiskyProcessKillCommand(tt.cmd)
+			if got != tt.want {
+				t.Errorf("isRiskyProcessKillCommand(%q) = %v, want %v", tt.cmd, got, tt.want)
 			}
 		})
 	}

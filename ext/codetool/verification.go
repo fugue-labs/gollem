@@ -45,6 +45,8 @@ func VerificationCheckpoint(_ string, _ ...time.Duration) (core.AgentMiddleware,
 	lastVerifyFailed := false
 	lastVerifySummary := ""
 	editsSinceLastVerify := 0
+	serviceCommandSeen := false
+	serviceReadinessVerified := false
 	stagnationWarned := 0    // consecutive fail level at which we last injected guidance
 	staleTestWarned := false // whether we've warned about not running tests after edits
 
@@ -64,12 +66,27 @@ func VerificationCheckpoint(_ string, _ ...time.Duration) (core.AgentMiddleware,
 		var runPassed []int  // pass count per run (-1 if unavailable)
 		var runSummary []string
 		pendingMutationCallIDs := map[string]struct{}{}
+		pendingServiceReadinessCallIDs := map[string]struct{}{}
 		editsAfterLastVerify := 0 // file changes since last verification run
+		serviceCommandSeenNow := false
+		serviceReadinessVerifiedNow := false
 
 		for _, msg := range messages {
 			if resp, ok := msg.(core.ModelResponse); ok {
 				for _, part := range resp.Parts {
 					if tc, ok := part.(core.ToolCallPart); ok {
+						if tc.ToolName == "bash" {
+							cmd := bashCommandFromArgsJSON(tc.ArgsJSON)
+							if isServiceLifecycleCommand(cmd) {
+								serviceCommandSeenNow = true
+								// Any subsequent start/restart should require a fresh readiness check.
+								serviceReadinessVerifiedNow = false
+							}
+							if tc.ToolCallID != "" && isServiceReadinessCommand(cmd) {
+								pendingServiceReadinessCallIDs[tc.ToolCallID] = struct{}{}
+							}
+						}
+
 						isVerify := (tc.ToolName == "bash" && isVerificationCommand(tc.ArgsJSON)) ||
 							(tc.ToolName == "execute_code" && isVerificationCode(tc.ArgsJSON))
 
@@ -129,6 +146,13 @@ func VerificationCheckpoint(_ string, _ ...time.Duration) (core.AgentMiddleware,
 							}
 							delete(pendingMutationCallIDs, tr.ToolCallID)
 						}
+						if _, ok := pendingServiceReadinessCallIDs[tr.ToolCallID]; ok {
+							content := toolReturnContentString(tr.Content)
+							if isServiceReadinessResultSuccessful(content) {
+								serviceReadinessVerifiedNow = true
+							}
+							delete(pendingServiceReadinessCallIDs, tr.ToolCallID)
+						}
 					}
 				}
 			}
@@ -140,6 +164,8 @@ func VerificationCheckpoint(_ string, _ ...time.Duration) (core.AgentMiddleware,
 			lastVerifySummary = runSummary[len(runSummary)-1]
 		}
 		editsSinceLastVerify = editsAfterLastVerify
+		serviceCommandSeen = serviceCommandSeenNow
+		serviceReadinessVerified = serviceReadinessVerifiedNow
 
 		// Compute stagnation: count consecutive failing runs from the end
 		// that aren't showing improvement in pass counts.
@@ -240,6 +266,8 @@ func VerificationCheckpoint(_ string, _ ...time.Duration) (core.AgentMiddleware,
 		lvf := lastVerifyFailed
 		lvs := lastVerifySummary
 		eslv := editsSinceLastVerify
+		svcSeen := serviceCommandSeen
+		svcReady := serviceReadinessVerified
 		mu.Unlock()
 
 		if !v {
@@ -275,6 +303,13 @@ func VerificationCheckpoint(_ string, _ ...time.Duration) (core.AgentMiddleware,
 			msg += "\n" + failureGuidance(lvs)
 			msg += "Do NOT declare completion with failing tests."
 			return output, &core.ModelRetryError{Message: msg}
+		}
+		if svcSeen && !svcReady {
+			return output, &core.ModelRetryError{
+				Message: "STOP. This task used service lifecycle commands, but no successful readiness proof was recorded. " +
+					"Before completion, prove service liveness the way the verifier will (e.g., port check with `ss -tlnp`/`nc -z` " +
+					"and a real protocol request such as curl/grpc call).",
+			}
 		}
 
 		return output, nil
@@ -332,6 +367,108 @@ func isVerificationCode(argsJSON string) bool {
 		}
 	}
 	return false
+}
+
+func bashCommandFromArgsJSON(argsJSON string) string {
+	var args struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return ""
+	}
+	return args.Command
+}
+
+func isServiceLifecycleCommand(cmd string) bool {
+	lower := strings.ToLower(strings.TrimSpace(cmd))
+	if lower == "" {
+		return false
+	}
+
+	if strings.Contains(lower, "nohup ") {
+		return true
+	}
+	if strings.Contains(lower, "systemctl ") &&
+		(strings.Contains(lower, " start ") || strings.Contains(lower, " restart ") ||
+			strings.Contains(lower, " enable ") || strings.Contains(lower, " stop ")) {
+		return true
+	}
+	if strings.Contains(lower, "service ") &&
+		(strings.Contains(lower, " start") || strings.Contains(lower, " restart") || strings.Contains(lower, " stop")) {
+		return true
+	}
+
+	lifecyclePatterns := []string{
+		"python3 /app/server.py",
+		"python /app/server.py",
+		"uvicorn ",
+		"gunicorn ",
+		"nginx",
+		"redis-server",
+		"mongod",
+		"sshd",
+	}
+	for _, p := range lifecyclePatterns {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func isServiceReadinessCommand(cmd string) bool {
+	lower := strings.ToLower(strings.TrimSpace(cmd))
+	if lower == "" {
+		return false
+	}
+
+	readinessPatterns := []string{
+		"ss -tln",
+		"ss -ltn",
+		"netstat -tln",
+		"lsof -i",
+		"nc -z",
+		"curl localhost",
+		"curl 127.0.0.1",
+		"curl http://localhost",
+		"curl http://127.0.0.1",
+		"grpcurl ",
+		"connect_ex(",
+		"grpc.insecure_channel(",
+	}
+	for _, p := range readinessPatterns {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func isServiceReadinessResultSuccessful(content string) bool {
+	lower := strings.ToLower(strings.TrimSpace(content))
+	if lower == "" {
+		return false
+	}
+	if strings.HasPrefix(lower, "error:") {
+		return false
+	}
+	if strings.Contains(lower, "[timed out after") || strings.Contains(lower, "[exit code:") {
+		return false
+	}
+	failPatterns := []string{
+		"connection refused",
+		"failed to connect",
+		"not listening",
+		"statuscode.unavailable",
+		"no route to host",
+		"name or service not known",
+	}
+	for _, p := range failPatterns {
+		if strings.Contains(lower, p) {
+			return false
+		}
+	}
+	return true
 }
 
 // isMutatingLSPCall returns true when an lsp tool call is expected to apply

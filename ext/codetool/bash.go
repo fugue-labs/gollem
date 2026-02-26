@@ -118,6 +118,14 @@ func Bash(opts ...Option) core.Tool {
 						"Fix YOUR code to pass the tests instead.",
 				}
 			}
+			if isRiskyProcessKillCommand(params.Command) {
+				return "", &core.ModelRetryError{
+					Message: "BLOCKED: broad process-kill patterns are unsafe in benchmark containers " +
+						"(e.g., `pkill -f`, `killall`) and can terminate unrelated processes. " +
+						"Use PID-file lifecycle management instead: start with `nohup ... & echo $! > /tmp/<name>.pid` " +
+						"and stop with `kill $(cat /tmp/<name>.pid)`.",
+				}
+			}
 
 			timeout := cfg.BashTimeout
 			if params.Timeout != nil && *params.Timeout > 0 {
@@ -6794,6 +6802,21 @@ func isBuildCommand(cmd string) bool {
 		if strings.HasPrefix(lower, p) || strings.Contains(lower, " && "+p) || strings.Contains(lower, "; "+p) {
 			return true
 		}
+	}
+	return false
+}
+
+// isRiskyProcessKillCommand blocks broad process-kill patterns that can
+// terminate unrelated processes in shared benchmark containers.
+// Prefer PID-file-based lifecycle management for services.
+func isRiskyProcessKillCommand(cmd string) bool {
+	lower := strings.ToLower(cmd)
+
+	if strings.Contains(lower, "pkill -f") || strings.Contains(lower, "pkill --full") {
+		return true
+	}
+	if strings.Contains(lower, "killall ") {
+		return true
 	}
 	return false
 }
