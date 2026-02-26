@@ -64,6 +64,8 @@ fi
 : "${OPENAI_PROMPT_CACHE_KEY:=tbench2-gollem}"
 : "${OPENAI_PROMPT_CACHE_RETENTION:=in_memory}"
 : "${OPENAI_SERVICE_TIER:=priority}"
+: "${OPENAI_TRANSPORT:=websocket}"
+: "${OPENAI_WEBSOCKET_HTTP_FALLBACK:=0}"
 
 export GOLLEM_TEAM_MODE
 export GOLLEM_DISABLE_RUNTIME_DEP_INSTALL
@@ -74,6 +76,8 @@ export GOLLEM_MODEL_REQUEST_TIMEOUT_SEC
 export OPENAI_PROMPT_CACHE_KEY
 export OPENAI_PROMPT_CACHE_RETENTION
 export OPENAI_SERVICE_TIER
+export OPENAI_TRANSPORT
+export OPENAI_WEBSOCKET_HTTP_FALLBACK
 
 # Submission metadata defaults (override via env if needed).
 : "${TBENCH_AGENT_URL:=https://github.com/fugue-labs/gollem}"
@@ -143,6 +147,8 @@ META_FILE="official-runs/${STAMP}.meta.txt"
   echo "prompt_cache_key=${OPENAI_PROMPT_CACHE_KEY}"
   echo "prompt_cache_retention=${OPENAI_PROMPT_CACHE_RETENTION}"
   echo "openai_service_tier=${OPENAI_SERVICE_TIER}"
+  echo "openai_transport=${OPENAI_TRANSPORT}"
+  echo "openai_websocket_http_fallback=${OPENAI_WEBSOCKET_HTTP_FALLBACK}"
   echo "submission_dir=${SUBMISSION_DIR}"
   echo "agent_url=${TBENCH_AGENT_URL}"
   echo "agent_display_name=${TBENCH_AGENT_DISPLAY_NAME}"

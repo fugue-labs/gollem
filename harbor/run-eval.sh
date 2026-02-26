@@ -74,9 +74,15 @@ case "$PROVIDER" in
     : "${OPENAI_PROMPT_CACHE_RETENTION:=in_memory}"
     # Priority processing: explicitly request lowest-latency tier for TB2 runs.
     : "${OPENAI_SERVICE_TIER:=priority}"
-    export OPENAI_PROMPT_CACHE_KEY OPENAI_PROMPT_CACHE_RETENTION OPENAI_SERVICE_TIER
+    # Use Responses WebSocket mode for long tool-call chains when supported.
+    : "${OPENAI_TRANSPORT:=websocket}"
+    # Follow WS mode guidance strictly by default (no silent HTTP fallback).
+    : "${OPENAI_WEBSOCKET_HTTP_FALLBACK:=0}"
+    export OPENAI_PROMPT_CACHE_KEY OPENAI_PROMPT_CACHE_RETENTION OPENAI_SERVICE_TIER OPENAI_TRANSPORT OPENAI_WEBSOCKET_HTTP_FALLBACK
     echo "OpenAI prompt cache: key=${OPENAI_PROMPT_CACHE_KEY} retention=${OPENAI_PROMPT_CACHE_RETENTION}"
     echo "OpenAI service tier: ${OPENAI_SERVICE_TIER}"
+    echo "OpenAI transport: ${OPENAI_TRANSPORT}"
+    echo "OpenAI websocket->http fallback: ${OPENAI_WEBSOCKET_HTTP_FALLBACK}"
     ;;
   google|vertexai|vertex|vertexai-anthropic)
     echo "Provider: vertexai | Project: ${GOOGLE_CLOUD_PROJECT:-not set}"

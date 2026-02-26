@@ -68,6 +68,14 @@ type wrappedModel struct {
 	middlewares []Middleware
 }
 
+type sessionCloner interface {
+	NewSession() core.Model
+}
+
+type modelCloser interface {
+	Close() error
+}
+
 // Wrap creates a new model that applies the given middleware chain to all requests.
 // Middlewares are applied in order: first middleware is outermost (executes first).
 // If a middleware implements StreamMiddleware, it will also be applied to
@@ -85,6 +93,20 @@ func Wrap(model core.Model, middlewares ...Middleware) core.Model {
 // ModelName returns the underlying model's name.
 func (m *wrappedModel) ModelName() string {
 	return m.inner.ModelName()
+}
+
+// NewSession returns a wrapped model with an isolated inner model session
+// when supported by the underlying model.
+func (m *wrappedModel) NewSession() core.Model {
+	inner := m.inner
+	if cloner, ok := m.inner.(sessionCloner); ok {
+		inner = cloner.NewSession()
+	}
+	mws := append([]Middleware(nil), m.middlewares...)
+	return &wrappedModel{
+		inner:       inner,
+		middlewares: mws,
+	}
 }
 
 // Request sends a request through the middleware chain.
@@ -116,6 +138,14 @@ func (m *wrappedModel) RequestStream(ctx context.Context, messages []core.ModelM
 	}
 
 	return handler(ctx, messages, settings, params)
+}
+
+// Close forwards cleanup to the wrapped model when it supports explicit close.
+func (m *wrappedModel) Close() error {
+	if closer, ok := m.inner.(modelCloser); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 // Verify wrappedModel implements core.Model.

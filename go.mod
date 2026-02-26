@@ -9,6 +9,7 @@ require (
 	github.com/fugue-labs/monty-go v0.0.0-20260221005309-f9f147b4245f
 	github.com/gin-gonic/gin v1.11.0
 	github.com/gofiber/fiber/v2 v2.52.11
+	github.com/gorilla/websocket v1.5.3
 	github.com/labstack/echo/v4 v4.15.0
 	go.opentelemetry.io/otel v1.40.0
 	go.opentelemetry.io/otel/metric v1.40.0

@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fugue-labs/gollem/core"
@@ -36,6 +38,11 @@ const (
 	responsesEndpoint       = "/v1/responses"
 )
 
+const (
+	transportHTTP      = "http"
+	transportWebSocket = "websocket"
+)
+
 // Provider implements core.Model for OpenAI's Chat Completions API.
 type Provider struct {
 	apiKey               string
@@ -46,7 +53,14 @@ type Provider struct {
 	promptCacheKey       string
 	promptCacheRetention string
 	serviceTier          string
+	transport            string
+	wsHTTPFallback       bool
+	wsHTTPFallbackSet    bool
 	useResponses         bool
+	wsConn               *responsesWebSocketConn
+	wsPrevResponseID     string
+	wsLastInputSigs      []string
+	wsMu                 sync.Mutex
 }
 
 // Option configures the OpenAI provider.
@@ -111,6 +125,23 @@ func WithServiceTier(tier string) Option {
 	}
 }
 
+// WithTransport sets the request transport for OpenAI provider.
+// Supported values: "http" (default) and "websocket".
+func WithTransport(transport string) Option {
+	return func(p *Provider) {
+		p.transport = transport
+	}
+}
+
+// WithWebSocketHTTPFallback controls whether websocket transport may silently
+// fall back to HTTP responses on websocket failures. Default: false.
+func WithWebSocketHTTPFallback(enabled bool) Option {
+	return func(p *Provider) {
+		p.wsHTTPFallback = enabled
+		p.wsHTTPFallbackSet = true
+	}
+}
+
 // New creates a new OpenAI provider with the given options.
 // Supports OPENAI_API_KEY and OPENAI_BASE_URL environment variables
 // for compatibility with OpenAI-compatible APIs (xAI, Together, etc.).
@@ -142,6 +173,15 @@ func New(opts ...Option) *Provider {
 	if p.serviceTier == "" {
 		p.serviceTier = os.Getenv("OPENAI_SERVICE_TIER")
 	}
+	if p.transport == "" {
+		p.transport = os.Getenv("OPENAI_TRANSPORT")
+	}
+	p.transport = normalizeTransport(p.transport)
+	if !p.wsHTTPFallbackSet {
+		if raw := strings.TrimSpace(os.Getenv("OPENAI_WEBSOCKET_HTTP_FALLBACK")); raw != "" {
+			p.wsHTTPFallback = isTruthy(raw)
+		}
+	}
 	// Strip trailing /v1 or /v1/ from the base URL. Our endpoint path
 	// already includes /v1, so a base URL with /v1 (which is the convention
 	// in the OpenAI Python client) would produce /v1/v1/chat/completions.
@@ -168,6 +208,44 @@ func NewOllama(opts ...Option) *Provider {
 		WithAPIKey("ollama"),
 	}, opts...)
 	return New(allOpts...)
+}
+
+// NewSession returns an equivalent provider instance with isolated transient
+// request/session state (for example websocket continuation state). Use this
+// when spawning parallel agents that must not share a websocket chain.
+func (p *Provider) NewSession() core.Model {
+	return &Provider{
+		apiKey:               p.apiKey,
+		model:                p.model,
+		baseURL:              p.baseURL,
+		httpClient:           p.httpClient,
+		maxTokens:            p.maxTokens,
+		promptCacheKey:       p.promptCacheKey,
+		promptCacheRetention: p.promptCacheRetention,
+		serviceTier:          p.serviceTier,
+		transport:            p.transport,
+		wsHTTPFallback:       p.wsHTTPFallback,
+		wsHTTPFallbackSet:    p.wsHTTPFallbackSet,
+		useResponses:         p.useResponses,
+	}
+}
+
+// Close releases transport resources held by the provider (for example an
+// active responses websocket connection). It is safe to call multiple times.
+func (p *Provider) Close() error {
+	p.wsMu.Lock()
+	defer p.wsMu.Unlock()
+	if p.wsConn == nil || p.wsConn.conn == nil {
+		p.wsConn = nil
+		p.wsPrevResponseID = ""
+		p.wsLastInputSigs = nil
+		return nil
+	}
+	err := p.wsConn.conn.Close()
+	p.wsConn = nil
+	p.wsPrevResponseID = ""
+	p.wsLastInputSigs = nil
+	return err
 }
 
 // ModelName returns the model identifier.
@@ -293,6 +371,51 @@ func (p *Provider) setHeaders(req *http.Request) {
 
 func (p *Provider) shouldUseResponsesAPI() bool {
 	return p.useResponses || modelNeedsResponsesAPI(p.model)
+}
+
+func (p *Provider) shouldUseResponsesWebSocket() bool {
+	return p.shouldUseResponsesAPI() && p.transport == transportWebSocket
+}
+
+func normalizeTransport(transport string) string {
+	switch strings.ToLower(strings.TrimSpace(transport)) {
+	case "", transportHTTP:
+		return transportHTTP
+	case "ws", "wss", transportWebSocket:
+		return transportWebSocket
+	default:
+		return transportHTTP
+	}
+}
+
+func isTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func responsesWebSocketURL(baseURL string) (string, error) {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("openai: invalid base URL %q: %w", baseURL, err)
+	}
+	switch parsed.Scheme {
+	case "https":
+		parsed.Scheme = "wss"
+	case "http":
+		parsed.Scheme = "ws"
+	case "wss", "ws":
+		// Leave as-is.
+	default:
+		return "", fmt.Errorf("openai: unsupported base URL scheme %q for websocket mode", parsed.Scheme)
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + responsesEndpoint
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
 }
 
 func modelNeedsResponsesAPI(model string) bool {

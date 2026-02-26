@@ -88,4 +88,23 @@ export OPENAI_PROMPT_CACHE_KEY="tbench2-gollem"
 export OPENAI_PROMPT_CACHE_RETENTION="in_memory"
 # Optional: request fastest OpenAI processing tier
 export OPENAI_SERVICE_TIER="priority"
+# Optional: use Responses API websocket mode for tool-heavy loops
+export OPENAI_TRANSPORT="websocket"
+# Optional: strict WS mode (default), do not silently fall back to HTTP
+export OPENAI_WEBSOCKET_HTTP_FALLBACK="0"
 ```
+
+## OpenAI WebSocket Mode Notes
+
+When `OPENAI_TRANSPORT=websocket` is enabled:
+
+- It applies only to Responses API models (for example Codex-style models).
+- It optimizes multi-turn tool loops in non-streaming `Request()` flows.
+- It does not provide token-by-token stream output for `RequestStream()`.
+- A single provider session uses one in-flight request at a time.
+- Continuation state is per-session and in-memory; if history is rewritten,
+  gollem falls back to full-context sends safely.
+- WebSocket mode uses `store=false` when unset; on HTTP fallback, gollem
+  restores the original `store` intent for the HTTP request.
+
+For Terminal-Bench style coding loops, this mode is usually beneficial.

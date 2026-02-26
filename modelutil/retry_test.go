@@ -17,6 +17,7 @@ type retryFailingModel struct {
 	failCount  int
 	failErr    error
 	successMsg string
+	closeCalls atomic.Int32
 }
 
 func (m *retryFailingModel) ModelName() string { return "failing-model" }
@@ -35,6 +36,19 @@ func (m *retryFailingModel) RequestStream(ctx context.Context, messages []core.M
 		return nil, err
 	}
 	return &simpleStreamedResponse{response: resp}, nil
+}
+
+func (m *retryFailingModel) NewSession() core.Model {
+	return &retryFailingModel{
+		failCount:  m.failCount,
+		failErr:    m.failErr,
+		successMsg: m.successMsg,
+	}
+}
+
+func (m *retryFailingModel) Close() error {
+	m.closeCalls.Add(1)
+	return nil
 }
 
 // simpleStreamedResponse wraps a ModelResponse as a StreamedResponse for tests.
@@ -179,6 +193,41 @@ func TestRetryModel_ModelName(t *testing.T) {
 	rm := NewRetryModel(fm, DefaultRetryConfig())
 	if rm.ModelName() != "failing-model" {
 		t.Errorf("expected 'failing-model', got %q", rm.ModelName())
+	}
+}
+
+func TestRetryModel_NewSession(t *testing.T) {
+	fm := &retryFailingModel{successMsg: "ok"}
+	rm := NewRetryModel(fm, RetryConfig{
+		MaxRetries:     2,
+		InitialBackoff: time.Millisecond,
+	})
+
+	session := rm.NewSession()
+	sessionRM, ok := session.(*RetryModel)
+	if !ok {
+		t.Fatalf("expected *RetryModel from NewSession, got %T", session)
+	}
+	if sessionRM == rm {
+		t.Fatal("expected distinct retry model instance")
+	}
+	if sessionRM.model == rm.model {
+		t.Fatal("expected inner model clone in NewSession")
+	}
+	if sessionRM.config.MaxRetries != rm.config.MaxRetries ||
+		sessionRM.config.InitialBackoff != rm.config.InitialBackoff {
+		t.Fatal("expected retry config to be preserved")
+	}
+}
+
+func TestRetryModel_CloseForwards(t *testing.T) {
+	fm := &retryFailingModel{successMsg: "ok"}
+	rm := NewRetryModel(fm, DefaultRetryConfig())
+	if err := rm.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+	if got := fm.closeCalls.Load(); got != 1 {
+		t.Fatalf("expected underlying close to be called once, got %d", got)
 	}
 }
 

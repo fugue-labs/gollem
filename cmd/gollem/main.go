@@ -213,6 +213,14 @@ func runAgent() {
 		cacheKey := strings.TrimSpace(os.Getenv("OPENAI_PROMPT_CACHE_KEY"))
 		cacheRetention := strings.TrimSpace(os.Getenv("OPENAI_PROMPT_CACHE_RETENTION"))
 		serviceTier := strings.TrimSpace(os.Getenv("OPENAI_SERVICE_TIER"))
+		transport := strings.TrimSpace(os.Getenv("OPENAI_TRANSPORT"))
+		if transport == "" {
+			transport = "http"
+		}
+		wsHTTPFallback := strings.TrimSpace(os.Getenv("OPENAI_WEBSOCKET_HTTP_FALLBACK"))
+		if wsHTTPFallback == "" {
+			wsHTTPFallback = "0"
+		}
 		if cacheKey != "" {
 			if cacheRetention == "" {
 				cacheRetention = "default"
@@ -224,6 +232,8 @@ func runAgent() {
 		if serviceTier != "" {
 			fmt.Fprintf(os.Stderr, "gollem: openai service tier: %s\n", serviceTier)
 		}
+		fmt.Fprintf(os.Stderr, "gollem: openai transport: %s\n", transport)
+		fmt.Fprintf(os.Stderr, "gollem: openai websocket->http fallback: %s\n", wsHTTPFallback)
 	}
 	if f.provider == "vertexai-anthropic" {
 		cacheTTL := strings.TrimSpace(os.Getenv("VERTEXAI_ANTHROPIC_PROMPT_CACHE_TTL"))
@@ -273,6 +283,9 @@ func runAgent() {
 	model = modelutil.NewRetryModel(model, retryCfg)
 	fmt.Fprintf(os.Stderr, "gollem: retry config: max_retries=%d backoff=%v..%v min_remaining=%v\n",
 		retryCfg.MaxRetries, retryCfg.InitialBackoff, retryCfg.MaxBackoff, retryCfg.MinRemaining)
+	if closer, ok := model.(interface{ Close() error }); ok {
+		defer func() { _ = closer.Close() }()
+	}
 
 	// Build tool options, including code mode if enabled.
 	var toolOpts []codetool.Option
@@ -1289,6 +1302,8 @@ Environment variables:
   OPENAI_PROMPT_CACHE_KEY  Optional stable key for OpenAI prompt caching
   OPENAI_PROMPT_CACHE_RETENTION Optional OpenAI cache retention policy (e.g. in_memory, 24h)
   OPENAI_SERVICE_TIER      Optional OpenAI service tier (e.g. default, flex, priority)
+  OPENAI_TRANSPORT         Optional OpenAI transport: http (default) or websocket (Responses API only)
+  OPENAI_WEBSOCKET_HTTP_FALLBACK Optional fallback to HTTP when websocket transport fails (0/1, default: 0)
   VERTEXAI_ANTHROPIC_PROMPT_CACHE Enable Anthropic prompt caching on Vertex AI (1/true/yes/on)
   VERTEXAI_ANTHROPIC_PROMPT_CACHE_TTL Optional Anthropic prompt cache TTL (e.g. 5m, 1h)
   GOLLEM_MODEL_REQUEST_TIMEOUT_SEC Optional per-model-call timeout in seconds (default derived from --timeout, capped at 6m)

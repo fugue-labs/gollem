@@ -54,7 +54,8 @@ func GeneratePersonality(model core.Model) PersonalityGeneratorFunc {
 			},
 		}
 
-		resp, err := model.Request(ctx, messages, &core.ModelSettings{
+		sessionModel := NewSessionModel(model)
+		resp, err := sessionModel.Request(ctx, messages, &core.ModelSettings{
 			MaxTokens: core.IntPtr(1024),
 		}, nil)
 		if err != nil {

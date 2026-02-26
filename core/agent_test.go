@@ -10,6 +10,33 @@ import (
 	"time"
 )
 
+type sessionAwareTestModel struct {
+	inner          *TestModel
+	sessionCounter *atomic.Int32
+	sessionID      int32
+}
+
+func (m *sessionAwareTestModel) Request(ctx context.Context, messages []ModelMessage, settings *ModelSettings, params *ModelRequestParameters) (*ModelResponse, error) {
+	return m.inner.Request(ctx, messages, settings, params)
+}
+
+func (m *sessionAwareTestModel) RequestStream(ctx context.Context, messages []ModelMessage, settings *ModelSettings, params *ModelRequestParameters) (StreamedResponse, error) {
+	return m.inner.RequestStream(ctx, messages, settings, params)
+}
+
+func (m *sessionAwareTestModel) ModelName() string {
+	return m.inner.ModelName()
+}
+
+func (m *sessionAwareTestModel) NewSession() Model {
+	id := m.sessionCounter.Add(1)
+	return &sessionAwareTestModel{
+		inner:          m.inner,
+		sessionCounter: m.sessionCounter,
+		sessionID:      id,
+	}
+}
+
 // --- Test: Simple text output ---
 
 func TestAgentRunTextOutput(t *testing.T) {
@@ -28,6 +55,35 @@ func TestAgentRunTextOutput(t *testing.T) {
 	}
 	if result.RunID == "" {
 		t.Error("expected non-empty RunID")
+	}
+}
+
+func TestNewAgentClonesSessionAwareModel(t *testing.T) {
+	counter := &atomic.Int32{}
+	base := &sessionAwareTestModel{
+		inner:          NewTestModel(TextResponse("ok")),
+		sessionCounter: counter,
+	}
+
+	agent1 := NewAgent[string](base)
+	agent2 := NewAgent[string](base)
+
+	m1, ok := agent1.GetModel().(*sessionAwareTestModel)
+	if !ok {
+		t.Fatalf("agent1 model type = %T, want *sessionAwareTestModel", agent1.GetModel())
+	}
+	m2, ok := agent2.GetModel().(*sessionAwareTestModel)
+	if !ok {
+		t.Fatalf("agent2 model type = %T, want *sessionAwareTestModel", agent2.GetModel())
+	}
+	if m1 == base || m2 == base {
+		t.Fatal("expected NewAgent to use cloned model sessions, not base model")
+	}
+	if m1.sessionID == 0 || m2.sessionID == 0 {
+		t.Fatalf("expected non-zero session IDs, got m1=%d m2=%d", m1.sessionID, m2.sessionID)
+	}
+	if m1.sessionID == m2.sessionID {
+		t.Fatalf("expected distinct session IDs, got both %d", m1.sessionID)
 	}
 }
 

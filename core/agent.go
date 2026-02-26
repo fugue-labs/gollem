@@ -94,6 +94,10 @@ type RunResult[T any] struct {
 // AgentOption configures the agent via functional options.
 type AgentOption[T any] func(*Agent[T])
 
+type sessionModel interface {
+	NewSession() Model
+}
+
 // WithSystemPrompt adds a system prompt to the agent.
 func WithSystemPrompt[T any](prompt string) AgentOption[T] {
 	return func(a *Agent[T]) {
@@ -253,6 +257,10 @@ func WithDefaultToolTimeout[T any](d time.Duration) AgentOption[T] {
 
 // NewAgent creates a new Agent with the given model and options.
 func NewAgent[T any](model Model, opts ...AgentOption[T]) *Agent[T] {
+	if cloner, ok := model.(sessionModel); ok {
+		model = cloner.NewSession()
+	}
+
 	a := &Agent[T]{
 		model:       model,
 		maxRetries:  1,

@@ -12,7 +12,9 @@ import (
 
 type responsesRequest struct {
 	Model                string              `json:"model"`
+	Store                *bool               `json:"store,omitempty"`
 	Input                []map[string]any    `json:"input"`
+	PreviousResponseID   string              `json:"previous_response_id,omitempty"`
 	Tools                []responsesToolDef  `json:"tools,omitempty"`
 	ToolChoice           any                 `json:"tool_choice,omitempty"`
 	ServiceTier          string              `json:"service_tier,omitempty"`
@@ -99,7 +101,42 @@ func (p *Provider) requestViaResponses(ctx context.Context, messages []core.Mode
 	req.PromptCacheKey = p.promptCacheKey
 	req.PromptCacheRetention = p.promptCacheRetention
 	req.ServiceTier = p.serviceTier
+	return p.requestViaResponsesWithReq(ctx, req)
+}
 
+func (p *Provider) requestViaResponsesWithReq(ctx context.Context, req *responsesRequest) (*core.ModelResponse, error) {
+	if p.shouldUseResponsesWebSocket() {
+		// Keep websocket continuations strictly in-memory on the active socket,
+		// aligned with WebSocket mode guidance and ZDR/store=false compatibility.
+		origStore := cloneBoolPtr(req.Store)
+		if req.Store == nil {
+			storeFalse := false
+			req.Store = &storeFalse
+		}
+		resp, wsErr := p.requestViaResponsesWebSocket(ctx, req)
+		if wsErr == nil {
+			return resp, nil
+		}
+		if !p.wsHTTPFallback {
+			return nil, wsErr
+		}
+		// Restore caller intent for HTTP fallback; websocket-specific store=false
+		// coercion should not leak into the fallback transport.
+		req.Store = cloneBoolPtr(origStore)
+	}
+
+	return p.requestViaResponsesHTTP(ctx, req)
+}
+
+func cloneBoolPtr(v *bool) *bool {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
+}
+
+func (p *Provider) requestViaResponsesHTTP(ctx context.Context, req *responsesRequest) (*core.ModelResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("openai: failed to marshal responses request: %w", err)

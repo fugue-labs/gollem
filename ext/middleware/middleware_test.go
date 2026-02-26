@@ -16,6 +16,7 @@ import (
 type mockModel struct {
 	response *core.ModelResponse
 	err      error
+	closed   bool
 }
 
 func (m *mockModel) ModelName() string { return "test-model" }
@@ -24,6 +25,15 @@ func (m *mockModel) Request(_ context.Context, _ []core.ModelMessage, _ *core.Mo
 }
 func (m *mockModel) RequestStream(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (core.StreamedResponse, error) {
 	return nil, errors.New("not implemented")
+}
+
+func (m *mockModel) NewSession() core.Model {
+	return &mockModel{response: m.response, err: m.err}
+}
+
+func (m *mockModel) Close() error {
+	m.closed = true
+	return nil
 }
 
 func TestWrapNoMiddleware(t *testing.T) {
@@ -46,6 +56,46 @@ func TestWrapModelName(t *testing.T) {
 	wrapped := Wrap(model, noop)
 	if wrapped.ModelName() != "test-model" {
 		t.Errorf("expected test-model, got %s", wrapped.ModelName())
+	}
+}
+
+func TestWrappedModelNewSession(t *testing.T) {
+	model := &mockModel{response: &core.ModelResponse{ModelName: "test-model"}}
+	noop := Func(func(next RequestFunc) RequestFunc { return next })
+	wrapped := Wrap(model, noop)
+
+	cloner, ok := wrapped.(interface{ NewSession() core.Model })
+	if !ok {
+		t.Fatalf("expected wrapped model to implement NewSession")
+	}
+	session := cloner.NewSession()
+	sessionWrapped, ok := session.(*wrappedModel)
+	if !ok {
+		t.Fatalf("expected *wrappedModel session, got %T", session)
+	}
+	if sessionWrapped == wrapped {
+		t.Fatal("expected distinct wrapped model session")
+	}
+	if sessionWrapped.inner == model {
+		t.Fatal("expected inner model to be cloned for session")
+	}
+	if len(sessionWrapped.middlewares) != 1 {
+		t.Fatalf("expected middleware chain preserved, got %d", len(sessionWrapped.middlewares))
+	}
+}
+
+func TestWrappedModelCloseForwards(t *testing.T) {
+	model := &mockModel{response: &core.ModelResponse{ModelName: "test-model"}}
+	wrapped := Wrap(model, Func(func(next RequestFunc) RequestFunc { return next }))
+	closer, ok := wrapped.(interface{ Close() error })
+	if !ok {
+		t.Fatalf("expected wrapped model to implement Close")
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+	if !model.closed {
+		t.Fatal("expected underlying model close to be called")
 	}
 }
 

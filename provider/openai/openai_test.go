@@ -967,6 +967,8 @@ func TestNewProviderDefaults(t *testing.T) {
 	t.Setenv("OPENAI_PROMPT_CACHE_KEY", "repo:gollem")
 	t.Setenv("OPENAI_PROMPT_CACHE_RETENTION", "in_memory")
 	t.Setenv("OPENAI_SERVICE_TIER", "priority")
+	t.Setenv("OPENAI_TRANSPORT", "websocket")
+	t.Setenv("OPENAI_WEBSOCKET_HTTP_FALLBACK", "1")
 	p := New()
 	if p.model != defaultModel {
 		t.Errorf("expected model %s, got %s", defaultModel, p.model)
@@ -986,6 +988,12 @@ func TestNewProviderDefaults(t *testing.T) {
 	if p.serviceTier != "priority" {
 		t.Errorf("expected service tier from env, got %q", p.serviceTier)
 	}
+	if p.transport != transportWebSocket {
+		t.Errorf("expected transport websocket from env, got %q", p.transport)
+	}
+	if !p.wsHTTPFallback {
+		t.Errorf("expected websocket HTTP fallback from env to be enabled")
+	}
 	if p.ModelName() != defaultModel {
 		t.Errorf("expected ModelName() %s, got %s", defaultModel, p.ModelName())
 	}
@@ -1000,6 +1008,8 @@ func TestNewProviderOptions(t *testing.T) {
 		WithPromptCacheKey("stable-key"),
 		WithPromptCacheRetention("24h"),
 		WithServiceTier("priority"),
+		WithTransport("websocket"),
+		WithWebSocketHTTPFallback(true),
 	)
 	if p.apiKey != "my-key" {
 		t.Errorf("expected API key my-key, got %s", p.apiKey)
@@ -1021,6 +1031,101 @@ func TestNewProviderOptions(t *testing.T) {
 	}
 	if p.serviceTier != "priority" {
 		t.Errorf("expected service tier priority, got %q", p.serviceTier)
+	}
+	if p.transport != transportWebSocket {
+		t.Errorf("expected transport websocket, got %q", p.transport)
+	}
+	if !p.wsHTTPFallback {
+		t.Errorf("expected websocket HTTP fallback to be enabled")
+	}
+}
+
+func TestNormalizeTransport(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "", want: transportHTTP},
+		{in: "http", want: transportHTTP},
+		{in: "websocket", want: transportWebSocket},
+		{in: "WS", want: transportWebSocket},
+		{in: "unknown", want: transportHTTP},
+	}
+	for _, tt := range tests {
+		if got := normalizeTransport(tt.in); got != tt.want {
+			t.Fatalf("normalizeTransport(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestWithWebSocketHTTPFallbackOptionOverridesEnv(t *testing.T) {
+	t.Setenv("OPENAI_WEBSOCKET_HTTP_FALLBACK", "1")
+	p := New(WithWebSocketHTTPFallback(false))
+	if p.wsHTTPFallback {
+		t.Fatalf("expected explicit option false to override env value 1")
+	}
+
+	t.Setenv("OPENAI_WEBSOCKET_HTTP_FALLBACK", "0")
+	p = New(WithWebSocketHTTPFallback(true))
+	if !p.wsHTTPFallback {
+		t.Fatalf("expected explicit option true to override env value 0")
+	}
+}
+
+func TestProviderNewSessionIsolatesWebSocketState(t *testing.T) {
+	p := New(
+		WithAPIKey("my-key"),
+		WithModel("gpt-5.3-codex"),
+		WithBaseURL("https://api.openai.com"),
+		WithPromptCacheKey("stable-key"),
+		WithPromptCacheRetention("24h"),
+		WithServiceTier("priority"),
+		WithTransport("websocket"),
+		WithWebSocketHTTPFallback(true),
+	)
+	p.useResponses = true
+	p.wsConn = &responsesWebSocketConn{}
+	p.wsPrevResponseID = "resp_old"
+	p.wsLastInputSigs = []string{"a", "b"}
+
+	session, ok := p.NewSession().(*Provider)
+	if !ok {
+		t.Fatalf("expected *Provider from NewSession, got %T", p.NewSession())
+	}
+	if session == p {
+		t.Fatal("expected NewSession to return a distinct provider instance")
+	}
+	if session.apiKey != p.apiKey || session.model != p.model || session.baseURL != p.baseURL {
+		t.Fatal("session provider should preserve core config fields")
+	}
+	if !session.wsHTTPFallback || session.transport != transportWebSocket || !session.useResponses {
+		t.Fatalf("session provider should preserve websocket config, got fallback=%v transport=%q useResponses=%v",
+			session.wsHTTPFallback, session.transport, session.useResponses)
+	}
+	if session.wsConn != nil || session.wsPrevResponseID != "" || len(session.wsLastInputSigs) != 0 {
+		t.Fatal("session provider must start with empty websocket session state")
+	}
+}
+
+func TestProviderCloseResetsWebSocketState(t *testing.T) {
+	p := New(
+		WithAPIKey("my-key"),
+		WithModel("gpt-5.3-codex"),
+		WithTransport("websocket"),
+	)
+	p.wsConn = &responsesWebSocketConn{}
+	p.wsPrevResponseID = "resp_old"
+	p.wsLastInputSigs = []string{"a", "b"}
+
+	if err := p.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+	if p.wsConn != nil || p.wsPrevResponseID != "" || len(p.wsLastInputSigs) != 0 {
+		t.Fatal("expected Close to clear websocket state")
+	}
+	// Idempotent close should be a no-op.
+	if err := p.Close(); err != nil {
+		t.Fatalf("second close failed: %v", err)
 	}
 }
 

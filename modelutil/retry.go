@@ -108,6 +108,14 @@ type RetryModel struct {
 	config RetryConfig
 }
 
+type sessionModelCloner interface {
+	NewSession() core.Model
+}
+
+type modelCloser interface {
+	Close() error
+}
+
 // NewRetryModel creates a Model that retries transient failures.
 func NewRetryModel(model core.Model, config RetryConfig) *RetryModel {
 	if config.IsRetryable == nil {
@@ -134,6 +142,16 @@ func (r *RetryModel) ModelName() string {
 	return r.model.ModelName()
 }
 
+// NewSession returns a retry-wrapped model with an isolated inner model
+// session when supported by the wrapped model.
+func (r *RetryModel) NewSession() core.Model {
+	inner := r.model
+	if cloner, ok := r.model.(sessionModelCloner); ok {
+		inner = cloner.NewSession()
+	}
+	return NewRetryModel(inner, r.config)
+}
+
 func (r *RetryModel) Request(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 	return retryLoop(ctx, r.config, func() (*core.ModelResponse, error) {
 		return r.model.Request(ctx, messages, settings, params)
@@ -144,6 +162,14 @@ func (r *RetryModel) RequestStream(ctx context.Context, messages []core.ModelMes
 	return retryLoop(ctx, r.config, func() (core.StreamedResponse, error) {
 		return r.model.RequestStream(ctx, messages, settings, params)
 	})
+}
+
+// Close forwards cleanup to the wrapped model when it supports explicit close.
+func (r *RetryModel) Close() error {
+	if closer, ok := r.model.(modelCloser); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 func retryLoop[T any](ctx context.Context, cfg RetryConfig, fn func() (T, error)) (T, error) {

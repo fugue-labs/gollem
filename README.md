@@ -503,6 +503,12 @@ resilient := gollem.NewRetryModel(
 )
 ```
 
+OpenAI provider note:
+- `OPENAI_TRANSPORT=websocket` (or `openai.WithTransport("websocket")`) enables
+  Responses-API WebSocket continuation optimization for tool-heavy loops.
+- Current limitation: this path is non-streaming (`Request()` flow). Streaming
+  UI output still relies on provider streaming support via `RequestStream()`.
+
 | Feature | Anthropic | OpenAI | Vertex AI | Vertex AI Anthropic |
 |---------|-----------|--------|-----------|---------------------|
 | Structured output | Yes | Yes | Yes | Yes |
