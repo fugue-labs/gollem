@@ -1166,6 +1166,8 @@ func buildRetryConfig(provider, modelName string, runTimeout time.Duration) mode
 	}
 
 	cfg.MinRemaining = 20 * time.Second
+	// Emit periodic wait telemetry while a provider call is in-flight.
+	cfg.HeartbeatInterval = 30 * time.Second
 	return cfg
 }
 

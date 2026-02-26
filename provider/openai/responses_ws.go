@@ -165,9 +165,9 @@ func (p *Provider) sendResponsesCreateLocked(ctx context.Context, conn *response
 		return nil, fmt.Errorf("openai websocket: marshal create event: %w", err)
 	}
 
-	ctxDeadline, hasDeadline := ctx.Deadline()
-	if hasDeadline {
-		_ = conn.conn.SetWriteDeadline(ctxDeadline)
+	reqDeadline, hasReqDeadline := p.requestIODeadline(ctx, time.Now())
+	if hasReqDeadline {
+		_ = conn.conn.SetWriteDeadline(reqDeadline)
 	} else {
 		_ = conn.conn.SetWriteDeadline(time.Now().Add(fallbackWebSocketWriteTimeout))
 	}
@@ -177,8 +177,8 @@ func (p *Provider) sendResponsesCreateLocked(ctx context.Context, conn *response
 	}
 
 	for {
-		if hasDeadline {
-			_ = conn.conn.SetReadDeadline(ctxDeadline)
+		if hasReqDeadline {
+			_ = conn.conn.SetReadDeadline(reqDeadline)
 		} else {
 			_ = conn.conn.SetReadDeadline(time.Now().Add(fallbackWebSocketReadTimeout))
 		}
@@ -192,11 +192,13 @@ func (p *Provider) sendResponsesCreateLocked(ctx context.Context, conn *response
 			return nil, fmt.Errorf("openai websocket decode failed: %w", err)
 		}
 		switch event.Type {
-		case "response.done":
+		case "response.done", "response.completed":
 			if event.Response == nil {
-				return nil, errors.New("openai websocket: response.done missing response payload")
+				return nil, errors.New("openai websocket: terminal response event missing response payload")
 			}
 			return event.Response, nil
+		case "response.incomplete":
+			return nil, responsesIncompleteError(event, p.model)
 		case "error":
 			return nil, responsesWebSocketError(event, p.model)
 		case "response.failed":
@@ -205,6 +207,27 @@ func (p *Provider) sendResponsesCreateLocked(ctx context.Context, conn *response
 			// Ignore progress/delta events and keep reading.
 		}
 	}
+}
+
+// requestIODeadline returns the earliest applicable request deadline from:
+// - the provided context deadline (if any)
+// - the provider HTTP client's timeout (if configured and >0)
+// This keeps websocket request lifetime aligned with per-request timeout policy.
+func (p *Provider) requestIODeadline(ctx context.Context, now time.Time) (time.Time, bool) {
+	var deadline time.Time
+	has := false
+	if d, ok := ctx.Deadline(); ok {
+		deadline = d
+		has = true
+	}
+	if p.httpClient != nil && p.httpClient.Timeout > 0 {
+		d := now.Add(p.httpClient.Timeout)
+		if !has || d.Before(deadline) {
+			deadline = d
+			has = true
+		}
+	}
+	return deadline, has
 }
 
 func responsesInputSignatures(input []map[string]any) ([]string, error) {
@@ -282,6 +305,23 @@ func responsesWebSocketError(event responsesWSEvent, model string) error {
 	return &core.ModelHTTPError{
 		Message:    "openai websocket error: " + msg,
 		StatusCode: status,
+		Body:       string(raw),
+		ModelName:  model,
+	}
+}
+
+func responsesIncompleteError(event responsesWSEvent, model string) error {
+	reason := ""
+	if event.Response != nil && event.Response.IncompleteDetails != nil {
+		reason = strings.TrimSpace(event.Response.IncompleteDetails.Reason)
+	}
+	if reason == "" {
+		reason = "response.incomplete"
+	}
+	raw, _ := json.Marshal(event)
+	return &core.ModelHTTPError{
+		Message:    "openai websocket response incomplete: " + reason,
+		StatusCode: http.StatusBadRequest,
 		Body:       string(raw),
 		ModelName:  model,
 	}

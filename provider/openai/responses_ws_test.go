@@ -117,7 +117,7 @@ func TestRequestViaResponsesWebSocketContinuation(t *testing.T) {
 			mu.Unlock()
 
 			done := responsesWSEvent{
-				Type: "response.done",
+				Type: "response.completed",
 				Response: &responsesAPIResponse{
 					ID:    fmt.Sprintf("resp_%d", idx),
 					Model: "gpt-5.3-codex",
@@ -223,6 +223,68 @@ func TestRequestViaResponsesWebSocketContinuation(t *testing.T) {
 	}
 	if got, _ := second.Input[1]["role"].(string); got != "user" {
 		t.Fatalf("second delta message role should be user, got %q", got)
+	}
+}
+
+func TestRequestViaResponsesWebSocketAcceptsResponseCompletedEvent(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("websocket upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		_, _, err = conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		_ = conn.WriteJSON(responsesWSEvent{
+			Type: "response.completed",
+			Response: &responsesAPIResponse{
+				ID:    "resp_completed_1",
+				Model: "gpt-5.3-codex",
+				Output: []responsesOutputItem{
+					{
+						Type: "message",
+						Role: "assistant",
+						Content: []responsesContentItem{
+							{Type: "output_text", Text: "ok"},
+						},
+					},
+				},
+				Usage: responsesUsage{InputTokens: 4, OutputTokens: 2},
+			},
+		})
+	}))
+	defer server.Close()
+
+	p := New(
+		WithAPIKey("test-key"),
+		WithModel("gpt-5.3-codex"),
+		WithBaseURL(server.URL),
+		WithTransport("websocket"),
+	)
+
+	resp, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.UserPromptPart{Content: "hello"},
+			},
+		},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if got := resp.TextContent(); got != "ok" {
+		t.Fatalf("response text = %q, want ok", got)
 	}
 }
 
@@ -471,7 +533,7 @@ func TestRequestViaResponsesWebSocketDisablesContinuationAfterHistoryRewrite(t *
 			mu.Unlock()
 
 			done := responsesWSEvent{
-				Type: "response.done",
+				Type: "response.completed",
 				Response: &responsesAPIResponse{
 					ID:    fmt.Sprintf("resp_rewrite_%d", idx),
 					Model: "gpt-5.3-codex",
@@ -630,7 +692,7 @@ func TestRequestViaResponsesWebSocketReconnectsOnConnectionLimit(t *testing.T) {
 			}
 
 			done := responsesWSEvent{
-				Type: "response.done",
+				Type: "response.completed",
 				Response: &responsesAPIResponse{
 					ID:    fmt.Sprintf("resp_conn_%d_msg_%d", thisConn, msgIdx),
 					Model: "gpt-5.3-codex",
@@ -777,6 +839,65 @@ func TestSendResponsesCreateLockedUsesFallbackReadTimeoutWithoutContextDeadline(
 	}
 }
 
+func TestRequestViaResponsesWebSocketUsesHTTPClientTimeoutAsDeadline(t *testing.T) {
+	oldRead := fallbackWebSocketReadTimeout
+	oldWrite := fallbackWebSocketWriteTimeout
+	fallbackWebSocketReadTimeout = 5 * time.Second
+	fallbackWebSocketWriteTimeout = 5 * time.Second
+	defer func() {
+		fallbackWebSocketReadTimeout = oldRead
+		fallbackWebSocketWriteTimeout = oldWrite
+	}()
+
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("websocket upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		// Consume one request message, then intentionally never send terminal event.
+		_, _, _ = conn.ReadMessage()
+		time.Sleep(2 * time.Second)
+	}))
+	defer server.Close()
+
+	p := New(
+		WithAPIKey("test-key"),
+		WithModel("gpt-5.3-codex"),
+		WithBaseURL(server.URL),
+		WithTransport("websocket"),
+		WithHTTPClient(&http.Client{Timeout: 120 * time.Millisecond}),
+	)
+
+	start := time.Now()
+	_, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.UserPromptPart{Content: "hello"},
+			},
+		},
+	}, nil, nil)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout-bound websocket read failure")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "read failed") {
+		t.Fatalf("expected websocket read failure, got: %v", err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("expected timeout around HTTP client timeout, took too long: %v", elapsed)
+	}
+}
+
 func TestRequestViaResponsesWebSocketResponseFailed(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },
@@ -898,7 +1019,7 @@ func TestRequestViaResponsesWebSocketReconnectsOnPreviousResponseNotFound(t *tes
 			}
 
 			done := responsesWSEvent{
-				Type: "response.done",
+				Type: "response.completed",
 				Response: &responsesAPIResponse{
 					ID:    fmt.Sprintf("resp_prev_%d_%d", thisConn, msgIdx),
 					Model: "gpt-5.3-codex",
