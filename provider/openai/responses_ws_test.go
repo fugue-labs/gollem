@@ -839,6 +839,97 @@ func TestSendResponsesCreateLockedUsesFallbackReadTimeoutWithoutContextDeadline(
 	}
 }
 
+func TestSendResponsesCreateLockedRecomputesReadDeadlinePerEvent(t *testing.T) {
+	oldRead := fallbackWebSocketReadTimeout
+	oldWrite := fallbackWebSocketWriteTimeout
+	fallbackWebSocketReadTimeout = 150 * time.Millisecond
+	fallbackWebSocketWriteTimeout = 2 * time.Second
+	defer func() {
+		fallbackWebSocketReadTimeout = oldRead
+		fallbackWebSocketWriteTimeout = oldWrite
+	}()
+
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("websocket upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		_, _, err = conn.ReadMessage()
+		if err != nil {
+			return
+		}
+
+		time.Sleep(100 * time.Millisecond)
+		if err := conn.WriteJSON(responsesWSEvent{Type: "response.output_text.delta"}); err != nil {
+			t.Errorf("write websocket progress event: %v", err)
+			return
+		}
+
+		time.Sleep(100 * time.Millisecond)
+		if err := conn.WriteJSON(responsesWSEvent{
+			Type: "response.completed",
+			Response: &responsesAPIResponse{
+				ID:     "resp_done",
+				Model:  "gpt-5.3-codex",
+				Output: []responsesOutputItem{},
+				Usage:  responsesUsage{},
+			},
+		}); err != nil {
+			t.Errorf("write websocket completed event: %v", err)
+			return
+		}
+	}))
+	defer server.Close()
+
+	p := New(
+		WithAPIKey("test-key"),
+		WithModel("gpt-5.3-codex"),
+		WithBaseURL(server.URL),
+		WithTransport("websocket"),
+	)
+	conn, err := p.ensureResponsesWebSocketLocked(context.Background())
+	if err != nil {
+		t.Fatalf("ensure websocket failed: %v", err)
+	}
+	defer p.resetResponsesWebSocketLocked()
+
+	req := &responsesRequest{
+		Model: "gpt-5.3-codex",
+		Input: []map[string]any{
+			responsesMessage("user", "hello"),
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	resp, err := p.sendResponsesCreateLocked(ctx, conn, req)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("expected rolling read deadlines to allow progress, got: %v", err)
+	}
+	if resp == nil || resp.ID != "resp_done" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+	if elapsed < 180*time.Millisecond {
+		t.Fatalf("expected both delayed events to be read, took too little time: %v", elapsed)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("expected response to complete promptly, took too long: %v", elapsed)
+	}
+}
+
 func TestRequestViaResponsesWebSocketUsesContextDeadlineNotHTTPTimeout(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },

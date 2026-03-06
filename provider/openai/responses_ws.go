@@ -194,8 +194,9 @@ func (p *Provider) sendResponsesCreateLocked(ctx context.Context, conn *response
 	}
 
 	for {
-		if hasReqDeadline {
-			_ = conn.conn.SetReadDeadline(reqDeadline)
+		readDeadline, hasReadDeadline := p.requestIODeadline(ctx, time.Now())
+		if hasReadDeadline {
+			_ = conn.conn.SetReadDeadline(readDeadline)
 		} else {
 			_ = conn.conn.SetReadDeadline(time.Now().Add(fallbackWebSocketReadTimeout))
 		}
@@ -231,19 +232,19 @@ func (p *Provider) sendResponsesCreateLocked(ctx context.Context, conn *response
 // Unlike HTTP requests (where http.Client.Timeout bounds a single roundtrip),
 // websocket reads may legitimately block for extended periods while the model
 // reasons (especially with high/xhigh reasoning effort). However, we still
-// cap per-read deadlines at fallbackWebSocketReadTimeout (10m) to prevent a
+// cap per-read deadlines at fallbackWebSocketReadTimeout (3m) to prevent a
 // hung API call from consuming the entire task budget. A single model turn
-// (even with xhigh reasoning) should complete well within 10 minutes; if it
+// (even with xhigh reasoning) should complete well within 3 minutes; if it
 // doesn't, the connection is likely hung and the retry/fallback logic should
 // kick in.
 //
 // When the context deadline is closer than the cap, we use the context
 // deadline (existing behavior). When the context deadline is much further
-// out (e.g. a 30-minute task budget), we cap at 10 minutes per read so
+// out (e.g. a 30-minute task budget), we cap at 3 minutes per read so
 // hung connections fail fast and can be retried.
-func (p *Provider) requestIODeadline(ctx context.Context, _ time.Time) (time.Time, bool) {
+func (p *Provider) requestIODeadline(ctx context.Context, now time.Time) (time.Time, bool) {
 	if d, ok := ctx.Deadline(); ok {
-		if cap := time.Now().Add(fallbackWebSocketReadTimeout); cap.Before(d) {
+		if cap := now.Add(fallbackWebSocketReadTimeout); cap.Before(d) {
 			return cap, true
 		}
 		return d, true
