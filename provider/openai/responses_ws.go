@@ -42,8 +42,13 @@ type responsesWSError struct {
 
 var (
 	// fallbackWebSocketReadTimeout bounds per-turn blocking reads when the
-	// caller does not provide a context deadline.
-	fallbackWebSocketReadTimeout = 10 * time.Minute
+	// caller does not provide a context deadline, and caps per-read
+	// deadlines when the context deadline is much further out. Empirically,
+	// the longest successful model call observed is ~44s (p99 ~25s) across
+	// 1100+ calls with xhigh reasoning effort. 3 minutes provides headroom
+	// for API load variance and model changes while still detecting hung
+	// connections quickly (vs the full 30-60min task budget).
+	fallbackWebSocketReadTimeout = 3 * time.Minute
 	// fallbackWebSocketWriteTimeout bounds writes when the caller does not
 	// provide a context deadline.
 	fallbackWebSocketWriteTimeout = 30 * time.Second
@@ -225,18 +230,22 @@ func (p *Provider) sendResponsesCreateLocked(ctx context.Context, conn *response
 //
 // Unlike HTTP requests (where http.Client.Timeout bounds a single roundtrip),
 // websocket reads may legitimately block for extended periods while the model
-// reasons (especially with high/xhigh reasoning effort). Using the HTTP client
-// timeout as a websocket read deadline causes premature timeouts: the inner
-// reconnect-retry doubles the consumed time per outer retry attempt, and the
-// retry loop can exhaust the entire task budget without a single successful
-// model turn.
+// reasons (especially with high/xhigh reasoning effort). However, we still
+// cap per-read deadlines at fallbackWebSocketReadTimeout (10m) to prevent a
+// hung API call from consuming the entire task budget. A single model turn
+// (even with xhigh reasoning) should complete well within 10 minutes; if it
+// doesn't, the connection is likely hung and the retry/fallback logic should
+// kick in.
 //
-// Instead, we use only the context deadline (which represents the full run
-// budget) and the fallback constants. This lets the model use whatever time
-// the run budget allows for reasoning, while the fallback constants protect
-// against indefinite hangs when no context deadline is set.
+// When the context deadline is closer than the cap, we use the context
+// deadline (existing behavior). When the context deadline is much further
+// out (e.g. a 30-minute task budget), we cap at 10 minutes per read so
+// hung connections fail fast and can be retried.
 func (p *Provider) requestIODeadline(ctx context.Context, _ time.Time) (time.Time, bool) {
 	if d, ok := ctx.Deadline(); ok {
+		if cap := time.Now().Add(fallbackWebSocketReadTimeout); cap.Before(d) {
+			return cap, true
+		}
 		return d, true
 	}
 	return time.Time{}, false
