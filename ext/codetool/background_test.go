@@ -149,14 +149,14 @@ func TestBackgroundProcessManager_CompletionPrompt(t *testing.T) {
 	}
 
 	// Before completion: should return empty.
-	prompt, err := mgr.CompletionPrompt(context.Background(), &core.RunContext{})
+	_, err = mgr.CompletionPrompt(context.Background(), &core.RunContext{})
 	if err != nil {
 		t.Fatalf("CompletionPrompt error: %v", err)
 	}
 	// Process might not be done yet, but let's wait and check.
 	time.Sleep(500 * time.Millisecond)
 
-	prompt, err = mgr.CompletionPrompt(context.Background(), &core.RunContext{})
+	prompt, err := mgr.CompletionPrompt(context.Background(), &core.RunContext{})
 	if err != nil {
 		t.Fatalf("CompletionPrompt error: %v", err)
 	}

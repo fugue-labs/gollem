@@ -125,7 +125,8 @@ func NewBackgroundProcessManager() *BackgroundProcessManager {
 // buffer capture, since they're killed on agent exit anyway.
 func (m *BackgroundProcessManager) Start(workDir, command string, keepAlive bool, timeout time.Duration) (string, error) {
 	// Set up the command before acquiring the lock.
-	cmd := exec.Command("bash", "-c", command)
+	// Use a background context — background processes outlive the calling tool's context.
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", command)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
@@ -178,7 +179,7 @@ func (m *BackgroundProcessManager) Start(workDir, command string, keepAlive bool
 		m.mu.Unlock()
 		if logFile != nil {
 			logFile.Close()
-			os.Remove(logPath)
+			_ = os.Remove(logPath)
 		}
 		return "", &core.ModelRetryError{
 			Message: fmt.Sprintf("maximum concurrent background processes (%d) reached. "+
@@ -190,7 +191,7 @@ func (m *BackgroundProcessManager) Start(workDir, command string, keepAlive bool
 		m.mu.Unlock()
 		if logFile != nil {
 			logFile.Close()
-			os.Remove(logPath)
+			_ = os.Remove(logPath)
 		}
 		return "", fmt.Errorf("start background process: %w", err)
 	}
