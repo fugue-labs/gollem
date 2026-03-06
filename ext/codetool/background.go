@@ -179,6 +179,7 @@ func (m *BackgroundProcessManager) Start(workDir, command string, keepAlive bool
 		m.mu.Unlock()
 		if logFile != nil {
 			logFile.Close()
+			//nolint:gosec // logPath is from os.CreateTemp, not user input.
 			_ = os.Remove(logPath)
 		}
 		return "", &core.ModelRetryError{
@@ -191,6 +192,7 @@ func (m *BackgroundProcessManager) Start(workDir, command string, keepAlive bool
 		m.mu.Unlock()
 		if logFile != nil {
 			logFile.Close()
+			//nolint:gosec // logPath is from os.CreateTemp, not user input.
 			_ = os.Remove(logPath)
 		}
 		return "", fmt.Errorf("start background process: %w", err)
