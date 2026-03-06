@@ -67,6 +67,12 @@ type Config struct {
 	// agent cannot spawn subagents for delegation. Useful for benchmarks
 	// or constrained environments where single-agent execution is preferred.
 	DisableDelegate bool
+
+	// BackgroundProcessManager manages background processes started by the
+	// bash tool with background=true. When nil, one is created automatically
+	// by Toolset/AgentOptions. Share a single manager across tools so that
+	// bash_status can query processes started by bash.
+	BackgroundProcessManager *BackgroundProcessManager
 }
 
 // Option configures coding tools.
@@ -168,4 +174,11 @@ func WithDisableGreedyThinkingPressure() Option {
 // operates strictly in single-agent mode without any delegation capability.
 func WithDisableDelegate() Option {
 	return func(c *Config) { c.DisableDelegate = true }
+}
+
+// WithBackgroundProcessManager sets a shared background process manager.
+// When provided, all tools (bash, bash_status) share this manager. If not
+// set, Toolset and AgentOptions create one automatically.
+func WithBackgroundProcessManager(m *BackgroundProcessManager) Option {
+	return func(c *Config) { c.BackgroundProcessManager = m }
 }

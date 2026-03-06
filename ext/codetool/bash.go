@@ -64,6 +64,15 @@ type BashParams struct {
 
 	// Timeout is an optional timeout in seconds. Overrides the default.
 	Timeout *int `json:"timeout,omitempty" jsonschema:"description=Optional timeout in seconds (default: 300)"`
+
+	// Background starts the command as a managed background process.
+	// Returns immediately with a process ID. Use bash_status to check output.
+	Background *bool `json:"background,omitempty" jsonschema:"description=Run in background. Returns immediately with a process ID. Use bash_status to check output and status."`
+
+	// KeepAlive prevents the background process from being killed when the
+	// agent run ends. Use for services that must persist after agent exit
+	// (e.g., servers the verifier needs to test). Only used with background=true.
+	KeepAlive *bool `json:"keep_alive,omitempty" jsonschema:"description=Keep process running after agent exit (for service tasks). Only used with background=true."`
 }
 
 // BashResult is the result of a bash command execution (used in tests).
@@ -125,6 +134,24 @@ func Bash(opts ...Option) core.Tool {
 						"Use PID-file lifecycle management instead: start with `nohup ... & echo $! > /tmp/<name>.pid` " +
 						"and stop with `kill $(cat /tmp/<name>.pid)`.",
 				}
+			}
+
+			// Background execution: start the process and return immediately.
+			if params.Background != nil && *params.Background {
+				if cfg.BackgroundProcessManager == nil {
+					return "", &core.ModelRetryError{
+						Message: "background process manager not available. " +
+							"Use nohup <command> & as a fallback.",
+					}
+				}
+				keepAlive := params.KeepAlive != nil && *params.KeepAlive
+				var bgTimeout time.Duration
+				if params.Timeout != nil && *params.Timeout > 0 {
+					bgTimeout = time.Duration(*params.Timeout) * time.Second
+				}
+				return cfg.BackgroundProcessManager.Start(
+					cfg.WorkDir, params.Command, keepAlive, bgTimeout,
+				)
 			}
 
 			timeout := cfg.BashTimeout
@@ -6642,8 +6669,9 @@ func timeoutContextHint(cmd string) string {
 	for _, p := range serverPatterns {
 		if strings.Contains(lower, p) {
 			return "[hint: this looks like a server/daemon command that runs indefinitely. " +
-				"Run it in the background: nohup <command> > /tmp/server.log 2>&1 & " +
-				"Then verify with: curl localhost:<port> or ss -tlnp]"
+				"Use background=true (and keep_alive=true for services the verifier needs) " +
+				"to run it without blocking. Then check with bash_status and verify with: " +
+				"curl localhost:<port> or ss -tlnp]"
 		}
 	}
 

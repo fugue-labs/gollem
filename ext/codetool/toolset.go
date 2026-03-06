@@ -21,8 +21,10 @@ import (
 //	ts := codetool.Toolset(codetool.WithWorkDir("/my/project"))
 //	agent := core.NewAgent(model, "...", core.WithToolset(ts))
 func Toolset(opts ...Option) *core.Toolset {
+	opts = ensureBackgroundManager(opts)
 	return core.NewToolset("codetool",
 		Bash(opts...),
+		BashStatus(opts...),
 		View(opts...),
 		Write(opts...),
 		Edit(opts...),
@@ -36,8 +38,10 @@ func Toolset(opts ...Option) *core.Toolset {
 
 // AllTools returns all coding agent tools as a slice.
 func AllTools(opts ...Option) []core.Tool {
+	opts = ensureBackgroundManager(opts)
 	return []core.Tool{
 		Bash(opts...),
+		BashStatus(opts...),
 		View(opts...),
 		Write(opts...),
 		Edit(opts...),
@@ -47,6 +51,16 @@ func AllTools(opts ...Option) []core.Tool {
 		Ls(opts...),
 		LSP(opts...),
 	}
+}
+
+// ensureBackgroundManager ensures that opts contain a shared BackgroundProcessManager.
+// If one is not already configured, a new manager is created and appended.
+func ensureBackgroundManager(opts []Option) []Option {
+	cfg := applyOpts(opts)
+	if cfg.BackgroundProcessManager == nil {
+		return append(opts, WithBackgroundProcessManager(NewBackgroundProcessManager()))
+	}
+	return opts
 }
 
 // AgentOptions returns the recommended set of agent options for a coding agent.
@@ -62,7 +76,10 @@ func AgentOptions(workDir string, toolOpts ...Option) []core.AgentOption[string]
 	if workDir != "" {
 		toolOpts = append([]Option{WithWorkDir(workDir)}, toolOpts...)
 	}
+	// Ensure shared background process manager for all tools.
+	toolOpts = ensureBackgroundManager(toolOpts)
 	cfg := applyOpts(toolOpts)
+	bgMgr := cfg.BackgroundProcessManager
 	verifyMW, verifyValidator := VerificationCheckpoint(workDir, cfg.Timeout)
 	var kickoffMW core.AgentMiddleware
 	if cfg.Model != nil {
@@ -211,6 +228,7 @@ func AgentOptions(workDir string, toolOpts ...Option) []core.AgentOption[string]
 				fmt.Fprintf(os.Stderr, "[gollem] run started: %s\n", prompt)
 			},
 			OnRunEnd: func(_ context.Context, _ *core.RunContext, _ []core.ModelMessage, err error) {
+				bgMgr.Cleanup()
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "[gollem] run ended with error: %v\n", err)
 				} else {
@@ -245,6 +263,9 @@ func AgentOptions(workDir string, toolOpts ...Option) []core.AgentOption[string]
 			},
 		}),
 	)
+
+	// Dynamic system prompt: inject background process completion notifications.
+	opts = append(opts, core.WithDynamicSystemPrompt[string](bgMgr.CompletionPrompt))
 
 	if kickoffMW != nil {
 		// Keep kickoff outside the fixed append block so middleware state
