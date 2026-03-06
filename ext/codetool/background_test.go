@@ -2,6 +2,7 @@ package codetool
 
 import (
 	"context"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -451,5 +452,131 @@ func TestBashStatus_EmptyID(t *testing.T) {
 	err := callErr(t, tool, `{"id":""}`)
 	if err == nil {
 		t.Fatal("expected error for empty ID")
+	}
+}
+
+// --- Adopt Tests ---
+
+func TestBackgroundProcessManager_Adopt(t *testing.T) {
+	mgr := NewBackgroundProcessManager()
+	defer mgr.Cleanup()
+
+	// Start a process externally (simulating foreground bash).
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo adopted-output && echo err-output >&2")
+	stdoutPipe, _ := cmd.StdoutPipe()
+	stderrPipe, _ := cmd.StderrPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	id, err := mgr.Adopt(cmd, stdoutPipe, stderrPipe, "echo adopted-output")
+	if err != nil {
+		t.Fatalf("Adopt failed: %v", err)
+	}
+	if id != "bg-1" {
+		t.Errorf("expected bg-1, got %s", id)
+	}
+
+	// Wait for process to complete.
+	time.Sleep(500 * time.Millisecond)
+
+	status, err := mgr.FormatProcess("bg-1")
+	if err != nil {
+		t.Fatalf("FormatProcess failed: %v", err)
+	}
+	if !strings.Contains(status, "completed") {
+		t.Errorf("expected completed, got: %s", status)
+	}
+	if !strings.Contains(status, "adopted-output") {
+		t.Errorf("expected stdout captured, got: %s", status)
+	}
+	if !strings.Contains(status, "err-output") {
+		t.Errorf("expected stderr captured, got: %s", status)
+	}
+}
+
+// --- Detach Tests ---
+
+func TestBash_DetachMovesToBackground(t *testing.T) {
+	mgr := NewBackgroundProcessManager()
+	defer mgr.Cleanup()
+	tool := Bash(WithBackgroundProcessManager(mgr))
+
+	// Create a detach channel that closes immediately — simulates UI pressing
+	// "move to background" right away.
+	detach := make(chan struct{})
+	close(detach)
+
+	ctx := context.Background()
+	rc := &core.RunContext{Detach: detach}
+	result, err := tool.Handler(ctx, rc, `{"command":"sleep 60"}`)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	resultStr, ok := result.(string)
+	if !ok {
+		t.Fatalf("expected string result, got %T", result)
+	}
+	if !strings.Contains(resultStr, "moved to background") {
+		t.Errorf("expected detach message, got: %s", resultStr)
+	}
+	if !strings.Contains(resultStr, "bg-1") {
+		t.Errorf("expected bg-1 in result, got: %s", resultStr)
+	}
+
+	// Verify the process is tracked.
+	status, err := mgr.FormatProcess("bg-1")
+	if err != nil {
+		t.Fatalf("FormatProcess failed: %v", err)
+	}
+	if !strings.Contains(status, "running") {
+		t.Errorf("expected running status, got: %s", status)
+	}
+}
+
+func TestBash_NoDetachRunsNormally(t *testing.T) {
+	mgr := NewBackgroundProcessManager()
+	defer mgr.Cleanup()
+	tool := Bash(WithBackgroundProcessManager(mgr))
+
+	// nil Detach channel — should run to completion as normal.
+	ctx := context.Background()
+	rc := &core.RunContext{}
+	result, err := tool.Handler(ctx, rc, `{"command":"echo normal-output"}`)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	resultStr := result.(string)
+	if !strings.Contains(resultStr, "normal-output") {
+		t.Errorf("expected normal output, got: %s", resultStr)
+	}
+	// No background processes should exist.
+	all := mgr.FormatAll()
+	if all != "No background processes." {
+		t.Errorf("expected no background processes, got: %s", all)
+	}
+}
+
+func TestBash_DetachNotFiredRunsNormally(t *testing.T) {
+	mgr := NewBackgroundProcessManager()
+	defer mgr.Cleanup()
+	tool := Bash(WithBackgroundProcessManager(mgr))
+
+	// Detach channel exists but is never closed — command completes normally.
+	detach := make(chan struct{})
+	ctx := context.Background()
+	rc := &core.RunContext{Detach: detach}
+	result, err := tool.Handler(ctx, rc, `{"command":"echo fast-command"}`)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	resultStr := result.(string)
+	if !strings.Contains(resultStr, "fast-command") {
+		t.Errorf("expected output, got: %s", resultStr)
+	}
+	// No background processes — command finished before detach.
+	all := mgr.FormatAll()
+	if all != "No background processes." {
+		t.Errorf("expected no background processes, got: %s", all)
 	}
 }

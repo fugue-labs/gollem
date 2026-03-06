@@ -295,6 +295,7 @@ type runConfig struct {
 	initialRequestParts []ModelRequestPart
 	deferredResults     []DeferredToolResult
 	batchConcurrency    int
+	detach              <-chan struct{}
 }
 
 // WithRunDeps sets dependencies available to tools via RunContext.
@@ -339,6 +340,17 @@ func WithInitialRequestParts(parts ...ModelRequestPart) RunOption {
 	}
 }
 
+// WithDetach provides a channel that the UI layer can close to signal the
+// currently executing tool to move its work to the background. Tools that
+// support detach (e.g., bash) will select on this channel alongside their
+// blocking operation. When closed, the tool adopts the running process into
+// the background process pool and returns immediately.
+func WithDetach(ch <-chan struct{}) RunOption {
+	return func(c *runConfig) {
+		c.detach = ch
+	}
+}
+
 // agentRunState tracks mutable state across the agent loop.
 type agentRunState struct {
 	messages    []ModelMessage
@@ -349,7 +361,8 @@ type agentRunState struct {
 	runID       string
 	startTime   time.Time
 	limits      UsageLimits
-	mu          sync.Mutex // protects usage, toolRetries, and traceSteps during concurrent tool execution
+	detach      <-chan struct{} // UI detach signal; nil if not configured
+	mu          sync.Mutex      // protects usage, toolRetries, and traceSteps during concurrent tool execution
 	traceSteps  []TraceStep
 }
 
@@ -377,6 +390,7 @@ func (a *Agent[T]) Run(ctx context.Context, prompt string, opts ...RunOption) (*
 		toolRetries: make(map[string]int),
 		runID:       newRunID(),
 		startTime:   time.Now(),
+		detach:      cfg.detach,
 	}
 
 	// Copy any provided history.
@@ -511,6 +525,7 @@ func (a *Agent[T]) RunStream(ctx context.Context, prompt string, opts ...RunOpti
 		toolRetries: make(map[string]int),
 		runID:       newRunID(),
 		startTime:   time.Now(),
+		detach:      cfg.detach,
 	}
 	if len(cfg.messages) > 0 {
 		state.messages = make([]ModelMessage, len(cfg.messages))
@@ -1387,6 +1402,7 @@ func (a *Agent[T]) executeSingleTool(
 		RunID:        state.runID,
 		RunStartTime: state.startTime,
 		EventBus:     a.eventBus,
+		Detach:       state.detach,
 	}
 	state.mu.Unlock()
 

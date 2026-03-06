@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -112,7 +114,7 @@ func Bash(opts ...Option) core.Tool {
 			"compiling code, running tests, git operations, and any other terminal commands. "+
 			"Commands run in a persistent working directory. "+
 			"Prefer this tool for exploring the filesystem and running build/test commands.",
-		func(ctx context.Context, params BashParams) (string, error) {
+		func(ctx context.Context, rc *core.RunContext, params BashParams) (string, error) {
 			if strings.TrimSpace(params.Command) == "" {
 				return "", &core.ModelRetryError{Message: "command must not be empty"}
 			}
@@ -206,14 +208,23 @@ func Bash(opts ...Option) core.Tool {
 			timedOut := false
 			retried := false
 
+			// Determine if detach is available for this execution.
+			canDetach := rc.Detach != nil && cfg.BackgroundProcessManager != nil
+
 			for attempt := range 2 {
 				var stdout, stderr bytes.Buffer
 				if attempt == 0 {
-					cmd.Stdout = &stdout
-					cmd.Stderr = &stderr
+					// Only set cmd.Stdout/Stderr when NOT using detach path.
+					// The detach path uses pipes instead (set inside runWithDetach).
+					if !canDetach {
+						cmd.Stdout = &stdout
+						cmd.Stderr = &stderr
+					}
 				} else {
 					// Re-create cmd for retry (exec.Cmd can only be started once).
+					// Retries never use detach — only the first attempt can detach.
 					retried = true
+					canDetach = false
 					cmd = exec.CommandContext(cmdCtx, "bash", "-c", params.Command)
 					if cfg.WorkDir != "" {
 						cmd.Dir = cfg.WorkDir
@@ -232,21 +243,26 @@ func Bash(opts ...Option) core.Tool {
 					time.Sleep(2 * time.Second)
 				}
 
-				err := cmd.Run()
+				// Detach-aware execution: when a detach channel is available,
+				// use cmd.Start() + pipes so the process can be adopted by the
+				// background manager mid-flight. Otherwise use cmd.Run().
+				detachResult, detachErr := runWithDetach(cmd, &stdout, &stderr, rc.Detach, cfg.BackgroundProcessManager, params.Command)
+				if detachErr != nil {
+					return "", detachErr
+				}
+				if detachResult != "" {
+					// Process was detached to background.
+					return detachResult, nil
+				}
 
 				exitCode = 0
 				timedOut = false
-				if err != nil {
+				if cmd.ProcessState == nil || !cmd.ProcessState.Success() {
 					if cmdCtx.Err() == context.DeadlineExceeded {
 						timedOut = true
 						exitCode = 124
-					} else {
-						var exitErr *exec.ExitError
-						if errors.As(err, &exitErr) {
-							exitCode = exitErr.ExitCode()
-						} else {
-							return "", fmt.Errorf("failed to execute command: %w", err)
-						}
+					} else if cmd.ProcessState != nil {
+						exitCode = cmd.ProcessState.ExitCode()
 					}
 				}
 
@@ -581,6 +597,81 @@ func Bash(opts ...Option) core.Tool {
 		},
 		core.WithToolSequential(true), // bash commands should run sequentially
 	)
+}
+
+// runWithDetach executes a command with optional detach support. When detach is
+// non-nil, the command is started with pipes so it can be adopted by the
+// background manager if the detach channel closes during execution.
+//
+// Returns:
+//   - ("", nil) on normal completion (stdout/stderr are in the buffers)
+//   - (message, nil) when the process was detached to background
+//   - ("", err) on startup failure
+func runWithDetach(cmd *exec.Cmd, stdout, stderr *bytes.Buffer, detach <-chan struct{}, bgMgr *BackgroundProcessManager, command string) (string, error) {
+	if detach == nil || bgMgr == nil {
+		// No detach support — run normally.
+		err := cmd.Run()
+		if err != nil {
+			// Only return hard errors (not ExitError — those are handled by caller).
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				return "", fmt.Errorf("failed to execute command: %w", err)
+			}
+		}
+		return "", nil
+	}
+
+	// Pipe-based execution for detach support.
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", fmt.Errorf("stdout pipe: %w", err)
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return "", fmt.Errorf("stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("failed to start command: %w", err)
+	}
+
+	// Wrap cmd.Wait in a sync.Once so it's safe for both the io goroutine
+	// and Adopt's goroutine to call — only the first call actually waits.
+	var waitOnce sync.Once
+	var waitErr error
+	cmdWait := func() error {
+		waitOnce.Do(func() { waitErr = cmd.Wait() })
+		return waitErr
+	}
+
+	// Copy output in background goroutines.
+	done := make(chan error, 1)
+	go func() {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); _, _ = io.Copy(stdout, stdoutPipe) }()
+		go func() { defer wg.Done(); _, _ = io.Copy(stderr, stderrPipe) }()
+		wg.Wait()
+		done <- cmdWait()
+	}()
+
+	select {
+	case <-done:
+		// Normal completion.
+		return "", nil
+	case <-detach:
+		// UI requested detach — adopt the process into the background pool.
+		id, adoptErr := bgMgr.AdoptWithWait(cmd, stdoutPipe, stderrPipe, command, cmdWait)
+		if adoptErr != nil {
+			// Can't adopt (e.g., max processes reached) — fall back to
+			// waiting for normal completion. Not an error for the caller.
+			<-done
+			return "", nil //nolint:nilerr // intentional: adopt failure is non-fatal, run completes normally
+		}
+		return fmt.Sprintf("Process moved to background (id: %s, pid: %d).\n"+
+			"Use `bash_status` tool with id '%s' to check progress.\n"+
+			"You will receive a notification when the process completes.", id, cmd.Process.Pid, id), nil
+	}
 }
 
 // formatBashOutput combines stdout, stderr, and exit code into a clean text

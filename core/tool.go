@@ -20,13 +20,13 @@ const (
 
 // ToolDefinition describes a tool for the model.
 type ToolDefinition struct {
-	Name             string `json:"name"`
-	Description      string `json:"description,omitempty"`
-	ParametersSchema Schema `json:"parameters_schema"`
-	Kind             ToolKind `json:"kind"`
-	Strict           *bool  `json:"strict,omitempty"`
-	Sequential       bool   `json:"sequential,omitempty"`
-	OuterTypedDictKey string `json:"outer_typed_dict_key,omitempty"`
+	Name              string   `json:"name"`
+	Description       string   `json:"description,omitempty"`
+	ParametersSchema  Schema   `json:"parameters_schema"`
+	Kind              ToolKind `json:"kind"`
+	Strict            *bool    `json:"strict,omitempty"`
+	Sequential        bool     `json:"sequential,omitempty"`
+	OuterTypedDictKey string   `json:"outer_typed_dict_key,omitempty"`
 }
 
 // RunContext provides tools with access to agent run state.
@@ -43,6 +43,12 @@ type RunContext struct {
 	RunID        string         // unique run ID
 	RunStartTime time.Time      // when the current run started
 	EventBus     *EventBus      // event bus for agent coordination (nil if not configured)
+
+	// Detach is closed by the UI layer to signal that the currently running
+	// tool should move its work to the background and return immediately.
+	// Tools that support detach (e.g., bash) select on this channel alongside
+	// their blocking operation. Nil means detach is not supported.
+	Detach <-chan struct{}
 }
 
 // ToolHandler is the function that executes a tool.
@@ -72,12 +78,12 @@ type ToolResultValidatorFunc func(ctx context.Context, rc *RunContext, toolName 
 type Tool struct {
 	Definition       ToolDefinition
 	Handler          ToolHandler
-	MaxRetries       *int            // nil = use agent default
-	RequiresApproval bool            // if true, the agent's ToolApprovalFunc must approve before execution
-	PrepareFunc      ToolPrepareFunc // if set, called before each model request to filter/modify this tool
-	Stateful         StatefulTool    // if set, state is saved/restored with checkpoints
+	MaxRetries       *int                    // nil = use agent default
+	RequiresApproval bool                    // if true, the agent's ToolApprovalFunc must approve before execution
+	PrepareFunc      ToolPrepareFunc         // if set, called before each model request to filter/modify this tool
+	Stateful         StatefulTool            // if set, state is saved/restored with checkpoints
 	ResultValidator  ToolResultValidatorFunc // if set, validates tool results before passing to model
-	Timeout          time.Duration   // if > 0, tool execution is limited to this duration
+	Timeout          time.Duration           // if > 0, tool execution is limited to this duration
 }
 
 // ToolOption configures a tool via functional options.

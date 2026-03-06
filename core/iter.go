@@ -38,6 +38,7 @@ func (a *Agent[T]) Iter(ctx context.Context, prompt string, opts ...RunOption) *
 		toolRetries: make(map[string]int),
 		runID:       newRunID(),
 		startTime:   time.Now(),
+		detach:      cfg.detach,
 	}
 	if len(cfg.messages) > 0 {
 		state.messages = make([]ModelMessage, len(cfg.messages))

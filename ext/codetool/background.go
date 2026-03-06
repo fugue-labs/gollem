@@ -291,6 +291,70 @@ func (m *BackgroundProcessManager) setExitStatus(proc *BackgroundProcess, waitEr
 		proc.ID, proc.PID, proc.ExitCode)
 }
 
+// Adopt takes ownership of an already-running process, assigning it a
+// background ID and wiring up a wait goroutine for status tracking.
+// This is used when a foreground bash command is detached to the background
+// (e.g., via a UI "move to background" action).
+//
+// The caller must have already called cmd.Start(). The provided stdout and
+// stderr readers will be drained into ring buffers by scanner goroutines.
+func (m *BackgroundProcessManager) Adopt(cmd *exec.Cmd, stdout, stderr io.Reader, command string) (string, error) {
+	return m.AdoptWithWait(cmd, stdout, stderr, command, cmd.Wait)
+}
+
+// AdoptWithWait is like Adopt but accepts a custom wait function. This is used
+// when cmd.Wait is shared with another goroutine via sync.Once to prevent
+// data races on the exec.Cmd.
+func (m *BackgroundProcessManager) AdoptWithWait(cmd *exec.Cmd, stdout, stderr io.Reader, command string, waitFn func() error) (string, error) {
+	m.mu.Lock()
+
+	running := 0
+	for _, p := range m.processes {
+		if p.Status == processRunning {
+			running++
+		}
+	}
+	if running >= maxBackgroundProcesses {
+		m.mu.Unlock()
+		return "", &core.ModelRetryError{
+			Message: fmt.Sprintf("maximum concurrent background processes (%d) reached. "+
+				"Use bash_status with id='all' to check existing processes.", maxBackgroundProcesses),
+		}
+	}
+
+	m.counter++
+	id := fmt.Sprintf("bg-%d", m.counter)
+	proc := &BackgroundProcess{
+		ID:        id,
+		PID:       cmd.Process.Pid,
+		Command:   command,
+		StartedAt: time.Now(),
+		Status:    processRunning,
+		Stdout:    NewRingBuffer(ringBufferCapacity),
+		Stderr:    NewRingBuffer(ringBufferCapacity),
+		cmd:       cmd,
+	}
+	m.processes[id] = proc
+	m.mu.Unlock()
+
+	// Drain stdout/stderr into ring buffers.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); scanToBuffer(stdout, proc.Stdout) }()
+	go func() { defer wg.Done(); scanToBuffer(stderr, proc.Stderr) }()
+
+	go func() {
+		wg.Wait()
+		waitErr := waitFn()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.setExitStatus(proc, waitErr)
+	}()
+
+	fmt.Fprintf(os.Stderr, "[gollem] background:%s adopted (pid %d)\n", id, proc.PID)
+	return id, nil
+}
+
 // CompletionPrompt returns a dynamic system prompt message for any background
 // processes that have completed since the last call. It marks notified
 // processes so each completion is reported only once.
