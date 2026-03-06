@@ -661,7 +661,16 @@ func runWithDetach(cmd *exec.Cmd, stdout, stderr *bytes.Buffer, detach <-chan st
 		return "", nil
 	case <-detach:
 		// UI requested detach — adopt the process into the background pool.
-		id, adoptErr := bgMgr.AdoptWithWait(cmd, stdoutPipe, stderrPipe, command, cmdWait)
+		// Replace cmd.Cancel so the parent's context timeout doesn't kill
+		// the adopted process when the tool returns and deferred cancel()
+		// fires. Return os.ErrProcessDone to tell Go's watchCtx "the process
+		// is already handled" — this prevents it from injecting a context
+		// error into cmd.Wait's return value.
+		cmd.Cancel = func() error { return os.ErrProcessDone }
+		// Use AdoptWaitOnly (no pipe readers) because the io.Copy
+		// goroutines above already hold the pipe readers. Starting
+		// concurrent readers on the same pipes would race.
+		id, adoptErr := bgMgr.AdoptWaitOnly(cmd, command, cmdWait)
 		if adoptErr != nil {
 			// Can't adopt (e.g., max processes reached) — fall back to
 			// waiting for normal completion. Not an error for the caller.
