@@ -1,0 +1,17 @@
+# Terminal Agent Configuration
+# This file is optimized by the autoeval harness. DO NOT edit manually during a run.
+
+model:
+  provider: ollama
+  name: qwen3:70b
+  temperature: 0.0
+  max_tokens: 4096
+
+agent:
+  max_turns: 50
+  timeout_minutes: 10
+
+strategy:
+  planning: true
+  retry_on_error: true
+  max_retries: 3
