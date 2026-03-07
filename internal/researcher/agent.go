@@ -23,7 +23,7 @@ func NewResearcherAgent(cfg Config) *core.Agent[ExperimentResult] {
 
 	return core.NewAgent[ExperimentResult](model,
 		// Identity
-		core.WithSystemPrompt[ExperimentResult](researcherSystemPrompt),
+		core.WithSystemPrompt[ExperimentResult](BuildSystemPrompt(cfg.SubjectDir)),
 
 		// Tools — the researcher's capabilities
 		core.WithTools[ExperimentResult](BuildTools(cfg)...),

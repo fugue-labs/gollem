@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fugue-labs/gollem/internal/researcher"
+	"github.com/fugue-labs/gollem/internal/autoeval"
 )
 
 // Run executes a Terminal Bench evaluation and returns parsed results.
 // mode is "fast" (subset of tasks) or "full" (all tasks).
-func Run(ctx context.Context, mode string, cfg researcher.Config) (*researcher.EvalOutput, error) {
+func Run(ctx context.Context, mode string, cfg autoeval.Config) (*autoeval.EvalOutput, error) {
 	cmd := cfg.EvalCommand
 	cmd = strings.ReplaceAll(cmd, "{mode}", mode)
 
@@ -23,7 +23,7 @@ func Run(ctx context.Context, mode string, cfg researcher.Config) (*researcher.E
 	elapsed := time.Since(start)
 
 	if err != nil {
-		return &researcher.EvalOutput{
+		return &autoeval.EvalOutput{
 			PassRate:     0,
 			TasksPassed:  0,
 			TasksTotal:   taskCountForMode(mode),
@@ -33,7 +33,7 @@ func Run(ctx context.Context, mode string, cfg researcher.Config) (*researcher.E
 
 	result, parseErr := ParseResults(cfg.EvalResultsPath)
 	if parseErr != nil {
-		return &researcher.EvalOutput{
+		return &autoeval.EvalOutput{
 			PassRate:     0,
 			TasksPassed:  0,
 			TasksTotal:   taskCountForMode(mode),

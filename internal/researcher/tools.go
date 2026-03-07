@@ -40,17 +40,30 @@ type WriteFileParams struct {
 }
 
 func writeFileTool(subjectDir string) core.Tool {
+	// Resolve the subject directory to an absolute path once for safe comparison.
+	absSubjectDir, err := filepath.Abs(subjectDir)
+	if err != nil {
+		absSubjectDir = subjectDir
+	}
+
 	return core.FuncTool[WriteFileParams](
 		"write_file",
 		"Write content to a file. ONLY files in the subject directory can be modified.",
 		func(_ context.Context, p WriteFileParams) (string, error) {
-			if !strings.HasPrefix(p.Path, subjectDir+"/") && p.Path != subjectDir {
-				return "", fmt.Errorf("can only modify files in %s/, got: %s", subjectDir, p.Path)
+			// Resolve the requested path to absolute and clean it to prevent
+			// path traversal attacks (e.g., "autoeval-subject/../internal/eval/constants.go").
+			absPath, err := filepath.Abs(filepath.Clean(p.Path))
+			if err != nil {
+				return "", fmt.Errorf("resolve path: %w", err)
 			}
-			if err := os.MkdirAll(filepath.Dir(p.Path), 0o755); err != nil {
+			if !strings.HasPrefix(absPath, absSubjectDir+string(filepath.Separator)) && absPath != absSubjectDir {
+				return "", fmt.Errorf("can only modify files in %s/, got: %s (resolved: %s)", subjectDir, p.Path, absPath)
+			}
+			// Use the cleaned absolute path for actual I/O to prevent TOCTOU issues.
+			if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 				return "", fmt.Errorf("mkdir: %w", err)
 			}
-			if err := os.WriteFile(p.Path, []byte(p.Content), 0o644); err != nil {
+			if err := os.WriteFile(absPath, []byte(p.Content), 0o644); err != nil {
 				return "", fmt.Errorf("write: %w", err)
 			}
 			return fmt.Sprintf("wrote %d bytes to %s", len(p.Content), p.Path), nil
