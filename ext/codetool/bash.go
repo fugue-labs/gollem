@@ -741,12 +741,9 @@ func runWithDetach(cmd *exec.Cmd, detach <-chan struct{}, bgMgr *BackgroundProce
 		}, nil
 	case <-detach:
 		// UI requested detach — adopt the process into the background pool.
-		// Replace cmd.Cancel so the parent's context timeout doesn't kill
-		// the adopted process when the tool returns and deferred cancel()
-		// fires. Return os.ErrProcessDone to tell Go's watchCtx "the process
-		// is already handled" — this prevents it from injecting a context
-		// error into cmd.Wait's return value.
-		cmd.Cancel = func() error { return os.ErrProcessDone }
+		// Save the original cancel behavior so foreground fallback still
+		// honors timeouts if adoption fails (e.g., background pool full).
+		originalCancel := cmd.Cancel
 		id, adoptErr := bgMgr.adoptTrackedOutput(
 			cmd,
 			command,
@@ -757,6 +754,7 @@ func runWithDetach(cmd *exec.Cmd, detach <-chan struct{}, bgMgr *BackgroundProce
 		if adoptErr != nil {
 			// Can't adopt (e.g., max processes reached) — fall back to
 			// waiting for normal completion. Not an error for the caller.
+			cmd.Cancel = originalCancel
 			fmt.Fprintf(os.Stderr, "[gollem] bash: background adoption failed, continuing in foreground: %v\n", adoptErr)
 			<-done
 			return detachRunResult{
@@ -764,6 +762,12 @@ func runWithDetach(cmd *exec.Cmd, detach <-chan struct{}, bgMgr *BackgroundProce
 				stderr: stderrCapture.String(),
 			}, nil
 		}
+		// Replace cmd.Cancel so the parent's context timeout doesn't kill
+		// the adopted process when the tool returns and deferred cancel()
+		// fires. Return os.ErrProcessDone to tell Go's watchCtx "the process
+		// is already handled" — this prevents it from injecting a context
+		// error into cmd.Wait's return value.
+		cmd.Cancel = func() error { return os.ErrProcessDone }
 		stdoutCapture.StopForegroundCapture()
 		stderrCapture.StopForegroundCapture()
 		return detachRunResult{

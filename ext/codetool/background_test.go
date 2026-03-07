@@ -588,6 +588,36 @@ func TestBash_DetachPreservesOutputForBashStatus(t *testing.T) {
 	}
 }
 
+func TestBash_DetachFallbackStillHonorsTimeout(t *testing.T) {
+	mgr := NewBackgroundProcessManager()
+	defer mgr.Cleanup()
+	tool := Bash(WithBackgroundProcessManager(mgr))
+
+	for i := range maxBackgroundProcesses {
+		_, err := mgr.Start("", "sleep 60", false, 0)
+		if err != nil {
+			t.Fatalf("prefill background process %d failed: %v", i, err)
+		}
+	}
+
+	detach := make(chan struct{})
+	close(detach)
+
+	ctx := context.Background()
+	rc := &core.RunContext{Detach: detach}
+	result, err := tool.Handler(ctx, rc, `{"command":"sleep 3","timeout":1}`)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	resultStr, ok := result.(string)
+	if !ok {
+		t.Fatalf("expected string result, got %T", result)
+	}
+	if !strings.Contains(resultStr, "timed out") {
+		t.Fatalf("expected foreground fallback to honor timeout, got: %s", resultStr)
+	}
+}
+
 func TestBash_NoDetachRunsNormally(t *testing.T) {
 	mgr := NewBackgroundProcessManager()
 	defer mgr.Cleanup()
