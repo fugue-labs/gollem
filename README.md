@@ -225,6 +225,69 @@ result, err := agent.Run(ctx, "Analyze Q4 earnings report")
 // tracker.TotalCost() — cumulative cost across all runs
 ```
 
+### Coding Agent Background Processes
+
+The `ext/codetool` package can start long-running commands in the background, surface status through a companion tool, and adopt already-started processes into the same tracking pool.
+
+Use `codetool.Toolset(...)` when you want the background lifecycle wired automatically. It installs both `bash` and `bash_status`, cleans up non-`keep_alive` processes at run end, and injects completion notifications back into the agent loop.
+
+```go
+import (
+    "github.com/fugue-labs/gollem/ext/codetool"
+)
+
+ts := codetool.Toolset(
+    codetool.WithWorkDir("/repo"),
+)
+
+agent := gollem.NewAgent[string](model,
+    gollem.WithToolsets[string](ts),
+)
+
+// The model can now call:
+//   bash({"command":"npm run dev","background":true,"keep_alive":true})
+//   bash_status({"id":"all"})
+```
+
+If you assemble tools manually, pass a shared `BackgroundProcessManager` so `bash` and `bash_status` see the same process pool:
+
+```go
+mgr := codetool.NewBackgroundProcessManager()
+
+agent := gollem.NewAgent[string](model,
+    gollem.WithTools[string](
+        codetool.Bash(
+            codetool.WithWorkDir("/repo"),
+            codetool.WithBackgroundProcessManager(mgr),
+        ),
+        codetool.BashStatus(
+            codetool.WithBackgroundProcessManager(mgr),
+        ),
+    ),
+)
+defer mgr.Cleanup()
+```
+
+`BackgroundProcessManager.Adopt(...)` and `AdoptWithWait(...)` are the lower-level APIs for callers that start a process themselves and then want gollem to track it:
+
+```go
+cmd := exec.CommandContext(ctx, "bash", "-c", "long-running-command")
+stdout, _ := cmd.StdoutPipe()
+stderr, _ := cmd.StderrPipe()
+if err := cmd.Start(); err != nil {
+    return err
+}
+
+id, err := mgr.Adopt(cmd, stdout, stderr, "long-running-command")
+if err != nil {
+    return err
+}
+
+fmt.Println("tracking process as", id)
+```
+
+Use `AdoptWithWait(...)` instead when your code already wraps `cmd.Wait()` behind a shared `waitFn` and you need the manager to reuse that function instead of calling `cmd.Wait()` directly.
+
 ### Multi-Agent Team Swarm
 
 Spawn concurrent teammates that coordinate through mailboxes and a shared task board. Each teammate gets a dynamically generated personality tailored to its specific task — the LLM itself writes the system prompt.

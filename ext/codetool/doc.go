@@ -9,6 +9,7 @@
 // The package provides the following tools:
 //
 //   - BashTool: Execute shell commands with timeout and working directory support
+//   - BashStatusTool: Inspect background processes started or adopted by BashTool
 //   - ViewTool: Read file contents with optional line range selection
 //   - WriteTool: Create or overwrite files
 //   - EditTool: Apply surgical string replacements to files
@@ -25,6 +26,21 @@
 //	agent := core.NewAgent(model, "You are a coding agent.", core.WithToolsets[string](ts))
 //
 //	// Individual tools with options
-//	bash := codetool.Bash(codetool.WithWorkDir("/my/project"), codetool.WithBashTimeout(30*time.Second))
-//	agent := core.NewAgent(model, "You are a coding agent.", core.WithTools(bash, codetool.View(), codetool.Edit()))
+//	mgr := codetool.NewBackgroundProcessManager()
+//	bash := codetool.Bash(
+//		codetool.WithWorkDir("/my/project"),
+//		codetool.WithBashTimeout(30*time.Second),
+//		codetool.WithBackgroundProcessManager(mgr),
+//	)
+//	status := codetool.BashStatus(codetool.WithBackgroundProcessManager(mgr))
+//	agent := core.NewAgent(model, "You are a coding agent.", core.WithTools(bash, status, codetool.View(), codetool.Edit()))
+//
+// Background process support is available in two layers:
+//
+//   - Tool-level: call Bash with `background=true` and query progress with BashStatus.
+//     When you construct tools manually, pass a shared BackgroundProcessManager via
+//     WithBackgroundProcessManager so both tools reference the same process pool.
+//   - Manager-level: if you start a process yourself, hand it to
+//     BackgroundProcessManager.Adopt or AdoptWithWait so the manager assigns an ID,
+//     captures output, tracks completion, and exposes status through BashStatus.
 package codetool
