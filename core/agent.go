@@ -451,11 +451,11 @@ func (a *Agent[T]) Run(ctx context.Context, prompt string, opts ...RunOption) (*
 		}
 	}
 
-	// Inject RunID into context so child agents (subagents, teammates,
-	// AgentTool) can discover their parent agent's tracing state.
-	ctx = ContextWithRunID(ctx, state.runID)
-
-	// Fire OnRunStart hooks.
+	// Fire OnRunStart hooks BEFORE injecting this run's RunID into context.
+	// This ordering is critical: hooks need to see the PARENT's RunID in
+	// context (if any) to establish parent-child span relationships. After
+	// hooks fire, we inject this run's RunID so that tool handlers (which
+	// may spawn child agents) propagate the correct parent identity.
 	rc := &RunContext{
 		Deps:         deps,
 		Usage:        state.usage,
@@ -475,6 +475,11 @@ func (a *Agent[T]) Run(ctx context.Context, prompt string, opts ...RunOption) (*
 			h.OnRunStart(ctx, rc, prompt)
 		}
 	})
+
+	// Inject this run's RunID into context so child agents (subagents,
+	// teammates, AgentTool) can discover their parent agent's tracing state.
+	// Must come AFTER OnRunStart so hooks see the parent's RunID.
+	ctx = ContextWithRunID(ctx, state.runID)
 
 	result, runErr := a.runLoop(ctx, state, prompt, settings, limits, deps, cfg.deferredResults, cfg.initialRequestParts)
 

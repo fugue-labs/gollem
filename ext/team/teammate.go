@@ -101,11 +101,23 @@ func (tm *Teammate) run(ctx context.Context, initialTask string) {
 	prompt := initialTask
 	consecutiveErrors := 0
 
+	// Clear the parent's ToolCallID after the first run so that subsequent
+	// runs (triggered by mailbox messages) don't nest under the original
+	// spawn_teammate tool span. The first run correctly nests; later runs
+	// create independent spans under the teammate's own trace context.
+	firstRun := true
+
 	for {
 		tm.setState(TeammateRunning)
 		fmt.Fprintf(os.Stderr, "[gollem] team:%s teammate:%s running\n", tm.team.name, tm.name)
 
-		result, err := tm.agent.Run(ctx, prompt)
+		runCtx := ctx
+		if !firstRun {
+			runCtx = core.ContextWithToolCallID(ctx, "")
+		}
+		firstRun = false
+
+		result, err := tm.agent.Run(runCtx, prompt)
 		if err != nil {
 			if ctx.Err() != nil {
 				// Context cancelled — shut down.

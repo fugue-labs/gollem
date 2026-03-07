@@ -744,6 +744,201 @@ func TestTracingHooksNoParentForTopLevelRun(t *testing.T) {
 	t.Fatal("agent.run span not found")
 }
 
+// TestTracingHooksTeammateRerunNoStaleParent verifies that a teammate's
+// second run (after wake) does NOT nest under the original spawn_teammate
+// tool span when the ToolCallID has been cleared.
+func TestTracingHooksTeammateRerunNoStaleParent(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+
+	// --- Parent (leader) ---
+	parentRC := &core.RunContext{
+		RunID:      "leader-run",
+		ToolCallID: "spawn-call-1",
+	}
+	hook.OnRunStart(ctx, parentRC, "lead")
+	hook.OnTurnStart(ctx, parentRC, 1)
+	hook.OnToolStart(ctx, parentRC, "spawn_teammate", `{"name":"w"}`)
+
+	// First run context (has both RunID and ToolCallID).
+	firstCtx := core.ContextWithRunID(ctx, "leader-run")
+	firstCtx = core.ContextWithToolCallID(firstCtx, "spawn-call-1")
+
+	hook.OnToolEnd(ctx, parentRC, "spawn_teammate", `{"status":"spawned"}`, nil)
+
+	// --- Teammate first run (should nest) ---
+	tmRC1 := &core.RunContext{RunID: "tm-run-1"}
+	hook.OnRunStart(firstCtx, tmRC1, "first task")
+	hook.OnRunEnd(firstCtx, tmRC1, nil, nil)
+
+	// --- Teammate second run (ToolCallID cleared — should NOT nest) ---
+	secondCtx := core.ContextWithToolCallID(firstCtx, "")
+	tmRC2 := &core.RunContext{RunID: "tm-run-2"}
+	hook.OnRunStart(secondCtx, tmRC2, "second task")
+	hook.OnRunEnd(secondCtx, tmRC2, nil, nil)
+
+	hook.OnTurnEnd(ctx, parentRC, 1, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, parentRC, nil, nil)
+
+	spans := exporter.GetSpans()
+
+	var spawnToolSpanID string
+	var firstRunParentID, secondRunParentID string
+	var secondRunHasParent bool
+
+	for _, s := range spans {
+		if s.Name == SpanToolExecute+".spawn_teammate" {
+			spawnToolSpanID = s.SpanContext.SpanID().String()
+		}
+		if s.Name == SpanAgentRun {
+			attrs := spanAttrs(s)
+			switch attrs[AttrAgentRunID] {
+			case "tm-run-1":
+				firstRunParentID = s.Parent.SpanID().String()
+			case "tm-run-2":
+				secondRunParentID = s.Parent.SpanID().String()
+				secondRunHasParent = s.Parent.SpanID().IsValid()
+			}
+		}
+	}
+
+	// First run should nest under spawn_teammate.
+	if firstRunParentID != spawnToolSpanID {
+		t.Errorf("first run should be child of spawn_teammate: got %s, want %s",
+			firstRunParentID, spawnToolSpanID)
+	}
+
+	// Second run should NOT have a valid parent (no stale nesting).
+	if secondRunHasParent {
+		t.Errorf("second run should be root span, got parent=%s", secondRunParentID)
+	}
+}
+
+// TestTracingHooksParentDeletedBeforeChild verifies graceful degradation when
+// the parent's run state is deleted before the child's onRunStart fires.
+func TestTracingHooksParentDeletedBeforeChild(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+
+	// Parent starts and ends immediately.
+	parentRC := &core.RunContext{
+		RunID:      "fast-parent",
+		ToolCallID: "tool-1",
+	}
+	hook.OnRunStart(ctx, parentRC, "fast")
+	hook.OnTurnStart(ctx, parentRC, 1)
+	hook.OnToolStart(ctx, parentRC, "spawn", `{}`)
+	hook.OnToolEnd(ctx, parentRC, "spawn", `{}`, nil)
+	hook.OnTurnEnd(ctx, parentRC, 1, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, parentRC, nil, nil) // Deletes parent state
+
+	// Child starts AFTER parent state is gone.
+	childCtx := core.ContextWithRunID(ctx, "fast-parent")
+	childCtx = core.ContextWithToolCallID(childCtx, "tool-1")
+	childRC := &core.RunContext{RunID: "orphan-child"}
+	hook.OnRunStart(childCtx, childRC, "orphaned task")
+	hook.OnRunEnd(childCtx, childRC, nil, nil)
+
+	spans := exporter.GetSpans()
+	for _, s := range spans {
+		if s.Name == SpanAgentRun {
+			attrs := spanAttrs(s)
+			if attrs[AttrAgentRunID] == "orphan-child" {
+				// Should be a root span (no parent), not crash.
+				if s.Parent.SpanID().IsValid() {
+					t.Errorf("orphaned child should be root span, got parent=%s",
+						s.Parent.SpanID())
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("orphan-child agent.run span not found")
+}
+
+// TestTracingHooksNestedDelegation verifies a 3-level trace hierarchy:
+// leader → teammate → delegate (grandchild).
+func TestTracingHooksNestedDelegation(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+
+	// Level 1: Leader
+	leaderRC := &core.RunContext{RunID: "leader", ToolCallID: "spawn-1"}
+	hook.OnRunStart(ctx, leaderRC, "lead")
+	hook.OnTurnStart(ctx, leaderRC, 1)
+	hook.OnToolStart(ctx, leaderRC, "spawn_teammate", `{}`)
+
+	leaderCtx := core.ContextWithRunID(ctx, "leader")
+	leaderCtx = core.ContextWithToolCallID(leaderCtx, "spawn-1")
+
+	hook.OnToolEnd(ctx, leaderRC, "spawn_teammate", `{}`, nil)
+
+	// Level 2: Teammate (child of leader's spawn)
+	tmRC := &core.RunContext{RunID: "teammate", ToolCallID: "delegate-1"}
+	hook.OnRunStart(leaderCtx, tmRC, "subtask")
+	// After onRunStart, agent.Run sets RunID = "teammate" in ctx for tool handlers
+	tmCtx := core.ContextWithRunID(leaderCtx, "teammate")
+	hook.OnTurnStart(tmCtx, tmRC, 1)
+	hook.OnToolStart(tmCtx, tmRC, "delegate", `{"task":"deep"}`)
+
+	delegateCtx := core.ContextWithToolCallID(tmCtx, "delegate-1")
+
+	// Level 3: Delegate (grandchild of leader, child of teammate)
+	delegateRC := &core.RunContext{RunID: "grandchild"}
+	hook.OnRunStart(delegateCtx, delegateRC, "deep work")
+	hook.OnRunEnd(delegateCtx, delegateRC, nil, nil)
+
+	hook.OnToolEnd(tmCtx, tmRC, "delegate", "result", nil)
+	hook.OnTurnEnd(tmCtx, tmRC, 1, &core.ModelResponse{})
+	hook.OnRunEnd(tmCtx, tmRC, nil, nil)
+	hook.OnTurnEnd(ctx, leaderRC, 1, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, leaderRC, nil, nil)
+
+	spans := exporter.GetSpans()
+
+	spanMap := make(map[string]tracetest.SpanStub)
+	for _, s := range spans {
+		if s.Name == SpanAgentRun {
+			attrs := spanAttrs(s)
+			if runID, ok := attrs[AttrAgentRunID].(string); ok {
+				spanMap[runID] = s
+			}
+		}
+		if s.Name == SpanToolExecute+".spawn_teammate" {
+			spanMap["tool:spawn"] = s
+		}
+		if s.Name == SpanToolExecute+".delegate" {
+			spanMap["tool:delegate"] = s
+		}
+	}
+
+	// Teammate's root should be child of leader's spawn_teammate tool span.
+	tmSpan := spanMap["teammate"]
+	spawnToolSpan := spanMap["tool:spawn"]
+	if tmSpan.Parent.SpanID() != spawnToolSpan.SpanContext.SpanID() {
+		t.Errorf("teammate should be child of spawn_teammate tool span")
+	}
+
+	// Grandchild's root should be child of teammate's delegate tool span.
+	gcSpan := spanMap["grandchild"]
+	delegateToolSpan := spanMap["tool:delegate"]
+	if gcSpan.Parent.SpanID() != delegateToolSpan.SpanContext.SpanID() {
+		t.Errorf("grandchild should be child of delegate tool span")
+	}
+
+	// All spans should share the same trace ID.
+	traceIDs := make(map[string]bool)
+	for _, s := range spans {
+		traceIDs[s.SpanContext.TraceID().String()] = true
+	}
+	if len(traceIDs) != 1 {
+		t.Errorf("expected all spans in same trace, got %d distinct trace IDs", len(traceIDs))
+	}
+}
+
 // spanAttrs converts a span's attributes to a map for easy lookup.
 func spanAttrs(s tracetest.SpanStub) map[string]any {
 	m := make(map[string]any)
