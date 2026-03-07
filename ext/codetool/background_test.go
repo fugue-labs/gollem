@@ -409,6 +409,22 @@ func TestBash_BackgroundFalseRunsForeground(t *testing.T) {
 	}
 }
 
+func TestBash_NilRunContextRunsNormally(t *testing.T) {
+	tool := Bash()
+
+	result, err := tool.Handler(context.Background(), nil, `{"command":"echo nil-rc"}`)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	resultStr, ok := result.(string)
+	if !ok {
+		t.Fatalf("expected string result, got %T", result)
+	}
+	if !strings.Contains(resultStr, "nil-rc") {
+		t.Errorf("expected normal output, got: %s", resultStr)
+	}
+}
+
 // --- BashStatus Tool Tests ---
 
 func TestBashStatus_All(t *testing.T) {
@@ -534,6 +550,44 @@ func TestBash_DetachMovesToBackground(t *testing.T) {
 	}
 }
 
+func TestBash_DetachPreservesOutputForBashStatus(t *testing.T) {
+	mgr := NewBackgroundProcessManager()
+	defer mgr.Cleanup()
+	tool := Bash(WithBackgroundProcessManager(mgr))
+
+	detach := make(chan struct{})
+	close(detach)
+
+	ctx := context.Background()
+	rc := &core.RunContext{Detach: detach}
+	result, err := tool.Handler(ctx, rc, `{"command":"for i in 1 2 3; do echo line-$i; sleep 0.2; done"}`)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	resultStr := result.(string)
+	if !strings.Contains(resultStr, "moved to background") {
+		t.Fatalf("expected detach result, got: %s", resultStr)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		status, err := mgr.FormatProcess("bg-1")
+		if err != nil {
+			t.Fatalf("FormatProcess failed: %v", err)
+		}
+		if strings.Contains(status, "completed") {
+			if !strings.Contains(status, "line-1") || !strings.Contains(status, "line-3") {
+				t.Fatalf("expected detached output to remain available, got: %s", status)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for detached process to complete")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func TestBash_NoDetachRunsNormally(t *testing.T) {
 	mgr := NewBackgroundProcessManager()
 	defer mgr.Cleanup()
@@ -578,5 +632,41 @@ func TestBash_DetachNotFiredRunsNormally(t *testing.T) {
 	all := mgr.FormatAll()
 	if all != "No background processes." {
 		t.Errorf("expected no background processes, got: %s", all)
+	}
+}
+
+func TestToolset_CleansUpBackgroundProcessesOnRunEnd(t *testing.T) {
+	mgr := NewBackgroundProcessManager()
+	defer mgr.Cleanup()
+	model := core.NewTestModel(
+		core.ToolCallResponse("bash", `{"command":"sleep 60","background":true}`),
+		core.TextResponse("done"),
+	)
+
+	agent := core.NewAgent[string](model,
+		core.WithToolsets[string](Toolset(WithBackgroundProcessManager(mgr))),
+	)
+
+	result, err := agent.Run(context.Background(), "start a background process")
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		status, err := mgr.FormatProcess("bg-1")
+		if err != nil {
+			t.Fatalf("FormatProcess failed: %v", err)
+		}
+		if !strings.Contains(status, "running") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background process was not cleaned up after run end: %s", status)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

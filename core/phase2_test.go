@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -677,6 +678,62 @@ func TestToolset(t *testing.T) {
 	}
 	if result.Output != "Result is 3." {
 		t.Errorf("output = %q", result.Output)
+	}
+}
+
+func TestToolset_PropagatesHooksAndDynamicSystemPrompts(t *testing.T) {
+	model := NewTestModel(TextResponse("ok"))
+
+	var hookCalled atomic.Bool
+	ts := &Toolset{
+		Name: "with-metadata",
+		Hooks: []Hook{
+			{
+				OnRunEnd: func(_ context.Context, _ *RunContext, _ []ModelMessage, _ error) {
+					hookCalled.Store(true)
+				},
+			},
+		},
+		DynamicSystemPrompts: []SystemPromptFunc{
+			func(_ context.Context, _ *RunContext) (string, error) {
+				return "toolset dynamic prompt", nil
+			},
+		},
+	}
+
+	agent := NewAgent[string](model,
+		WithToolsets[string](ts),
+	)
+
+	result, err := agent.Run(context.Background(), "Hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want 'ok'", result.Output)
+	}
+	if !hookCalled.Load() {
+		t.Fatal("expected toolset hook to fire")
+	}
+
+	calls := model.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 model call, got %d", len(calls))
+	}
+	req, ok := calls[0].Messages[0].(ModelRequest)
+	if !ok {
+		t.Fatal("expected ModelRequest")
+	}
+	foundPrompt := false
+	for _, part := range req.Parts {
+		sp, ok := part.(SystemPromptPart)
+		if ok && strings.Contains(sp.Content, "toolset dynamic prompt") {
+			foundPrompt = true
+			break
+		}
+	}
+	if !foundPrompt {
+		t.Fatal("expected toolset dynamic system prompt in request")
 	}
 }
 

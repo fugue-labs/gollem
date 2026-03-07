@@ -1287,6 +1287,32 @@ func TestAllTools_Count(t *testing.T) {
 	}
 }
 
+func TestAllTools_BackgroundRequiresExplicitManager(t *testing.T) {
+	tools := AllTools()
+
+	var bashTool core.Tool
+	var bashStatusTool core.Tool
+	for _, tool := range tools {
+		switch tool.Definition.Name {
+		case "bash":
+			bashTool = tool
+		case "bash_status":
+			bashStatusTool = tool
+		}
+	}
+
+	if bashTool.Definition.Name == "" || bashStatusTool.Definition.Name == "" {
+		t.Fatal("expected bash and bash_status tools")
+	}
+
+	if err := callErr(t, bashTool, `{"command":"echo test","background":true}`); err == nil {
+		t.Fatal("expected background bash to require an explicit manager")
+	}
+	if err := callErr(t, bashStatusTool, `{"id":"all"}`); err == nil {
+		t.Fatal("expected bash_status to require an explicit manager")
+	}
+}
+
 func TestToolset_WithOptions(t *testing.T) {
 	dir := setupTestDir(t)
 	ts := Toolset(WithWorkDir(dir))

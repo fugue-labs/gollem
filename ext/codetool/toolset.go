@@ -19,26 +19,45 @@ import (
 // Use this to add the full suite of coding tools to an agent:
 //
 //	ts := codetool.Toolset(codetool.WithWorkDir("/my/project"))
-//	agent := core.NewAgent(model, "...", core.WithToolset(ts))
+//	agent := core.NewAgent(model, "...", core.WithToolsets[string](ts))
 func Toolset(opts ...Option) *core.Toolset {
 	opts = ensureBackgroundManager(opts)
-	return core.NewToolset("codetool",
-		Bash(opts...),
-		BashStatus(opts...),
-		View(opts...),
-		Write(opts...),
-		Edit(opts...),
-		MultiEdit(opts...),
-		Grep(opts...),
-		Glob(opts...),
-		Ls(opts...),
-		LSP(opts...),
-	)
+	cfg := applyOpts(opts)
+
+	return &core.Toolset{
+		Name: "codetool",
+		Tools: []core.Tool{
+			Bash(opts...),
+			BashStatus(opts...),
+			View(opts...),
+			Write(opts...),
+			Edit(opts...),
+			MultiEdit(opts...),
+			Grep(opts...),
+			Glob(opts...),
+			Ls(opts...),
+			LSP(opts...),
+		},
+		Hooks: []core.Hook{
+			{
+				OnRunEnd: func(_ context.Context, _ *core.RunContext, _ []core.ModelMessage, _ error) {
+					cfg.BackgroundProcessManager.Cleanup()
+				},
+			},
+		},
+		DynamicSystemPrompts: []core.SystemPromptFunc{
+			cfg.BackgroundProcessManager.CompletionPrompt,
+		},
+	}
 }
 
 // AllTools returns all coding agent tools as a slice.
+//
+// Background process management is only auto-wired for [Toolset] and
+// [AgentOptions], which can also attach cleanup hooks and completion prompts.
+// If you use AllTools directly and need background=true/bash_status support,
+// provide an explicit BackgroundProcessManager and handle cleanup yourself.
 func AllTools(opts ...Option) []core.Tool {
-	opts = ensureBackgroundManager(opts)
 	return []core.Tool{
 		Bash(opts...),
 		BashStatus(opts...),
@@ -79,7 +98,6 @@ func AgentOptions(workDir string, toolOpts ...Option) []core.AgentOption[string]
 	// Ensure shared background process manager for all tools.
 	toolOpts = ensureBackgroundManager(toolOpts)
 	cfg := applyOpts(toolOpts)
-	bgMgr := cfg.BackgroundProcessManager
 	verifyMW, verifyValidator := VerificationCheckpoint(workDir, cfg.Timeout)
 	var kickoffMW core.AgentMiddleware
 	if cfg.Model != nil {
@@ -228,7 +246,6 @@ func AgentOptions(workDir string, toolOpts ...Option) []core.AgentOption[string]
 				fmt.Fprintf(os.Stderr, "[gollem] run started: %s\n", prompt)
 			},
 			OnRunEnd: func(_ context.Context, _ *core.RunContext, _ []core.ModelMessage, err error) {
-				bgMgr.Cleanup()
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "[gollem] run ended with error: %v\n", err)
 				} else {
@@ -263,9 +280,6 @@ func AgentOptions(workDir string, toolOpts ...Option) []core.AgentOption[string]
 			},
 		}),
 	)
-
-	// Dynamic system prompt: inject background process completion notifications.
-	opts = append(opts, core.WithDynamicSystemPrompt[string](bgMgr.CompletionPrompt))
 
 	if kickoffMW != nil {
 		// Keep kickoff outside the fixed append block so middleware state

@@ -229,6 +229,17 @@ func WithMaxConcurrency[T any](n int) AgentOption[T] {
 func WithToolsets[T any](toolsets ...*Toolset) AgentOption[T] {
 	return func(a *Agent[T]) {
 		a.toolsets = append(a.toolsets, toolsets...)
+		for _, ts := range toolsets {
+			if ts == nil {
+				continue
+			}
+			if len(ts.Hooks) > 0 {
+				a.hooks = append(a.hooks, ts.Hooks...)
+			}
+			if len(ts.DynamicSystemPrompts) > 0 {
+				a.dynamicSystemPrompts = append(a.dynamicSystemPrompts, ts.DynamicSystemPrompts...)
+			}
+		}
 	}
 }
 

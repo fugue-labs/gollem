@@ -209,13 +209,15 @@ func Bash(opts ...Option) core.Tool {
 			retried := false
 
 			// Determine if detach is available for this execution.
-			canDetach := rc.Detach != nil && cfg.BackgroundProcessManager != nil
+			var detach <-chan struct{}
+			if rc != nil {
+				detach = rc.Detach
+			}
+			canDetach := detach != nil && cfg.BackgroundProcessManager != nil
 
 			for attempt := range 2 {
 				var stdout, stderr bytes.Buffer
 				if attempt == 0 {
-					// Only set cmd.Stdout/Stderr when NOT using detach path.
-					// The detach path uses pipes instead (set inside runWithDetach).
 					if !canDetach {
 						cmd.Stdout = &stdout
 						cmd.Stderr = &stderr
@@ -243,16 +245,30 @@ func Bash(opts ...Option) core.Tool {
 					time.Sleep(2 * time.Second)
 				}
 
-				// Detach-aware execution: when a detach channel is available,
-				// use cmd.Start() + pipes so the process can be adopted by the
-				// background manager mid-flight. Otherwise use cmd.Run().
-				detachResult, detachErr := runWithDetach(cmd, &stdout, &stderr, rc.Detach, cfg.BackgroundProcessManager, params.Command)
-				if detachErr != nil {
-					return "", detachErr
-				}
-				if detachResult != "" {
-					// Process was detached to background.
-					return detachResult, nil
+				if canDetach {
+					// Detach-aware execution: when a detach channel is available,
+					// use cmd.Start() + pipes so the process can be adopted by the
+					// background manager mid-flight.
+					detachResult, detachErr := runWithDetach(cmd, detach, cfg.BackgroundProcessManager, params.Command)
+					if detachErr != nil {
+						return "", detachErr
+					}
+					if detachResult.detachedMessage != "" {
+						// Process was detached to background.
+						return detachResult.detachedMessage, nil
+					}
+					outStr = detachResult.stdout
+					errStr = detachResult.stderr
+				} else {
+					err := cmd.Run()
+					if err != nil {
+						var exitErr *exec.ExitError
+						if !errors.As(err, &exitErr) {
+							return "", fmt.Errorf("failed to execute command: %w", err)
+						}
+					}
+					outStr = stdout.String()
+					errStr = stderr.String()
 				}
 
 				exitCode = 0
@@ -265,9 +281,6 @@ func Bash(opts ...Option) core.Tool {
 						exitCode = cmd.ProcessState.ExitCode()
 					}
 				}
-
-				outStr = stdout.String()
-				errStr = stderr.String()
 
 				// Auto-retry on transient failures (first attempt only).
 				// Pass the command so we can skip retries for non-install commands
@@ -599,40 +612,93 @@ func Bash(opts ...Option) core.Tool {
 	)
 }
 
-// runWithDetach executes a command with optional detach support. When detach is
-// non-nil, the command is started with pipes so it can be adopted by the
-// background manager if the detach channel closes during execution.
-//
-// Returns:
-//   - ("", nil) on normal completion (stdout/stderr are in the buffers)
-//   - (message, nil) when the process was detached to background
-//   - ("", err) on startup failure
-func runWithDetach(cmd *exec.Cmd, stdout, stderr *bytes.Buffer, detach <-chan struct{}, bgMgr *BackgroundProcessManager, command string) (string, error) {
-	if detach == nil || bgMgr == nil {
-		// No detach support — run normally.
-		err := cmd.Run()
-		if err != nil {
-			// Only return hard errors (not ExitError — those are handled by caller).
-			var exitErr *exec.ExitError
-			if !errors.As(err, &exitErr) {
-				return "", fmt.Errorf("failed to execute command: %w", err)
-			}
-		}
-		return "", nil
+type detachRunResult struct {
+	detachedMessage string
+	stdout          string
+	stderr          string
+}
+
+// streamCapture keeps full foreground output until a detach succeeds, while
+// continuously feeding a ring buffer for background status updates.
+type streamCapture struct {
+	mu       sync.Mutex
+	full     bytes.Buffer
+	ring     *RingBuffer
+	partial  []byte
+	keepFull bool
+}
+
+func newStreamCapture() *streamCapture {
+	return &streamCapture{
+		ring:     NewRingBuffer(ringBufferCapacity),
+		keepFull: true,
+	}
+}
+
+func (c *streamCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.keepFull {
+		_, _ = c.full.Write(p)
 	}
 
-	// Pipe-based execution for detach support.
+	c.partial = append(c.partial, p...)
+	for {
+		i := bytes.IndexByte(c.partial, '\n')
+		if i < 0 {
+			break
+		}
+		c.ring.WriteLine(strings.TrimSuffix(string(c.partial[:i]), "\r"))
+		c.partial = c.partial[i+1:]
+	}
+
+	return len(p), nil
+}
+
+func (c *streamCapture) Finalize() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if len(c.partial) == 0 {
+		return
+	}
+	c.ring.WriteLine(strings.TrimSuffix(string(c.partial), "\r"))
+	c.partial = nil
+}
+
+func (c *streamCapture) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.full.String()
+}
+
+func (c *streamCapture) RingBuffer() *RingBuffer {
+	return c.ring
+}
+
+func (c *streamCapture) StopForegroundCapture() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.keepFull = false
+	c.full.Reset()
+}
+
+// runWithDetach executes a command with detach support. The command is started
+// with pipes so it can be adopted by the background manager if the detach
+// channel closes during execution.
+func runWithDetach(cmd *exec.Cmd, detach <-chan struct{}, bgMgr *BackgroundProcessManager, command string) (detachRunResult, error) {
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", fmt.Errorf("stdout pipe: %w", err)
+		return detachRunResult{}, fmt.Errorf("stdout pipe: %w", err)
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		return "", fmt.Errorf("stderr pipe: %w", err)
+		return detachRunResult{}, fmt.Errorf("stderr pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("failed to start command: %w", err)
+		return detachRunResult{}, fmt.Errorf("failed to start command: %w", err)
 	}
 
 	// Wrap cmd.Wait in a sync.Once so it's safe for both the io goroutine
@@ -644,13 +710,24 @@ func runWithDetach(cmd *exec.Cmd, stdout, stderr *bytes.Buffer, detach <-chan st
 		return waitErr
 	}
 
+	stdoutCapture := newStreamCapture()
+	stderrCapture := newStreamCapture()
+
 	// Copy output in background goroutines.
 	done := make(chan error, 1)
 	go func() {
 		var wg sync.WaitGroup
 		wg.Add(2)
-		go func() { defer wg.Done(); _, _ = io.Copy(stdout, stdoutPipe) }()
-		go func() { defer wg.Done(); _, _ = io.Copy(stderr, stderrPipe) }()
+		go func() {
+			defer wg.Done()
+			defer stdoutCapture.Finalize()
+			_, _ = io.Copy(stdoutCapture, stdoutPipe)
+		}()
+		go func() {
+			defer wg.Done()
+			defer stderrCapture.Finalize()
+			_, _ = io.Copy(stderrCapture, stderrPipe)
+		}()
 		wg.Wait()
 		done <- cmdWait()
 	}()
@@ -658,7 +735,10 @@ func runWithDetach(cmd *exec.Cmd, stdout, stderr *bytes.Buffer, detach <-chan st
 	select {
 	case <-done:
 		// Normal completion.
-		return "", nil
+		return detachRunResult{
+			stdout: stdoutCapture.String(),
+			stderr: stderrCapture.String(),
+		}, nil
 	case <-detach:
 		// UI requested detach — adopt the process into the background pool.
 		// Replace cmd.Cancel so the parent's context timeout doesn't kill
@@ -667,19 +747,34 @@ func runWithDetach(cmd *exec.Cmd, stdout, stderr *bytes.Buffer, detach <-chan st
 		// is already handled" — this prevents it from injecting a context
 		// error into cmd.Wait's return value.
 		cmd.Cancel = func() error { return os.ErrProcessDone }
-		// Use AdoptWaitOnly (no pipe readers) because the io.Copy
-		// goroutines above already hold the pipe readers. Starting
-		// concurrent readers on the same pipes would race.
-		id, adoptErr := bgMgr.AdoptWaitOnly(cmd, command, cmdWait)
+		id, adoptErr := bgMgr.adoptTrackedOutput(
+			cmd,
+			command,
+			stdoutCapture.RingBuffer(),
+			stderrCapture.RingBuffer(),
+			cmdWait,
+		)
 		if adoptErr != nil {
 			// Can't adopt (e.g., max processes reached) — fall back to
 			// waiting for normal completion. Not an error for the caller.
 			<-done
-			return "", nil //nolint:nilerr // intentional: adopt failure is non-fatal, run completes normally
+			return detachRunResult{
+				stdout: stdoutCapture.String(),
+				stderr: stderrCapture.String(),
+			}, nil //nolint:nilerr // intentional: adopt failure is non-fatal, run completes normally
 		}
-		return fmt.Sprintf("Process moved to background (id: %s, pid: %d).\n"+
-			"Use `bash_status` tool with id '%s' to check progress.\n"+
-			"You will receive a notification when the process completes.", id, cmd.Process.Pid, id), nil
+		stdoutCapture.StopForegroundCapture()
+		stderrCapture.StopForegroundCapture()
+		return detachRunResult{
+			detachedMessage: fmt.Sprintf(
+				"Process moved to background (id: %s, pid: %d).\n"+
+					"Use `bash_status` tool with id '%s' to check progress.\n"+
+					"You will receive a notification when the process completes.",
+				id,
+				cmd.Process.Pid,
+				id,
+			),
+		}, nil
 	}
 }
 

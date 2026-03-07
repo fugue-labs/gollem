@@ -22,7 +22,7 @@
 //
 //	// All tools with defaults
 //	ts := codetool.Toolset()
-//	agent := core.NewAgent(model, "You are a coding agent.", core.WithToolset(ts))
+//	agent := core.NewAgent(model, "You are a coding agent.", core.WithToolsets[string](ts))
 //
 //	// Individual tools with options
 //	bash := codetool.Bash(codetool.WithWorkDir("/my/project"), codetool.WithBashTimeout(30*time.Second))
