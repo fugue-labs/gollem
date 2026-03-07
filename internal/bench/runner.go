@@ -1,4 +1,4 @@
-package eval
+package bench
 
 import (
 	"context"
@@ -6,15 +6,23 @@ import (
 	"os/exec"
 	"strings"
 	"time"
-
-	"github.com/fugue-labs/gollem/internal/autoeval"
 )
 
+// Output is parsed from Terminal Bench results.
+type Output struct {
+	PassRate     float64  `json:"pass_rate"`
+	TasksPassed  int      `json:"tasks_passed"`
+	TasksTotal   int      `json:"tasks_total"`
+	TasksFailed  []string `json:"tasks_failed"`
+	DurationSecs float64  `json:"duration_secs"`
+	TokensUsed   int      `json:"tokens_used"`
+}
+
 // Run executes a Terminal Bench evaluation and returns parsed results.
-// mode is "fast" (subset of tasks) or "full" (all tasks).
-func Run(ctx context.Context, mode string, cfg autoeval.Config) (*autoeval.EvalOutput, error) {
-	cmd := cfg.EvalCommand
-	cmd = strings.ReplaceAll(cmd, "{mode}", mode)
+// evalCommand is a shell command with {mode} placeholder. resultsPath
+// is where the eval writes its JSON results. mode is "fast" or "full".
+func Run(ctx context.Context, mode, evalCommand, resultsPath string) (*Output, error) {
+	cmd := strings.ReplaceAll(evalCommand, "{mode}", mode)
 
 	start := time.Now()
 
@@ -23,7 +31,7 @@ func Run(ctx context.Context, mode string, cfg autoeval.Config) (*autoeval.EvalO
 	elapsed := time.Since(start)
 
 	if err != nil {
-		return &autoeval.EvalOutput{
+		return &Output{
 			PassRate:     0,
 			TasksPassed:  0,
 			TasksTotal:   taskCountForMode(mode),
@@ -31,9 +39,9 @@ func Run(ctx context.Context, mode string, cfg autoeval.Config) (*autoeval.EvalO
 		}, fmt.Errorf("eval command failed: %w\noutput: %s", err, string(out))
 	}
 
-	result, parseErr := ParseResults(cfg.EvalResultsPath)
+	result, parseErr := ParseResults(resultsPath)
 	if parseErr != nil {
-		return &autoeval.EvalOutput{
+		return &Output{
 			PassRate:     0,
 			TasksPassed:  0,
 			TasksTotal:   taskCountForMode(mode),

@@ -1,21 +1,19 @@
-package eval
+package bench
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
-
-	"github.com/fugue-labs/gollem/internal/autoeval"
 )
 
 // ParseResults reads and parses the eval results JSON file.
-func ParseResults(path string) (*autoeval.EvalOutput, error) {
+func ParseResults(path string) (*Output, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read results file %s: %w", path, err)
 	}
 
-	var result autoeval.EvalOutput
+	var result Output
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, fmt.Errorf("parse results JSON: %w", err)
 	}

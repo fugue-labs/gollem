@@ -9,8 +9,7 @@ import (
 	"strings"
 
 	"github.com/fugue-labs/gollem/core"
-	"github.com/fugue-labs/gollem/ext/codetool"
-	"github.com/fugue-labs/gollem/internal/eval"
+	"github.com/fugue-labs/gollem/internal/bench"
 	"github.com/fugue-labs/gollem/internal/git"
 )
 
@@ -32,7 +31,7 @@ func writeFileTool(subjectDir string) core.Tool {
 		"Write content to a file. ONLY files in the subject directory can be modified.",
 		func(_ context.Context, p WriteFileParams) (string, error) {
 			// Resolve the requested path to absolute and clean it to prevent
-			// path traversal attacks (e.g., "autoeval-subject/../internal/eval/constants.go").
+			// path traversal attacks (e.g., "autoeval-subject/../internal/bench/constants.go").
 			absPath, pathErr := filepath.Abs(filepath.Clean(p.Path))
 			if pathErr != nil {
 				return "", fmt.Errorf("resolve path: %w", pathErr)
@@ -62,7 +61,7 @@ func runEvalTool(cfg Config) core.Tool {
 		"run_eval",
 		"Run Terminal Bench evaluation against the current subject/ agent configuration. Returns structured eval results as JSON.",
 		func(ctx context.Context, p RunEvalParams) (string, error) {
-			output, err := eval.Run(ctx, p.Mode, cfg)
+			output, err := bench.Run(ctx, p.Mode, cfg.EvalCommand, cfg.EvalResultsPath)
 			if err != nil {
 				// Return partial results with the error so the agent can see what happened.
 				if output != nil {
@@ -212,23 +211,15 @@ func appendResultTool(resultsFile string) core.Tool {
 	)
 }
 
-// BuildTools creates all tools for the researcher agent.
-// General-purpose file/shell tools come from ext/codetool; domain-specific tools
-// (eval, git, traces, results) are defined in this package.
-func BuildTools(cfg Config) []core.Tool {
+// BuildDomainTools creates domain-specific tools for the researcher agent.
+// General-purpose coding tools (Bash, View, Edit, Grep, Glob, Ls) are
+// provided via codetool.Toolset in agent.go.
+func BuildDomainTools(cfg Config) []core.Tool {
 	return []core.Tool{
-		// General-purpose tools from ext/codetool.
-		codetool.View(),
-		codetool.Bash(),
-		codetool.Ls(),
-		codetool.Grep(),
-		codetool.Glob(),
-		codetool.Edit(),
-
 		// Scoped write — only allows writes inside the subject directory.
 		writeFileTool(cfg.SubjectDir),
 
-		// Domain-specific tools.
+		// Eval and experiment management.
 		runEvalTool(cfg),
 		gitCommitTool(),
 		gitResetTool(),

@@ -7,11 +7,16 @@
 //
 // Configuration is via environment variables:
 //
-//	AUTOEVAL_PROVIDER       - Model provider: anthropic, openai, ollama (default: ollama)
-//	AUTOEVAL_MODEL          - Model name (default: qwen3:70b)
-//	AUTOEVAL_EVAL_COMMAND   - Shell command to run evaluation ({mode} is substituted)
-//	AUTOEVAL_SUBJECT_DIR    - Directory containing the agent config to optimize
-//	AUTOEVAL_MAX_EXPERIMENTS - Maximum experiments to run (0 = unlimited)
+//	AUTOEVAL_PROVIDER            - Model provider: anthropic, openai, xai, ollama, vertexai, vertexai-anthropic (default: anthropic)
+//	AUTOEVAL_MODEL               - Model name (default: claude-sonnet-4-5-20250929)
+//	AUTOEVAL_LOCATION            - GCP region for vertexai providers
+//	AUTOEVAL_PROJECT             - GCP project ID for vertexai providers
+//	AUTOEVAL_EVAL_COMMAND        - Shell command to run evaluation ({mode} is substituted)
+//	AUTOEVAL_SUBJECT_DIR         - Directory containing the agent config to optimize
+//	AUTOEVAL_MAX_EXPERIMENTS     - Maximum experiments to run (0 = unlimited)
+//	AUTOEVAL_EXPERIMENT_TIMEOUT  - Per-experiment timeout (default: 30m)
+//	AUTOEVAL_THINKING_BUDGET     - Thinking/reasoning token budget (default: 16000)
+//	AUTOEVAL_REASONING_EFFORT    - OpenAI reasoning effort: low, medium, high (default: high)
 //
 // Usage:
 //
