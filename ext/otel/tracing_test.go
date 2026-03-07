@@ -560,6 +560,190 @@ func TestTracingHooksModelResponseAttributes(t *testing.T) {
 	}
 }
 
+// TestTracingHooksCrossAgentHierarchy verifies that a child agent's root span
+// is automatically nested under the parent agent's tool span when context
+// carries RunID and ToolCallID (simulating delegate, AgentTool, or teammate).
+func TestTracingHooksCrossAgentHierarchy(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+
+	// --- Parent agent run ---
+	parentRC := &core.RunContext{
+		RunID:      "parent-run",
+		ToolCallID: "tool-call-delegate",
+	}
+
+	hook.OnRunStart(ctx, parentRC, "orchestrate tasks")
+	hook.OnTurnStart(ctx, parentRC, 1)
+	hook.OnToolStart(ctx, parentRC, "delegate", `{"task":"sub work"}`)
+
+	// Simulate the context that the core agent framework injects before
+	// executing the tool handler: RunID from Run(), ToolCallID before handler.
+	childCtx := core.ContextWithRunID(ctx, "parent-run")
+	childCtx = core.ContextWithToolCallID(childCtx, "tool-call-delegate")
+
+	// --- Child agent run (synchronous, like delegate/AgentTool) ---
+	childRC := &core.RunContext{
+		RunID: "child-run",
+	}
+	hook.OnRunStart(childCtx, childRC, "sub work")
+	hook.OnTurnStart(childCtx, childRC, 1)
+	hook.OnModelRequest(childCtx, childRC, nil)
+	hook.OnModelResponse(childCtx, childRC, &core.ModelResponse{
+		ModelName: "test",
+		Parts:     []core.ModelResponsePart{core.TextPart{Content: "done"}},
+	})
+	hook.OnTurnEnd(childCtx, childRC, 1, &core.ModelResponse{})
+	hook.OnRunEnd(childCtx, childRC, nil, nil)
+
+	// --- Parent continues ---
+	hook.OnToolEnd(ctx, parentRC, "delegate", "done", nil)
+	hook.OnTurnEnd(ctx, parentRC, 1, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, parentRC, nil, nil)
+
+	spans := exporter.GetSpans()
+
+	// Find the parent's tool span and the child's root span.
+	var parentToolSpanID, childRootParentID string
+	for _, s := range spans {
+		if s.Name == SpanToolExecute+".delegate" {
+			parentToolSpanID = s.SpanContext.SpanID().String()
+		}
+		if s.Name == SpanAgentRun {
+			attrs := spanAttrs(s)
+			if v, ok := attrs[AttrAgentRunID]; ok && v == "child-run" {
+				childRootParentID = s.Parent.SpanID().String()
+			}
+		}
+	}
+
+	if parentToolSpanID == "" {
+		t.Fatal("tool.execute.delegate span not found")
+	}
+	if childRootParentID == "" {
+		t.Fatal("child agent.run span not found")
+	}
+	if childRootParentID != parentToolSpanID {
+		t.Errorf("child agent.run should be child of parent's tool span: got parent=%s, want=%s",
+			childRootParentID, parentToolSpanID)
+	}
+
+	// Verify all spans share the same trace ID.
+	traceIDs := make(map[string]bool)
+	for _, s := range spans {
+		traceIDs[s.SpanContext.TraceID().String()] = true
+	}
+	if len(traceIDs) != 1 {
+		t.Errorf("expected all spans in same trace, got %d distinct trace IDs", len(traceIDs))
+	}
+}
+
+// TestTracingHooksCrossAgentHierarchyAsync verifies that an async child agent
+// (like a teammate) nests under the parent's tool span even after OnToolEnd
+// has fired for the spawning tool call.
+func TestTracingHooksCrossAgentHierarchyAsync(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+
+	// --- Parent agent run ---
+	parentRC := &core.RunContext{
+		RunID:      "parent-run-async",
+		ToolCallID: "tool-call-spawn",
+	}
+
+	hook.OnRunStart(ctx, parentRC, "lead team")
+	hook.OnTurnStart(ctx, parentRC, 1)
+	hook.OnToolStart(ctx, parentRC, "spawn_teammate", `{"name":"worker"}`)
+
+	// Build the context the child will inherit (injected by core framework).
+	childCtx := core.ContextWithRunID(ctx, "parent-run-async")
+	childCtx = core.ContextWithToolCallID(childCtx, "tool-call-spawn")
+
+	// spawn_teammate returns immediately — OnToolEnd fires before child runs.
+	hook.OnToolEnd(ctx, parentRC, "spawn_teammate", `{"status":"spawned"}`, nil)
+	hook.OnTurnEnd(ctx, parentRC, 1, &core.ModelResponse{})
+
+	// --- Child agent runs later (async goroutine) ---
+	childRC := &core.RunContext{
+		RunID: "teammate-run",
+	}
+	hook.OnRunStart(childCtx, childRC, "do subtask")
+	hook.OnTurnStart(childCtx, childRC, 1)
+	hook.OnModelRequest(childCtx, childRC, nil)
+	hook.OnModelResponse(childCtx, childRC, &core.ModelResponse{
+		ModelName: "test",
+		Parts:     []core.ModelResponsePart{core.TextPart{Content: "done"}},
+	})
+	hook.OnTurnEnd(childCtx, childRC, 1, &core.ModelResponse{})
+	hook.OnRunEnd(childCtx, childRC, nil, nil)
+
+	// Parent finishes after child.
+	hook.OnRunEnd(ctx, parentRC, nil, nil)
+
+	spans := exporter.GetSpans()
+
+	// Find the parent's spawn_teammate tool span and the child's root span.
+	var parentToolSpanID, childRootParentID string
+	for _, s := range spans {
+		if s.Name == SpanToolExecute+".spawn_teammate" {
+			parentToolSpanID = s.SpanContext.SpanID().String()
+		}
+		if s.Name == SpanAgentRun {
+			attrs := spanAttrs(s)
+			if v, ok := attrs[AttrAgentRunID]; ok && v == "teammate-run" {
+				childRootParentID = s.Parent.SpanID().String()
+			}
+		}
+	}
+
+	if parentToolSpanID == "" {
+		t.Fatal("tool.execute.spawn_teammate span not found")
+	}
+	if childRootParentID == "" {
+		t.Fatal("teammate agent.run span not found")
+	}
+	if childRootParentID != parentToolSpanID {
+		t.Errorf("teammate agent.run should be child of spawn_teammate tool span: got parent=%s, want=%s",
+			childRootParentID, parentToolSpanID)
+	}
+
+	// All spans should share the same trace ID.
+	traceIDs := make(map[string]bool)
+	for _, s := range spans {
+		traceIDs[s.SpanContext.TraceID().String()] = true
+	}
+	if len(traceIDs) != 1 {
+		t.Errorf("expected all spans in same trace, got %d distinct trace IDs", len(traceIDs))
+	}
+}
+
+// TestTracingHooksNoParentForTopLevelRun verifies that a top-level agent run
+// (not spawned by another agent) creates a root span with no parent.
+func TestTracingHooksNoParentForTopLevelRun(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "top-level-run",
+	}
+
+	hook.OnRunStart(ctx, rc, "hello")
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+	for _, s := range spans {
+		if s.Name == SpanAgentRun {
+			if s.Parent.SpanID().IsValid() {
+				t.Errorf("top-level agent.run should have no parent, got %s", s.Parent.SpanID())
+			}
+			return
+		}
+	}
+	t.Fatal("agent.run span not found")
+}
+
 // spanAttrs converts a span's attributes to a map for easy lookup.
 func spanAttrs(s tracetest.SpanStub) map[string]any {
 	m := make(map[string]any)

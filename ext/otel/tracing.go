@@ -25,6 +25,13 @@ type runSpanState struct {
 	modelReqStart time.Time
 	cfg           *tracingConfig
 	tracer        trace.Tracer
+
+	// childSpanCtxs retains tool span references for child agent lookup.
+	// Unlike toolSpans (which is cleaned up on OnToolEnd), this map
+	// persists until OnRunEnd so that async child agents (e.g., teammates
+	// spawned via spawn_teammate) can discover their parent's tool span
+	// even after the tool call has returned.
+	childSpanCtxs map[string]trace.Span
 }
 
 // TracingHooks returns a core.Hook that creates OTEL spans for the full
@@ -36,11 +43,15 @@ type runSpanState struct {
 //	├── agent.turn[N]
 //	│   ├── model.request
 //	│   └── tool.execute.{name}
+//	│       └── agent.run (child — delegate, teammate, AgentTool)
 //	├── guardrail.{name}
 //	└── output.validation
 //
-// Context propagation through Gollem ensures that subagent spans (via
-// AgentTool or Handoff) automatically nest under the parent's tool span.
+// Child agents spawned via tool calls (delegate, spawn_teammate, AgentTool,
+// Handoff) automatically nest under the parent's tool span. The core agent
+// framework injects RunID and ToolCallID into the context, allowing
+// onRunStart to discover the parent's active tool span and establish the
+// parent-child relationship — even for async children like teammates.
 func TracingHooks(opts ...TracingOption) core.Hook {
 	cfg := defaultConfig()
 	for _, opt := range opts {
@@ -85,10 +96,29 @@ func (c *tracingConfig) truncate(s string) string {
 	return s
 }
 
-// onRunStart creates the root agent.run span.
+// onRunStart creates the root agent.run span. If this agent was spawned by
+// another agent (via a tool like spawn_teammate, delegate, or AgentTool),
+// the span is created as a child of the parent agent's tool span, producing
+// a connected trace tree across the full multi-agent hierarchy.
 func onRunStart(tracer trace.Tracer, cfg *tracingConfig) func(ctx context.Context, rc *core.RunContext, prompt string) {
 	return func(ctx context.Context, rc *core.RunContext, prompt string) {
-		_, span := tracer.Start(ctx, cfg.spanName(SpanAgentRun),
+		// Check if this agent was spawned from within another agent's tool
+		// execution. The core agent framework injects RunID and ToolCallID
+		// into the context, so we can look up the parent's active tool span.
+		parentCtx := ctx
+		if parentRunID := core.RunIDFromContext(ctx); parentRunID != "" && parentRunID != rc.RunID {
+			if toolCallID := core.ToolCallIDFromContext(ctx); toolCallID != "" {
+				if parentState := loadRunState(parentRunID); parentState != nil {
+					parentState.mu.Lock()
+					if span, ok := parentState.childSpanCtxs[toolCallID]; ok {
+						parentCtx = trace.ContextWithSpan(ctx, span)
+					}
+					parentState.mu.Unlock()
+				}
+			}
+		}
+
+		_, span := tracer.Start(parentCtx, cfg.spanName(SpanAgentRun),
 			trace.WithSpanKind(trace.SpanKindInternal),
 			trace.WithAttributes(
 				attribute.String(AttrAgentRunID, rc.RunID),
@@ -308,6 +338,14 @@ func onToolStart(tracer trace.Tracer, cfg *tracingConfig) func(ctx context.Conte
 			span:  toolSpan,
 			start: time.Now(),
 		}
+
+		// Also store in childSpanCtxs for child agent lookup. This map
+		// persists until OnRunEnd, unlike toolSpans which is cleaned up
+		// in OnToolEnd — necessary for async children (teammates).
+		if state.childSpanCtxs == nil {
+			state.childSpanCtxs = make(map[string]trace.Span)
+		}
+		state.childSpanCtxs[rc.ToolCallID] = toolSpan
 	}
 }
 

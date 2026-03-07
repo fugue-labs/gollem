@@ -451,6 +451,10 @@ func (a *Agent[T]) Run(ctx context.Context, prompt string, opts ...RunOption) (*
 		}
 	}
 
+	// Inject RunID into context so child agents (subagents, teammates,
+	// AgentTool) can discover their parent agent's tracing state.
+	ctx = ContextWithRunID(ctx, state.runID)
+
 	// Fire OnRunStart hooks.
 	rc := &RunContext{
 		Deps:         deps,
@@ -1562,14 +1566,14 @@ func (a *Agent[T]) executeSingleTool(
 	}
 
 	// Apply tool timeout.
-	toolCtx := ctx
+	toolCtx := ContextWithToolCallID(ctx, call.ToolCallID)
 	timeout := tool.Timeout
 	if timeout == 0 && a.defaultToolTimeout > 0 {
 		timeout = a.defaultToolTimeout
 	}
 	if timeout > 0 {
 		var cancel context.CancelFunc
-		toolCtx, cancel = context.WithTimeout(ctx, timeout)
+		toolCtx, cancel = context.WithTimeout(toolCtx, timeout)
 		defer cancel()
 	}
 
