@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -196,7 +197,11 @@ func Bash(opts ...Option) core.Tool {
 
 			// Run in a new process group so we can kill all children on timeout.
 			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			var detached atomic.Bool
 			cmd.Cancel = func() error {
+				if detached.Load() {
+					return os.ErrProcessDone
+				}
 				// Kill the entire process group (negative PID).
 				return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			}
@@ -235,7 +240,11 @@ func Bash(opts ...Option) core.Tool {
 						cmd.Env = append(os.Environ(), "PIP_BREAK_SYSTEM_PACKAGES=1")
 					}
 					cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+					detached.Store(false)
 					cmd.Cancel = func() error {
+						if detached.Load() {
+							return os.ErrProcessDone
+						}
 						return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 					}
 					cmd.Stdout = &stdout
@@ -249,7 +258,9 @@ func Bash(opts ...Option) core.Tool {
 					// Detach-aware execution: when a detach channel is available,
 					// use cmd.Start() + pipes so the process can be adopted by the
 					// background manager mid-flight.
-					detachResult, detachErr := runWithDetach(cmd, detach, cfg.BackgroundProcessManager, params.Command)
+					detachResult, detachErr := runWithDetach(cmd, detach, cfg.BackgroundProcessManager, params.Command, func() {
+						detached.Store(true)
+					})
 					if detachErr != nil {
 						return "", detachErr
 					}
@@ -687,7 +698,13 @@ func (c *streamCapture) StopForegroundCapture() {
 // runWithDetach executes a command with detach support. The command is started
 // with pipes so it can be adopted by the background manager if the detach
 // channel closes during execution.
-func runWithDetach(cmd *exec.Cmd, detach <-chan struct{}, bgMgr *BackgroundProcessManager, command string) (detachRunResult, error) {
+func runWithDetach(
+	cmd *exec.Cmd,
+	detach <-chan struct{},
+	bgMgr *BackgroundProcessManager,
+	command string,
+	markDetached func(),
+) (detachRunResult, error) {
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return detachRunResult{}, fmt.Errorf("stdout pipe: %w", err)
@@ -741,9 +758,6 @@ func runWithDetach(cmd *exec.Cmd, detach <-chan struct{}, bgMgr *BackgroundProce
 		}, nil
 	case <-detach:
 		// UI requested detach — adopt the process into the background pool.
-		// Save the original cancel behavior so foreground fallback still
-		// honors timeouts if adoption fails (e.g., background pool full).
-		originalCancel := cmd.Cancel
 		id, adoptErr := bgMgr.adoptTrackedOutput(
 			cmd,
 			command,
@@ -754,7 +768,6 @@ func runWithDetach(cmd *exec.Cmd, detach <-chan struct{}, bgMgr *BackgroundProce
 		if adoptErr != nil {
 			// Can't adopt (e.g., max processes reached) — fall back to
 			// waiting for normal completion. Not an error for the caller.
-			cmd.Cancel = originalCancel
 			fmt.Fprintf(os.Stderr, "[gollem] bash: background adoption failed, continuing in foreground: %v\n", adoptErr)
 			<-done
 			return detachRunResult{
@@ -762,12 +775,10 @@ func runWithDetach(cmd *exec.Cmd, detach <-chan struct{}, bgMgr *BackgroundProce
 				stderr: stderrCapture.String(),
 			}, nil
 		}
-		// Replace cmd.Cancel so the parent's context timeout doesn't kill
-		// the adopted process when the tool returns and deferred cancel()
-		// fires. Return os.ErrProcessDone to tell Go's watchCtx "the process
-		// is already handled" — this prevents it from injecting a context
-		// error into cmd.Wait's return value.
-		cmd.Cancel = func() error { return os.ErrProcessDone }
+		// Tell the preconfigured Cancel closure that the process has been
+		// detached so future context cancellation returns os.ErrProcessDone
+		// instead of killing the adopted process.
+		markDetached()
 		stdoutCapture.StopForegroundCapture()
 		stderrCapture.StopForegroundCapture()
 		return detachRunResult{
