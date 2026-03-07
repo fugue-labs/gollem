@@ -673,8 +673,15 @@ func TestToolset_CleansUpBackgroundProcessesOnRunEnd(t *testing.T) {
 		core.TextResponse("done"),
 	)
 
+	// Lifecycle hooks live at the agent level (via AgentOptions), not on the
+	// Toolset. Wire them explicitly here to mirror what AgentOptions does.
 	agent := core.NewAgent[string](model,
 		core.WithToolsets[string](Toolset(WithBackgroundProcessManager(mgr))),
+		core.WithHooks[string](core.Hook{
+			OnRunEnd: func(_ context.Context, _ *core.RunContext, _ []core.ModelMessage, _ error) {
+				mgr.Cleanup()
+			},
+		}),
 	)
 
 	result, err := agent.Run(context.Background(), "start a background process")
@@ -698,5 +705,118 @@ func TestToolset_CleansUpBackgroundProcessesOnRunEnd(t *testing.T) {
 			t.Fatalf("background process was not cleaned up after run end: %s", status)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestPerWorkerManagerIsolation(t *testing.T) {
+	// Simulate two workers, each with their own BackgroundProcessManager
+	// (as created by ToolsetFactory). One worker ending should NOT kill
+	// the other worker's background processes.
+	mgrA := NewBackgroundProcessManager()
+	mgrB := NewBackgroundProcessManager()
+
+	// Worker A starts a long-running background process.
+	_, err := mgrA.Start("", "sleep 60", false, 0)
+	if err != nil {
+		t.Fatalf("mgrA.Start failed: %v", err)
+	}
+
+	// Worker B starts a background process.
+	_, err = mgrB.Start("", "sleep 60", false, 0)
+	if err != nil {
+		t.Fatalf("mgrB.Start failed: %v", err)
+	}
+
+	// Worker B finishes: its cleanup kills only its own processes.
+	mgrB.Cleanup()
+
+	// Worker A's process should still be running.
+	statusA, err := mgrA.FormatProcess("bg-1")
+	if err != nil {
+		t.Fatalf("mgrA.FormatProcess failed: %v", err)
+	}
+	if !strings.Contains(statusA, "running") {
+		t.Fatalf("expected mgrA process still running after mgrB cleanup, got: %s", statusA)
+	}
+
+	// Worker B's process should be killed.
+	time.Sleep(200 * time.Millisecond)
+	statusB, _ := mgrB.FormatProcess("bg-1")
+	if strings.Contains(statusB, "running") {
+		t.Fatalf("expected mgrB process killed after cleanup, got: %s", statusB)
+	}
+
+	// Worker A's bash_status should NOT see Worker B's processes.
+	allA := mgrA.FormatAll()
+	if strings.Contains(allA, "sleep 60") && mgrA.FormatAll() == mgrB.FormatAll() {
+		t.Fatalf("expected isolated process views between managers")
+	}
+
+	// Clean up worker A.
+	mgrA.Cleanup()
+}
+
+func TestToolsetFactory_PerWorkerHooksIsolation(t *testing.T) {
+	// Build two toolsets from a factory (simulating ToolsetFactory),
+	// each with their own manager and hooks. One worker's OnRunEnd
+	// should only clean up its own background processes.
+	makeToolset := func() (*core.Toolset, *BackgroundProcessManager) {
+		mgr := NewBackgroundProcessManager()
+		ts := Toolset(WithBackgroundProcessManager(mgr))
+		ts.Hooks = []core.Hook{{
+			OnRunEnd: func(_ context.Context, _ *core.RunContext, _ []core.ModelMessage, _ error) {
+				mgr.Cleanup()
+			},
+		}}
+		return ts, mgr
+	}
+
+	tsA, mgrA := makeToolset()
+	tsB, mgrB := makeToolset()
+
+	// Start a background process in each manager.
+	_, err := mgrA.Start("", "sleep 60", false, 0)
+	if err != nil {
+		t.Fatalf("mgrA.Start failed: %v", err)
+	}
+	_, err = mgrB.Start("", "sleep 60", false, 0)
+	if err != nil {
+		t.Fatalf("mgrB.Start failed: %v", err)
+	}
+
+	// Fire Worker B's OnRunEnd hook — should only clean up mgrB.
+	for _, h := range tsB.Hooks {
+		if h.OnRunEnd != nil {
+			h.OnRunEnd(context.Background(), &core.RunContext{}, nil, nil)
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// Worker A's process should still be running.
+	statusA, err := mgrA.FormatProcess("bg-1")
+	if err != nil {
+		t.Fatalf("mgrA.FormatProcess failed: %v", err)
+	}
+	if !strings.Contains(statusA, "running") {
+		t.Fatalf("expected mgrA process still running after mgrB hook fired, got: %s", statusA)
+	}
+
+	// Worker B's process should be killed.
+	statusB, _ := mgrB.FormatProcess("bg-1")
+	if strings.Contains(statusB, "running") {
+		t.Fatalf("expected mgrB process cleaned up, got: %s", statusB)
+	}
+
+	// Fire Worker A's hook — should clean up mgrA.
+	for _, h := range tsA.Hooks {
+		if h.OnRunEnd != nil {
+			h.OnRunEnd(context.Background(), &core.RunContext{}, nil, nil)
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	statusA2, _ := mgrA.FormatProcess("bg-1")
+	if strings.Contains(statusA2, "running") {
+		t.Fatalf("expected mgrA process cleaned up after its hook fired, got: %s", statusA2)
 	}
 }

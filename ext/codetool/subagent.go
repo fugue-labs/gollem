@@ -59,6 +59,15 @@ func SubAgentTool(model core.Model, opts ...Option) core.Tool {
 			// (prevents infinite recursion).
 			acConfig := subagentAutoContextConfig(cfg)
 
+			// Each subagent gets its own BackgroundProcessManager so
+			// background state is isolated from the parent and from
+			// sibling subagents (important in team mode where the
+			// delegate tool may close over the leader's opts).
+			subMgr := NewBackgroundProcessManager()
+			subToolOpts := make([]Option, len(opts))
+			copy(subToolOpts, opts)
+			subToolOpts = append(subToolOpts, WithBackgroundProcessManager(subMgr))
+
 			// Verification tracking middleware (not validator) — gives subagents
 			// stagnation, regression, same-error, and stale-test detection without
 			// blocking their completion.
@@ -72,7 +81,15 @@ func SubAgentTool(model core.Model, opts ...Option) core.Tool {
 
 			subOpts := []core.AgentOption[string]{
 				core.WithSystemPrompt[string](systemPrompt),
-				core.WithToolsets[string](Toolset(opts...)),
+				core.WithToolsets[string](Toolset(subToolOpts...)),
+				// Background lifecycle for this subagent: cleanup on run
+				// end, completion notifications between turns.
+				core.WithHooks[string](core.Hook{
+					OnRunEnd: func(_ context.Context, _ *core.RunContext, _ []core.ModelMessage, _ error) {
+						subMgr.Cleanup()
+					},
+				}),
+				core.WithDynamicSystemPrompt[string](subMgr.CompletionPrompt),
 				core.WithTools[string](InvariantsTool(model)),
 				core.WithMaxRetries[string](2),
 				core.WithUsageLimits[string](core.UsageLimits{RequestLimit: core.IntPtr(50)}),

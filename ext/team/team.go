@@ -24,7 +24,14 @@ type TeamConfig struct {
 
 	// Toolset is the set of tools given to each teammate (e.g. coding tools).
 	// The team package is decoupled from codetool — the caller provides the toolset.
+	// When both Toolset and ToolsetFactory are set, ToolsetFactory takes precedence.
 	Toolset *core.Toolset
+
+	// ToolsetFactory creates a fresh toolset for each spawned teammate.
+	// Use this instead of Toolset when the toolset contains stateful
+	// components (e.g., background process managers) that must be isolated
+	// per worker. Each call should return a new instance.
+	ToolsetFactory func() *core.Toolset
 
 	// WorkerExtraTools are additional tools attached to each spawned teammate.
 	// Useful for capabilities like subagent delegation that should be available
@@ -63,6 +70,7 @@ type Team struct {
 	eventBus        *core.EventBus
 	model           core.Model
 	toolset         *core.Toolset
+	toolsetFactory  func() *core.Toolset
 	workerTools     []core.Tool
 	workerMaxTokens int
 	workerHooks     []core.Hook
@@ -87,6 +95,7 @@ func NewTeam(cfg TeamConfig) *Team {
 		eventBus:        cfg.EventBus,
 		model:           cfg.Model,
 		toolset:         cfg.Toolset,
+		toolsetFactory:  cfg.ToolsetFactory,
 		workerTools:     cfg.WorkerExtraTools,
 		workerMaxTokens: cfg.WorkerMaxTokens,
 		workerHooks:     cfg.WorkerHooks,
@@ -225,7 +234,9 @@ func (t *Team) SpawnTeammate(ctx context.Context, name, task string, opts ...Tea
 	if maxTokens > 0 {
 		agentOpts = append(agentOpts, core.WithMaxTokens[string](maxTokens))
 	}
-	if t.toolset != nil {
+	if t.toolsetFactory != nil {
+		agentOpts = append(agentOpts, core.WithToolsets[string](t.toolsetFactory()))
+	} else if t.toolset != nil {
 		agentOpts = append(agentOpts, core.WithToolsets[string](t.toolset))
 	}
 	if len(t.workerTools) > 0 {

@@ -16,14 +16,20 @@ import (
 )
 
 // Toolset returns all coding agent tools as a core.Toolset.
-// Use this to add the full suite of coding tools to an agent:
+// It is a stateless tool registry — safe to share across multiple agents
+// (e.g., ext/team workers).
+//
+// Background process support (background=true, bash_status) requires a
+// [BackgroundProcessManager] via [WithBackgroundProcessManager]. Without
+// one, those features degrade gracefully with retry errors.
+//
+// Background lifecycle (cleanup on run end, completion notifications)
+// is NOT wired here. Use [AgentOptions] for automatic lifecycle, or
+// wire hooks manually.
 //
 //	ts := codetool.Toolset(codetool.WithWorkDir("/my/project"))
 //	agent := core.NewAgent(model, "...", core.WithToolsets[string](ts))
 func Toolset(opts ...Option) *core.Toolset {
-	opts = ensureBackgroundManager(opts)
-	cfg := applyOpts(opts)
-
 	return &core.Toolset{
 		Name: "codetool",
 		Tools: []core.Tool{
@@ -38,25 +44,15 @@ func Toolset(opts ...Option) *core.Toolset {
 			Ls(opts...),
 			LSP(opts...),
 		},
-		Hooks: []core.Hook{
-			{
-				OnRunEnd: func(_ context.Context, _ *core.RunContext, _ []core.ModelMessage, _ error) {
-					cfg.BackgroundProcessManager.Cleanup()
-				},
-			},
-		},
-		DynamicSystemPrompts: []core.SystemPromptFunc{
-			cfg.BackgroundProcessManager.CompletionPrompt,
-		},
 	}
 }
 
 // AllTools returns all coding agent tools as a slice.
 //
-// Background process management is only auto-wired for [Toolset] and
-// [AgentOptions], which can also attach cleanup hooks and completion prompts.
-// If you use AllTools directly and need background=true/bash_status support,
-// provide an explicit BackgroundProcessManager and handle cleanup yourself.
+// Like [Toolset], background process support requires an explicit
+// [BackgroundProcessManager] via [WithBackgroundProcessManager], and
+// lifecycle (cleanup, completion notifications) must be wired manually.
+// Use [AgentOptions] for the automatic single-agent path.
 func AllTools(opts ...Option) []core.Tool {
 	return []core.Tool{
 		Bash(opts...),
@@ -115,8 +111,34 @@ func AgentOptions(workDir string, toolOpts ...Option) []core.AgentOption[string]
 	if cfg.DisableDelegate {
 		systemPrompt = stripDelegateFromPrompt(systemPrompt)
 	}
+	// teamRef is set below if team mode is enabled; the leader's OnRunEnd
+	// hook closure reads it to coordinate shutdown before cleanup.
+	var teamRef *team.Team
+
 	toolOptions := []core.AgentOption[string]{
 		core.WithToolsets[string](Toolset(toolOpts...)),
+
+		// Background process lifecycle: cleanup non-keep_alive processes when
+		// the agent run ends, and inject completion notifications between turns.
+		// These are agent-level (not toolset-level) so they fire once for the
+		// top-level agent, not per-worker in team mode.
+		core.WithHooks[string](core.Hook{
+			OnRunEnd: func(_ context.Context, _ *core.RunContext, _ []core.ModelMessage, _ error) {
+				// In team mode, shut down workers before cleaning up the
+				// leader's background processes. This ensures per-worker
+				// cleanup hooks fire first (each worker has its own
+				// BackgroundProcessManager via ToolsetFactory).
+				if teamRef != nil {
+					shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					if err := teamRef.Shutdown(shutdownCtx); err != nil {
+						fmt.Fprintf(os.Stderr, "[gollem] team shutdown error: %v\n", err)
+					}
+				}
+				cfg.BackgroundProcessManager.Cleanup()
+			},
+		}),
+		core.WithDynamicSystemPrompt[string](cfg.BackgroundProcessManager.CompletionPrompt),
 	}
 	if cfg.Runner != nil {
 		cm := monty.New(cfg.Runner, AllTools(toolOpts...))
@@ -159,13 +181,30 @@ func AgentOptions(workDir string, toolOpts ...Option) []core.AgentOption[string]
 	var teamLeaderMW core.AgentMiddleware
 	if cfg.TeamMode && cfg.Model != nil {
 		t := team.NewTeam(team.TeamConfig{
-			Name:                 "coding-team",
-			Leader:               "leader",
-			Model:                cfg.Model,
-			Toolset:              Toolset(toolOpts...),
+			Name:   "coding-team",
+			Leader: "leader",
+			Model:  cfg.Model,
+			// Each worker gets its own toolset with an isolated
+			// BackgroundProcessManager so bash_status, cleanup, and
+			// completion notifications are per-worker.
+			ToolsetFactory: func() *core.Toolset {
+				mgr := NewBackgroundProcessManager()
+				workerOpts := make([]Option, len(toolOpts))
+				copy(workerOpts, toolOpts)
+				workerOpts = append(workerOpts, WithBackgroundProcessManager(mgr))
+				ts := Toolset(workerOpts...)
+				ts.Hooks = []core.Hook{{
+					OnRunEnd: func(_ context.Context, _ *core.RunContext, _ []core.ModelMessage, _ error) {
+						mgr.Cleanup()
+					},
+				}}
+				ts.DynamicSystemPrompts = []core.SystemPromptFunc{mgr.CompletionPrompt}
+				return ts
+			},
 			WorkerExtraTools:     []core.Tool{SubAgentTool(cfg.Model, toolOpts...)},
 			PersonalityGenerator: cfg.PersonalityGenerator,
 		})
+		teamRef = t
 		// Register the leader so workers can send messages to it.
 		teamLeaderMW = t.RegisterLeader("leader")
 		toolOptions = append(toolOptions,

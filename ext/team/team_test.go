@@ -487,3 +487,49 @@ func waitForState(t *testing.T, tm *Teammate, state TeammateState, timeout time.
 		}
 	}
 }
+
+func TestTeam_ToolsetFactory(t *testing.T) {
+	model := core.NewTestModel(core.TextResponse("done"))
+
+	var callCount int
+	var mu sync.Mutex
+	factory := func() *core.Toolset {
+		mu.Lock()
+		callCount++
+		mu.Unlock()
+		return core.NewToolset("per-worker",
+			core.FuncTool[struct{}]("noop", "noop", func(_ context.Context, _ struct{}) (string, error) {
+				return "ok", nil
+			}),
+		)
+	}
+
+	tm := NewTeam(TeamConfig{
+		Name:           "factory-test",
+		Leader:         "leader",
+		Model:          model,
+		ToolsetFactory: factory,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := tm.SpawnTeammate(ctx, "w1", "task 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = tm.SpawnTeammate(ctx, "w2", "task 2")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer shutdownCancel()
+	tm.Shutdown(shutdownCtx)
+
+	mu.Lock()
+	if callCount != 2 {
+		t.Errorf("expected factory called twice (once per worker), got %d", callCount)
+	}
+	mu.Unlock()
+}
