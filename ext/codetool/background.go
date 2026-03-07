@@ -355,52 +355,6 @@ func (m *BackgroundProcessManager) AdoptWithWait(cmd *exec.Cmd, stdout, stderr i
 	return id, nil
 }
 
-// AdoptWaitOnly takes ownership of a running process for completion tracking
-// only, without starting output capture goroutines. This is used for detach
-// where the caller's goroutines already hold the pipe readers.
-func (m *BackgroundProcessManager) AdoptWaitOnly(cmd *exec.Cmd, command string, waitFn func() error) (string, error) {
-	m.mu.Lock()
-
-	running := 0
-	for _, p := range m.processes {
-		if p.Status == processRunning {
-			running++
-		}
-	}
-	if running >= maxBackgroundProcesses {
-		m.mu.Unlock()
-		return "", &core.ModelRetryError{
-			Message: fmt.Sprintf("maximum concurrent background processes (%d) reached. "+
-				"Use bash_status with id='all' to check existing processes.", maxBackgroundProcesses),
-		}
-	}
-
-	m.counter++
-	id := fmt.Sprintf("bg-%d", m.counter)
-	proc := &BackgroundProcess{
-		ID:        id,
-		PID:       cmd.Process.Pid,
-		Command:   command,
-		StartedAt: time.Now(),
-		Status:    processRunning,
-		Stdout:    NewRingBuffer(ringBufferCapacity),
-		Stderr:    NewRingBuffer(ringBufferCapacity),
-		cmd:       cmd,
-	}
-	m.processes[id] = proc
-	m.mu.Unlock()
-
-	go func() {
-		waitErr := waitFn()
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		m.setExitStatus(proc, waitErr)
-	}()
-
-	fmt.Fprintf(os.Stderr, "[gollem] background:%s adopted (pid %d)\n", id, proc.PID)
-	return id, nil
-}
-
 // adoptTrackedOutput takes ownership of a running process whose stdout/stderr
 // are already being drained elsewhere into the provided ring buffers. This is
 // used by detach-aware foreground bash execution, where the caller keeps the
