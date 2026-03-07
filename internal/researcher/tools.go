@@ -5,33 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/fugue-labs/gollem/core"
+	"github.com/fugue-labs/gollem/ext/codetool"
 	"github.com/fugue-labs/gollem/internal/eval"
 	"github.com/fugue-labs/gollem/internal/git"
 )
-
-// ReadFileParams defines the input for the read_file tool.
-type ReadFileParams struct {
-	Path string `json:"path" jsonschema:"description=File path relative to repo root"`
-}
-
-func readFileTool() core.Tool {
-	return core.FuncTool[ReadFileParams](
-		"read_file",
-		"Read the contents of a file. Use for reading subject/ configs, traces, results, etc.",
-		func(_ context.Context, p ReadFileParams) (string, error) {
-			data, err := os.ReadFile(p.Path)
-			if err != nil {
-				return "", fmt.Errorf("read %s: %w", p.Path, err)
-			}
-			return string(data), nil
-		},
-	)
-}
 
 // WriteFileParams defines the input for the write_file tool.
 type WriteFileParams struct {
@@ -203,58 +184,6 @@ func readResultsTool(resultsFile string) core.Tool {
 	)
 }
 
-// ListDirParams defines the input for the list_dir tool.
-type ListDirParams struct {
-	Path string `json:"path" jsonschema:"description=Directory path relative to repo root"`
-}
-
-func listDirTool() core.Tool {
-	return core.FuncTool[ListDirParams](
-		"list_dir",
-		"List files and directories at the given path. Use to explore the subject/ directory structure.",
-		func(_ context.Context, p ListDirParams) (string, error) {
-			entries, err := os.ReadDir(p.Path)
-			if err != nil {
-				return "", fmt.Errorf("list %s: %w", p.Path, err)
-			}
-			var sb strings.Builder
-			for _, entry := range entries {
-				if entry.IsDir() {
-					fmt.Fprintf(&sb, "%s/\n", entry.Name())
-				} else {
-					info, infoErr := entry.Info()
-					if infoErr == nil && info != nil {
-						fmt.Fprintf(&sb, "%s (%d bytes)\n", entry.Name(), info.Size())
-					} else {
-						fmt.Fprintf(&sb, "%s\n", entry.Name())
-					}
-				}
-			}
-			return sb.String(), nil
-		},
-	)
-}
-
-// BashParams defines the input for the bash tool.
-type BashParams struct {
-	Command string `json:"command" jsonschema:"description=Shell command to execute"`
-}
-
-func bashTool() core.Tool {
-	return core.FuncTool[BashParams](
-		"bash",
-		"Run an arbitrary shell command. Use as an escape hatch for operations not covered by other tools. Be careful with destructive commands.",
-		func(ctx context.Context, p BashParams) (string, error) {
-			cmd := exec.CommandContext(ctx, "sh", "-c", p.Command)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				return fmt.Sprintf("exit error: %v\noutput: %s", err, string(out)), nil
-			}
-			return string(out), nil
-		},
-	)
-}
-
 // AppendResultParams defines the input for the append_result tool.
 type AppendResultParams struct {
 	Line string `json:"line" jsonschema:"description=Tab-separated line to append to results.tsv"`
@@ -284,18 +213,28 @@ func appendResultTool(resultsFile string) core.Tool {
 }
 
 // BuildTools creates all tools for the researcher agent.
+// General-purpose file/shell tools come from ext/codetool; domain-specific tools
+// (eval, git, traces, results) are defined in this package.
 func BuildTools(cfg Config) []core.Tool {
 	return []core.Tool{
-		readFileTool(),
+		// General-purpose tools from ext/codetool.
+		codetool.View(),
+		codetool.Bash(),
+		codetool.Ls(),
+		codetool.Grep(),
+		codetool.Glob(),
+		codetool.Edit(),
+
+		// Scoped write — only allows writes inside the subject directory.
 		writeFileTool(cfg.SubjectDir),
+
+		// Domain-specific tools.
 		runEvalTool(cfg),
 		gitCommitTool(),
 		gitResetTool(),
 		gitLogTool(),
 		readTracesTool(cfg.TracesDir),
 		readResultsTool(cfg.ResultsFile),
-		listDirTool(),
-		bashTool(),
 		appendResultTool(cfg.ResultsFile),
 	}
 }
