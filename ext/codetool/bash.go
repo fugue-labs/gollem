@@ -757,11 +757,12 @@ func runWithDetach(cmd *exec.Cmd, detach <-chan struct{}, bgMgr *BackgroundProce
 		if adoptErr != nil {
 			// Can't adopt (e.g., max processes reached) — fall back to
 			// waiting for normal completion. Not an error for the caller.
+			fmt.Fprintf(os.Stderr, "[gollem] bash: background adoption failed, continuing in foreground: %v\n", adoptErr)
 			<-done
 			return detachRunResult{
 				stdout: stdoutCapture.String(),
 				stderr: stderrCapture.String(),
-			}, nil //nolint:nilerr // intentional: adopt failure is non-fatal, run completes normally
+			}, nil
 		}
 		stdoutCapture.StopForegroundCapture()
 		stderrCapture.StopForegroundCapture()
