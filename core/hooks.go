@@ -17,6 +17,18 @@ type Hook struct {
 	OnToolStart func(ctx context.Context, rc *RunContext, toolName string, argsJSON string)
 	// OnToolEnd fires after a tool completes.
 	OnToolEnd func(ctx context.Context, rc *RunContext, toolName string, result string, err error)
+	// OnTurnStart fires at the beginning of each agent loop iteration (turn).
+	OnTurnStart func(ctx context.Context, rc *RunContext, turnNumber int)
+	// OnTurnEnd fires at the end of each agent loop iteration (turn).
+	OnTurnEnd func(ctx context.Context, rc *RunContext, turnNumber int, response *ModelResponse)
+	// OnGuardrailEvaluated fires after a guardrail (input or turn) is evaluated.
+	OnGuardrailEvaluated func(ctx context.Context, rc *RunContext, name string, passed bool, err error)
+	// OnOutputValidation fires after structured output validation completes.
+	OnOutputValidation func(ctx context.Context, rc *RunContext, passed bool, err error)
+	// OnOutputRepair fires when output repair is attempted.
+	OnOutputRepair func(ctx context.Context, rc *RunContext, succeeded bool, err error)
+	// OnRunConditionChecked fires when a run condition is evaluated and stops the run.
+	OnRunConditionChecked func(ctx context.Context, rc *RunContext, stopped bool, reason string)
 }
 
 // WithHooks adds lifecycle hooks to the agent. Multiple hooks can be added;

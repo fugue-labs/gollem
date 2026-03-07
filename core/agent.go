@@ -431,6 +431,18 @@ func (a *Agent[T]) Run(ctx context.Context, prompt string, opts ...RunOption) (*
 	for _, g := range a.inputGuardrails {
 		var gErr error
 		prompt, gErr = g.fn(ctx, prompt)
+		passed := gErr == nil
+		a.fireHook(func(h Hook) {
+			if h.OnGuardrailEvaluated != nil {
+				h.OnGuardrailEvaluated(ctx, &RunContext{
+					Deps:         deps,
+					Usage:        state.usage,
+					Prompt:       prompt,
+					RunID:        state.runID,
+					RunStartTime: state.startTime,
+				}, g.name, passed, gErr)
+			}
+		})
 		if gErr != nil {
 			return nil, &GuardrailError{
 				GuardrailName: g.name,
@@ -552,6 +564,16 @@ func (a *Agent[T]) RunStream(ctx context.Context, prompt string, opts ...RunOpti
 	for _, g := range a.inputGuardrails {
 		var gErr error
 		prompt, gErr = g.fn(ctx, prompt)
+		passed := gErr == nil
+		a.fireHook(func(h Hook) {
+			if h.OnGuardrailEvaluated != nil {
+				h.OnGuardrailEvaluated(ctx, &RunContext{
+					Prompt:       prompt,
+					RunID:        state.runID,
+					RunStartTime: state.startTime,
+				}, g.name, passed, gErr)
+			}
+		})
 		if gErr != nil {
 			return nil, &GuardrailError{
 				GuardrailName: g.name,
@@ -780,6 +802,22 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 
 		state.runStep++
 
+		// Fire OnTurnStart hooks.
+		turnRC := &RunContext{
+			Deps:         deps,
+			Usage:        state.usage,
+			Prompt:       prompt,
+			RunStep:      state.runStep,
+			RunID:        state.runID,
+			RunStartTime: state.startTime,
+			EventBus:     a.eventBus,
+		}
+		a.fireHook(func(h Hook) {
+			if h.OnTurnStart != nil {
+				h.OnTurnStart(ctx, turnRC, state.runStep)
+			}
+		})
+
 		// Apply prepare functions to filter/modify tools for this iteration.
 		preparedTools := a.prepareTools(ctx, state, allTools, deps, prompt)
 
@@ -831,7 +869,7 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 		}
 
 		// Run turn guardrails.
-		turnRC := &RunContext{
+		turnGuardRC := &RunContext{
 			Deps:         deps,
 			Usage:        state.usage,
 			Prompt:       prompt,
@@ -842,7 +880,14 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 			EventBus:     a.eventBus,
 		}
 		for _, g := range a.turnGuardrails {
-			if gErr := g.fn(ctx, turnRC, messages); gErr != nil {
+			gErr := g.fn(ctx, turnGuardRC, messages)
+			passed := gErr == nil
+			a.fireHook(func(h Hook) {
+				if h.OnGuardrailEvaluated != nil {
+					h.OnGuardrailEvaluated(ctx, turnGuardRC, g.name, passed, gErr)
+				}
+			})
+			if gErr != nil {
 				return nil, &GuardrailError{
 					GuardrailName: g.name,
 					Message:       gErr.Error(),
@@ -955,6 +1000,11 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 			}
 			for _, cond := range a.runConditions {
 				if stop, reason := cond(ctx, condRC, resp); stop {
+					a.fireHook(func(h Hook) {
+						if h.OnRunConditionChecked != nil {
+							h.OnRunConditionChecked(ctx, condRC, true, reason)
+						}
+					})
 					// Return the text output if available, otherwise error.
 					if hasText := resp.TextContent() != ""; hasText && a.outputSchema.AllowsText {
 						text := resp.TextContent()
@@ -983,6 +1033,14 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 
 		// Process the response.
 		result, nextParts, deferredReqs, err := a.processResponse(ctx, state, resp, toolMap, outputToolNames, deps, prompt)
+
+		// Fire OnTurnEnd hooks before any return from the loop.
+		a.fireHook(func(h Hook) {
+			if h.OnTurnEnd != nil {
+				h.OnTurnEnd(ctx, turnRC, state.runStep, resp)
+			}
+		})
+
 		if err != nil {
 			return nil, err
 		}
@@ -1090,6 +1148,16 @@ func (a *Agent[T]) processResponse(
 					return nil, nil, nil, fmt.Errorf("failed to parse text output: %w", err)
 				}
 				repaired, repairErr := repairFn(ctx, text, err)
+				repairSucceeded := repairErr == nil
+				a.fireHook(func(h Hook) {
+					if h.OnOutputRepair != nil {
+						repairRC := &RunContext{
+							Deps: deps, Usage: state.usage, Prompt: prompt,
+							RunStep: state.runStep, RunID: state.runID, RunStartTime: state.startTime,
+						}
+						h.OnOutputRepair(ctx, repairRC, repairSucceeded, repairErr)
+					}
+				})
 				if repairErr != nil {
 					return nil, nil, nil, fmt.Errorf("failed to parse text output: %w", err)
 				}
@@ -1109,6 +1177,12 @@ func (a *Agent[T]) processResponse(
 			RunStartTime: state.startTime,
 		}
 		output, err = validateOutput(ctx, rc, output, a.outputValidators)
+		validationPassed := err == nil
+		a.fireHook(func(h Hook) {
+			if h.OnOutputValidation != nil {
+				h.OnOutputValidation(ctx, rc, validationPassed, err)
+			}
+		})
 		if err != nil {
 			var retryErr *ModelRetryError
 			if errors.As(err, &retryErr) {
@@ -1189,6 +1263,17 @@ func (a *Agent[T]) processResponse(
 			if a.repairFunc != nil {
 				if repairFn, ok := a.repairFunc.(RepairFunc[T]); ok {
 					repaired, repairErr := repairFn(ctx, tc.ArgsJSON, err)
+					repairSucceeded := repairErr == nil
+					a.fireHook(func(h Hook) {
+						if h.OnOutputRepair != nil {
+							repairRC := &RunContext{
+								Deps: deps, Usage: state.usage, Prompt: prompt,
+								ToolName: tc.ToolName, ToolCallID: tc.ToolCallID,
+								RunStep: state.runStep, RunID: state.runID, RunStartTime: state.startTime,
+							}
+							h.OnOutputRepair(ctx, repairRC, repairSucceeded, repairErr)
+						}
+					})
 					if repairErr == nil {
 						output = repaired
 						err = nil
@@ -1221,6 +1306,12 @@ func (a *Agent[T]) processResponse(
 			RunStartTime: state.startTime,
 		}
 		output, err = validateOutput(ctx, rc, output, a.outputValidators)
+		validationPassed := err == nil
+		a.fireHook(func(h Hook) {
+			if h.OnOutputValidation != nil {
+				h.OnOutputValidation(ctx, rc, validationPassed, err)
+			}
+		})
 		if err != nil {
 			var retryErr *ModelRetryError
 			if errors.As(err, &retryErr) {

@@ -235,3 +235,136 @@ func TestHook_NilFields(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestHook_OnTurnStartEnd(t *testing.T) {
+	var turns []int
+	var turnEndCount int
+
+	hook := Hook{
+		OnTurnStart: func(ctx context.Context, rc *RunContext, turnNumber int) {
+			turns = append(turns, turnNumber)
+		},
+		OnTurnEnd: func(ctx context.Context, rc *RunContext, turnNumber int, resp *ModelResponse) {
+			turnEndCount++
+		},
+	}
+
+	type AddParams struct {
+		A int `json:"a"`
+		B int `json:"b"`
+	}
+	addTool := FuncTool[AddParams]("add", "add two numbers", func(ctx context.Context, p AddParams) (int, error) {
+		return p.A + p.B, nil
+	})
+
+	model := NewTestModel(
+		ToolCallResponse("add", `{"a":1,"b":2}`),
+		TextResponse("done"),
+	)
+	agent := NewAgent[string](model,
+		WithTools[string](addTool),
+		WithHooks[string](hook),
+	)
+
+	_, err := agent.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(turns) != 2 {
+		t.Errorf("expected 2 turns, got %d", len(turns))
+	}
+	if turnEndCount != 2 {
+		t.Errorf("expected 2 turn ends, got %d", turnEndCount)
+	}
+}
+
+func TestHook_OnGuardrailEvaluated(t *testing.T) {
+	var guardrailName string
+	var guardrailPassed bool
+
+	hook := Hook{
+		OnGuardrailEvaluated: func(ctx context.Context, rc *RunContext, name string, passed bool, err error) {
+			guardrailName = name
+			guardrailPassed = passed
+		},
+	}
+
+	model := NewTestModel(TextResponse("hello"))
+	agent := NewAgent[string](model,
+		WithInputGuardrail[string]("length_check", MaxPromptLength(1000)),
+		WithHooks[string](hook),
+	)
+
+	_, err := agent.Run(context.Background(), "short prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if guardrailName != "length_check" {
+		t.Errorf("expected guardrail name 'length_check', got %q", guardrailName)
+	}
+	if !guardrailPassed {
+		t.Error("expected guardrail to pass")
+	}
+}
+
+func TestHook_OnGuardrailEvaluated_Failed(t *testing.T) {
+	var guardrailPassed bool
+	var guardrailErr error
+
+	hook := Hook{
+		OnGuardrailEvaluated: func(ctx context.Context, rc *RunContext, name string, passed bool, err error) {
+			guardrailPassed = passed
+			guardrailErr = err
+		},
+	}
+
+	model := NewTestModel(TextResponse("hello"))
+	agent := NewAgent[string](model,
+		WithInputGuardrail[string]("max_len", MaxPromptLength(5)),
+		WithHooks[string](hook),
+	)
+
+	_, err := agent.Run(context.Background(), "this is too long")
+	if err == nil {
+		t.Fatal("expected error from guardrail")
+	}
+
+	if guardrailPassed {
+		t.Error("expected guardrail to fail")
+	}
+	if guardrailErr == nil {
+		t.Error("expected guardrail error")
+	}
+}
+
+func TestHook_OnRunConditionChecked(t *testing.T) {
+	var condStopped bool
+	var condReason string
+
+	hook := Hook{
+		OnRunConditionChecked: func(ctx context.Context, rc *RunContext, stopped bool, reason string) {
+			condStopped = stopped
+			condReason = reason
+		},
+	}
+
+	model := NewTestModel(TextResponse("hello"))
+	agent := NewAgent[string](model,
+		WithRunCondition[string](TextContains("hello")),
+		WithHooks[string](hook),
+	)
+
+	_, err := agent.Run(context.Background(), "say hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !condStopped {
+		t.Error("expected condition to have stopped")
+	}
+	if condReason == "" {
+		t.Error("expected non-empty reason")
+	}
+}

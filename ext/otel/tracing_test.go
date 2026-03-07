@@ -1,0 +1,570 @@
+package otel
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/fugue-labs/gollem/core"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+)
+
+func setupTracing(t *testing.T, opts ...TracingOption) (core.Hook, *tracetest.InMemoryExporter) {
+	t.Helper()
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(exporter),
+	)
+
+	allOpts := append([]TracingOption{WithTracerProvider(tp)}, opts...)
+	hook := TracingHooks(allOpts...)
+	return hook, exporter
+}
+
+func TestTracingHooksRunLifecycle(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "test-run-1",
+	}
+
+	// Simulate a complete run lifecycle.
+	hook.OnRunStart(ctx, rc, "hello world")
+	hook.OnTurnStart(ctx, rc, 1)
+	hook.OnModelRequest(ctx, rc, nil)
+	hook.OnModelResponse(ctx, rc, &core.ModelResponse{
+		ModelName:    "claude-sonnet",
+		Usage:        core.Usage{InputTokens: 100, OutputTokens: 50},
+		FinishReason: core.FinishReasonStop,
+		Parts:        []core.ModelResponsePart{core.TextPart{Content: "hello"}},
+	})
+	hook.OnTurnEnd(ctx, rc, 1, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+	if len(spans) == 0 {
+		t.Fatal("expected spans to be created")
+	}
+
+	// Check that we have the expected span types.
+	spanNames := make(map[string]bool)
+	for _, s := range spans {
+		spanNames[s.Name] = true
+	}
+
+	expectedSpans := []string{
+		SpanAgentRun,
+		SpanAgentTurn,
+		SpanModelRequest,
+	}
+	for _, name := range expectedSpans {
+		if !spanNames[name] {
+			t.Errorf("expected span %q to exist, got spans: %v", name, spanNames)
+		}
+	}
+}
+
+func TestTracingHooksToolExecution(t *testing.T) {
+	hook, exporter := setupTracing(t, WithCaptureToolArgs(true), WithCaptureToolResults(true))
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID:      "test-run-2",
+		ToolCallID: "call_1",
+		ToolName:   "search",
+	}
+
+	hook.OnRunStart(ctx, rc, "test")
+	hook.OnTurnStart(ctx, rc, 1)
+	hook.OnToolStart(ctx, rc, "search", `{"query": "test"}`)
+	hook.OnToolEnd(ctx, rc, "search", `{"results": []}`, nil)
+	hook.OnTurnEnd(ctx, rc, 1, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+
+	// Find the tool span.
+	var toolSpanFound bool
+	for _, s := range spans {
+		if s.Name == SpanToolExecute+".search" {
+			toolSpanFound = true
+			// Check attributes.
+			attrMap := spanAttrs(s)
+			if v, ok := attrMap[AttrToolName]; !ok || v != "search" {
+				t.Errorf("expected tool name 'search', got %v", v)
+			}
+			if v, ok := attrMap[AttrToolArgs]; !ok || v != `{"query": "test"}` {
+				t.Errorf("expected tool args, got %v", v)
+			}
+			if v, ok := attrMap[AttrToolResult]; !ok || v != `{"results": []}` {
+				t.Errorf("expected tool result, got %v", v)
+			}
+		}
+	}
+	if !toolSpanFound {
+		t.Error("expected tool.execute.search span")
+	}
+}
+
+func TestTracingHooksToolArgsNotCapturedByDefault(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID:      "test-run-3",
+		ToolCallID: "call_1",
+		ToolName:   "search",
+	}
+
+	hook.OnRunStart(ctx, rc, "test")
+	hook.OnTurnStart(ctx, rc, 1)
+	hook.OnToolStart(ctx, rc, "search", `{"query": "sensitive"}`)
+	hook.OnToolEnd(ctx, rc, "search", `result`, nil)
+	hook.OnTurnEnd(ctx, rc, 1, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+	for _, s := range spans {
+		if s.Name == SpanToolExecute+".search" {
+			attrMap := spanAttrs(s)
+			if _, ok := attrMap[AttrToolArgs]; ok {
+				t.Error("tool args should not be captured by default")
+			}
+			if _, ok := attrMap[AttrToolResult]; ok {
+				t.Error("tool result should not be captured by default")
+			}
+		}
+	}
+}
+
+func TestTracingHooksToolError(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID:      "test-run-4",
+		ToolCallID: "call_1",
+		ToolName:   "fetch",
+	}
+
+	hook.OnRunStart(ctx, rc, "test")
+	hook.OnTurnStart(ctx, rc, 1)
+	hook.OnToolStart(ctx, rc, "fetch", `{}`)
+	hook.OnToolEnd(ctx, rc, "fetch", "", errors.New("timeout"))
+	hook.OnTurnEnd(ctx, rc, 1, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+	for _, s := range spans {
+		if s.Name == SpanToolExecute+".fetch" {
+			attrMap := spanAttrs(s)
+			if v, ok := attrMap[AttrToolError]; !ok || v != "timeout" {
+				t.Errorf("expected tool error 'timeout', got %v", v)
+			}
+		}
+	}
+}
+
+func TestTracingHooksRunError(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "test-run-5",
+	}
+
+	hook.OnRunStart(ctx, rc, "test")
+	hook.OnRunEnd(ctx, rc, nil, errors.New("model failed"))
+
+	spans := exporter.GetSpans()
+	var rootFound bool
+	for _, s := range spans {
+		if s.Name == SpanAgentRun {
+			rootFound = true
+			if len(s.Events) == 0 {
+				t.Error("expected error event on root span")
+			}
+		}
+	}
+	if !rootFound {
+		t.Error("expected agent.run span")
+	}
+}
+
+func TestTracingHooksGuardrail(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "test-run-6",
+	}
+
+	hook.OnRunStart(ctx, rc, "test")
+	hook.OnGuardrailEvaluated(ctx, rc, "max_length", true, nil)
+	hook.OnGuardrailEvaluated(ctx, rc, "content_filter", false, errors.New("blocked content"))
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+	guardrailSpans := 0
+	for _, s := range spans {
+		if s.Name == SpanGuardrail+".max_length" || s.Name == SpanGuardrail+".content_filter" {
+			guardrailSpans++
+		}
+	}
+	if guardrailSpans != 2 {
+		t.Errorf("expected 2 guardrail spans, got %d", guardrailSpans)
+	}
+}
+
+func TestTracingHooksOutputValidation(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "test-run-7",
+	}
+
+	hook.OnRunStart(ctx, rc, "test")
+	hook.OnTurnStart(ctx, rc, 1)
+	hook.OnOutputValidation(ctx, rc, true, nil)
+	hook.OnTurnEnd(ctx, rc, 1, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+	var validationFound bool
+	for _, s := range spans {
+		if s.Name == SpanOutputValidation {
+			validationFound = true
+			attrMap := spanAttrs(s)
+			if v, ok := attrMap[AttrOutputValid]; !ok || v != true {
+				t.Errorf("expected output.valid=true, got %v", v)
+			}
+		}
+	}
+	if !validationFound {
+		t.Error("expected output.validation span")
+	}
+}
+
+func TestTracingHooksOutputRepair(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "test-run-8",
+	}
+
+	hook.OnRunStart(ctx, rc, "test")
+	hook.OnTurnStart(ctx, rc, 1)
+	hook.OnOutputRepair(ctx, rc, true, nil)
+	hook.OnTurnEnd(ctx, rc, 1, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+	var repairFound bool
+	for _, s := range spans {
+		if s.Name == SpanOutputRepair {
+			repairFound = true
+			attrMap := spanAttrs(s)
+			if v, ok := attrMap[AttrOutputRepaired]; !ok || v != true {
+				t.Errorf("expected output.repaired=true, got %v", v)
+			}
+		}
+	}
+	if !repairFound {
+		t.Error("expected output.repair span")
+	}
+}
+
+func TestTracingHooksRunCondition(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "test-run-9",
+	}
+
+	hook.OnRunStart(ctx, rc, "test")
+	hook.OnTurnStart(ctx, rc, 1)
+	hook.OnRunConditionChecked(ctx, rc, true, "max duration exceeded")
+	hook.OnTurnEnd(ctx, rc, 1, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+	var condFound bool
+	for _, s := range spans {
+		if s.Name == SpanRunCondition {
+			condFound = true
+			attrMap := spanAttrs(s)
+			if v, ok := attrMap[AttrRunConditionReason]; !ok || v != "max duration exceeded" {
+				t.Errorf("expected reason 'max duration exceeded', got %v", v)
+			}
+		}
+	}
+	if !condFound {
+		t.Error("expected run_condition span")
+	}
+}
+
+func TestTracingHooksRunConditionNotFiredForContinue(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "test-run-10",
+	}
+
+	hook.OnRunStart(ctx, rc, "test")
+	// stopped=false should not create a span
+	hook.OnRunConditionChecked(ctx, rc, false, "")
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+	for _, s := range spans {
+		if s.Name == SpanRunCondition {
+			t.Error("run_condition span should not be created when stopped=false")
+		}
+	}
+}
+
+func TestTracingHooksSpanNamePrefix(t *testing.T) {
+	hook, exporter := setupTracing(t, WithSpanNamePrefix("myapp"))
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "test-run-11",
+	}
+
+	hook.OnRunStart(ctx, rc, "test")
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+	if len(spans) == 0 {
+		t.Fatal("expected spans")
+	}
+	if spans[0].Name != "myapp."+SpanAgentRun {
+		t.Errorf("expected prefixed span name, got %q", spans[0].Name)
+	}
+}
+
+func TestTracingHooksMultipleTurns(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "test-run-12",
+		Usage: core.RunUsage{
+			Usage:    core.Usage{InputTokens: 200, OutputTokens: 100},
+			Requests: 2,
+		},
+	}
+
+	hook.OnRunStart(ctx, rc, "multi-turn test")
+
+	// Turn 1
+	hook.OnTurnStart(ctx, rc, 1)
+	hook.OnModelRequest(ctx, rc, nil)
+	hook.OnModelResponse(ctx, rc, &core.ModelResponse{
+		ModelName:    "claude-sonnet",
+		Usage:        core.Usage{InputTokens: 100, OutputTokens: 50},
+		FinishReason: core.FinishReasonToolCall,
+		Parts:        []core.ModelResponsePart{core.ToolCallPart{ToolName: "search", ToolCallID: "call_1"}},
+	})
+	rc.ToolCallID = "call_1"
+	hook.OnToolStart(ctx, rc, "search", `{"q":"test"}`)
+	hook.OnToolEnd(ctx, rc, "search", "result", nil)
+	hook.OnTurnEnd(ctx, rc, 1, &core.ModelResponse{})
+
+	// Turn 2
+	hook.OnTurnStart(ctx, rc, 2)
+	hook.OnModelRequest(ctx, rc, nil)
+	hook.OnModelResponse(ctx, rc, &core.ModelResponse{
+		ModelName:    "claude-sonnet",
+		Usage:        core.Usage{InputTokens: 100, OutputTokens: 50},
+		FinishReason: core.FinishReasonStop,
+		Parts:        []core.ModelResponsePart{core.TextPart{Content: "done"}},
+	})
+	hook.OnTurnEnd(ctx, rc, 2, &core.ModelResponse{})
+
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+	spanNames := make(map[string]int)
+	for _, s := range spans {
+		spanNames[s.Name]++
+	}
+
+	if spanNames[SpanAgentRun] != 1 {
+		t.Errorf("expected 1 agent.run span, got %d", spanNames[SpanAgentRun])
+	}
+	if spanNames[SpanAgentTurn] != 2 {
+		t.Errorf("expected 2 agent.turn spans, got %d", spanNames[SpanAgentTurn])
+	}
+	if spanNames[SpanModelRequest] != 2 {
+		t.Errorf("expected 2 model.request spans, got %d", spanNames[SpanModelRequest])
+	}
+	if spanNames[SpanToolExecute+".search"] != 1 {
+		t.Errorf("expected 1 tool.execute.search span, got %d", spanNames[SpanToolExecute+".search"])
+	}
+}
+
+func TestTracingHooksSpanHierarchy(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID:      "test-run-13",
+		ToolCallID: "call_1",
+	}
+
+	hook.OnRunStart(ctx, rc, "test")
+	hook.OnTurnStart(ctx, rc, 1)
+	hook.OnModelRequest(ctx, rc, nil)
+	hook.OnModelResponse(ctx, rc, &core.ModelResponse{
+		ModelName: "test",
+		Parts:     []core.ModelResponsePart{core.TextPart{Content: "ok"}},
+	})
+	hook.OnToolStart(ctx, rc, "search", `{}`)
+	hook.OnToolEnd(ctx, rc, "search", "result", nil)
+	hook.OnTurnEnd(ctx, rc, 1, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+
+	// Build a map of span ID -> parent span ID.
+	spanByID := make(map[string]tracetest.SpanStub)
+	for _, s := range spans {
+		spanByID[s.SpanContext.SpanID().String()] = s
+	}
+
+	// Find root span (agent.run).
+	var rootSpanID string
+	for _, s := range spans {
+		if s.Name == SpanAgentRun {
+			rootSpanID = s.SpanContext.SpanID().String()
+			break
+		}
+	}
+
+	// Turn span should be child of root.
+	for _, s := range spans {
+		if s.Name == SpanAgentTurn {
+			if s.Parent.SpanID().String() != rootSpanID {
+				t.Errorf("turn span should be child of root span")
+			}
+		}
+	}
+
+	// Model and tool spans should be children of turn span.
+	var turnSpanID string
+	for _, s := range spans {
+		if s.Name == SpanAgentTurn {
+			turnSpanID = s.SpanContext.SpanID().String()
+			break
+		}
+	}
+
+	for _, s := range spans {
+		if s.Name == SpanModelRequest || s.Name == SpanToolExecute+".search" {
+			if s.Parent.SpanID().String() != turnSpanID {
+				t.Errorf("span %q should be child of turn span", s.Name)
+			}
+		}
+	}
+}
+
+func TestTracingHooksTruncation(t *testing.T) {
+	hook, exporter := setupTracing(t, WithMaxAttributeLength(10))
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "test-run-14",
+	}
+
+	longPrompt := "this is a very long prompt that should be truncated"
+	hook.OnRunStart(ctx, rc, longPrompt)
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+	for _, s := range spans {
+		if s.Name == SpanAgentRun {
+			attrMap := spanAttrs(s)
+			if v, ok := attrMap[AttrAgentPrompt]; ok {
+				if str, ok := v.(string); ok && len(str) > 10 {
+					t.Errorf("prompt should be truncated to 10 chars, got %d", len(str))
+				}
+			}
+		}
+	}
+}
+
+func TestTracingHooksRunStateCleanup(t *testing.T) {
+	hook, _ := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "test-run-cleanup",
+	}
+
+	hook.OnRunStart(ctx, rc, "test")
+	if loadRunState(rc.RunID) == nil {
+		t.Fatal("expected run state to exist")
+	}
+
+	hook.OnRunEnd(ctx, rc, nil, nil)
+	if loadRunState(rc.RunID) != nil {
+		t.Fatal("expected run state to be cleaned up")
+	}
+}
+
+func TestTracingHooksModelResponseAttributes(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "test-run-15",
+	}
+
+	hook.OnRunStart(ctx, rc, "test")
+	hook.OnTurnStart(ctx, rc, 1)
+	hook.OnModelRequest(ctx, rc, nil)
+	hook.OnModelResponse(ctx, rc, &core.ModelResponse{
+		ModelName:    "claude-opus",
+		Usage:        core.Usage{InputTokens: 500, OutputTokens: 200},
+		FinishReason: core.FinishReasonStop,
+		Parts:        []core.ModelResponsePart{core.TextPart{Content: "response"}},
+	})
+	hook.OnTurnEnd(ctx, rc, 1, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+	for _, s := range spans {
+		if s.Name == SpanModelRequest {
+			attrMap := spanAttrs(s)
+			if v, ok := attrMap[AttrModelName]; !ok || v != "claude-opus" {
+				t.Errorf("expected model name 'claude-opus', got %v", v)
+			}
+			if v, ok := attrMap[AttrInputTokens]; !ok || v != int64(500) {
+				t.Errorf("expected input tokens 500, got %v", v)
+			}
+			if v, ok := attrMap[AttrOutputTokens]; !ok || v != int64(200) {
+				t.Errorf("expected output tokens 200, got %v", v)
+			}
+			if v, ok := attrMap[AttrFinishReason]; !ok || v != "stop" {
+				t.Errorf("expected finish reason 'stop', got %v", v)
+			}
+		}
+	}
+}
+
+// spanAttrs converts a span's attributes to a map for easy lookup.
+func spanAttrs(s tracetest.SpanStub) map[string]any {
+	m := make(map[string]any)
+	for _, attr := range s.Attributes {
+		m[string(attr.Key)] = attr.Value.AsInterface()
+	}
+	return m
+}
