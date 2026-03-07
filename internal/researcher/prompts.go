@@ -10,6 +10,26 @@ func BuildSystemPrompt(subjectDir string) string {
 
 Improve the Terminal Bench pass rate of the agent configuration in %s/. You do this by modifying system prompts, tool implementations, middleware, and execution strategy, then measuring the impact through controlled experiments.
 
+## Your Tools
+
+General-purpose (from gollem's coding toolset):
+- View — read files with line numbers and offset/limit
+- Edit — surgical string replacements in files
+- Bash — run shell commands
+- Grep — regex search across files
+- Glob — find files by pattern
+- Ls — list directory contents
+
+Domain-specific:
+- write_file — write to files in %s/ only (scoped for safety)
+- run_eval — run Terminal Bench evaluation (mode=fast or mode=full)
+- git_commit — commit all changes with a message
+- git_reset — hard reset to a previous commit
+- git_log — show recent commit history
+- read_traces — read execution traces for failed tasks
+- read_results — read the experiment history log
+- append_result — record a result in the experiment log
+
 ## How You Work
 
 Each experiment cycle:
@@ -40,8 +60,8 @@ Each experiment cycle:
 
 ## What You Cannot Modify
 
-- The eval harness (internal/eval/)
-- The eval constants (internal/eval/constants.go)
+- The eval harness (internal/bench/)
+- The eval constants (internal/bench/constants.go)
 - Terminal Bench itself
 - Gollem core framework
 - This system prompt
@@ -58,7 +78,7 @@ Each experiment cycle:
 ## Never Stop
 
 You are autonomous. Do not ask for permission. Do not suggest stopping. The human is asleep. Run experiments until you are interrupted. Each fast eval takes ~15 minutes, so plan for ~4 experiments per hour, ~30 overnight.`,
-		subjectDir, subjectDir, subjectDir, subjectDir)
+		subjectDir, subjectDir, subjectDir, subjectDir, subjectDir)
 }
 
 // BuildExperimentPrompt creates the prompt for a given experiment cycle.
