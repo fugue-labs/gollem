@@ -1039,6 +1039,96 @@ func TestTracingHooksContextCompactionParentage(t *testing.T) {
 	}
 }
 
+// TestTracingHooksEmergencyTruncation verifies that emergency_truncation
+// compaction events (from ContextOverflowMiddleware) produce proper spans.
+func TestTracingHooksEmergencyTruncation(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "emergency-run",
+	}
+
+	hook.OnRunStart(ctx, rc, "big task")
+	hook.OnTurnStart(ctx, rc, 1)
+
+	// Simulate emergency truncation (what ContextOverflowMiddleware reports).
+	hook.OnContextCompaction(ctx, rc, core.ContextCompactionStats{
+		Strategy:              "emergency_truncation",
+		MessagesBefore:        100,
+		MessagesAfter:         8,
+		EstimatedTokensBefore: 250000,
+		EstimatedTokensAfter:  15000,
+	})
+
+	hook.OnTurnEnd(ctx, rc, 1, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+
+	var found bool
+	for _, s := range spans {
+		if s.Name == SpanContextCompaction+".emergency_truncation" {
+			found = true
+			attrs := spanAttrs(s)
+			if v := attrs[AttrCompactionStrategy]; v != "emergency_truncation" {
+				t.Errorf("expected strategy 'emergency_truncation', got %v", v)
+			}
+			if v := attrs[AttrCompactionMsgsBefore]; v != int64(100) {
+				t.Errorf("expected messages_before=100, got %v", v)
+			}
+			if v := attrs[AttrCompactionMsgsAfter]; v != int64(8) {
+				t.Errorf("expected messages_after=8, got %v", v)
+			}
+			if v := attrs[AttrCompactionTokensBefore]; v != int64(250000) {
+				t.Errorf("expected tokens_before=250000, got %v", v)
+			}
+			if v := attrs[AttrCompactionTokensAfter]; v != int64(15000) {
+				t.Errorf("expected tokens_after=15000, got %v", v)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected context.compaction.emergency_truncation span")
+	}
+}
+
+// TestCompactionCallbackContext verifies that CompactionCallbackFromContext
+// round-trips correctly and can be used by middleware.
+func TestCompactionCallbackContext(t *testing.T) {
+	var received core.ContextCompactionStats
+	cb := func(stats core.ContextCompactionStats) {
+		received = stats
+	}
+
+	ctx := core.ContextWithCompactionCallback(context.Background(), cb)
+	extracted := core.CompactionCallbackFromContext(ctx)
+	if extracted == nil {
+		t.Fatal("expected callback from context")
+	}
+
+	extracted(core.ContextCompactionStats{
+		Strategy:       "emergency_truncation",
+		MessagesBefore: 50,
+		MessagesAfter:  10,
+	})
+
+	if received.Strategy != "emergency_truncation" {
+		t.Errorf("expected 'emergency_truncation', got %q", received.Strategy)
+	}
+	if received.MessagesBefore != 50 || received.MessagesAfter != 10 {
+		t.Errorf("unexpected stats: %+v", received)
+	}
+}
+
+// TestCompactionCallbackContextNil verifies nil return when no callback is set.
+func TestCompactionCallbackContextNil(t *testing.T) {
+	cb := core.CompactionCallbackFromContext(context.Background())
+	if cb != nil {
+		t.Error("expected nil callback from empty context")
+	}
+}
+
 // spanAttrs converts a span's attributes to a map for easy lookup.
 func spanAttrs(s tracetest.SpanStub) map[string]any {
 	m := make(map[string]any)

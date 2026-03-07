@@ -960,12 +960,22 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 			})
 		}
 
+		// Inject compaction callback into context so middleware (e.g.,
+		// ContextOverflowMiddleware) can report emergency compression to hooks.
+		mwCtx := ContextWithCompactionCallback(ctx, func(stats ContextCompactionStats) {
+			a.fireHook(func(h Hook) {
+				if h.OnContextCompaction != nil {
+					h.OnContextCompaction(ctx, turnRC, stats)
+				}
+			})
+		})
+
 		// Call the model (through middleware chain if configured).
 		var resp *ModelResponse
 		var err error
 		if len(a.middleware) > 0 {
 			chain := buildMiddlewareChain(a.middleware, a.model)
-			resp, err = chain(ctx, messages, settings, params)
+			resp, err = chain(mwCtx, messages, settings, params)
 		} else {
 			resp, err = a.model.Request(ctx, messages, settings, params)
 		}
