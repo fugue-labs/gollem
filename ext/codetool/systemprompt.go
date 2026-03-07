@@ -93,7 +93,9 @@ Common pitfalls to avoid:
 
 - **multi_edit**: Batch multiple edits across one or more files in one call. More efficient than sequential edit calls when making related changes. Each edit needs a unique old_string within its file.
 
-- **bash**: Set appropriate timeouts for long-running commands. Check exit codes. Do NOT use bash (sed, awk, echo, printf) for file editing — use edit, multi_edit, or write instead.
+- **bash**: Set appropriate timeouts for long-running commands. Check exit codes. Do NOT use bash (sed, awk, echo, printf) for file editing — use edit, multi_edit, or write instead. Use ` + "`background: true`" + ` for long-running processes (builds, servers) — returns immediately with a process ID. Add ` + "`keep_alive: true`" + ` for services that must persist after agent exit.
+
+- **bash_status**: Check the status of background processes. Use ` + "`id: 'all'`" + ` to list all processes, or a specific ID like ` + "`id: 'bg-1'`" + ` to see output and exit code. Completed processes are also announced automatically between turns.
 
 - **grep**: Use specific patterns. Use include to filter by extension (supports {a,b} braces, e.g. '*.{ts,tsx}'). Use files_only to survey which files match.
 
