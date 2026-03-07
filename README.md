@@ -229,19 +229,18 @@ result, err := agent.Run(ctx, "Analyze Q4 earnings report")
 
 The `ext/codetool` package can start long-running commands in the background, surface status through a companion tool, and adopt already-started processes into the same tracking pool.
 
-Use `codetool.Toolset(...)` when you want the background lifecycle wired automatically. It installs both `bash` and `bash_status`, cleans up non-`keep_alive` processes at run end, and injects completion notifications back into the agent loop.
+Use `codetool.AgentOptions(...)` for the recommended automatic lifecycle. It installs `bash` and `bash_status`, cleans up non-`keep_alive` processes at run end, injects completion notifications back into the agent loop, and in team mode creates isolated background-process managers for each worker and delegated subagent.
 
 ```go
 import (
+    "context"
+
+    "github.com/fugue-labs/gollem"
     "github.com/fugue-labs/gollem/ext/codetool"
 )
 
-ts := codetool.Toolset(
-    codetool.WithWorkDir("/repo"),
-)
-
 agent := gollem.NewAgent[string](model,
-    gollem.WithToolsets[string](ts),
+    codetool.AgentOptions("/repo")...,
 )
 
 // The model can now call:
@@ -249,7 +248,27 @@ agent := gollem.NewAgent[string](model,
 //   bash_status({"id":"all"})
 ```
 
-If you assemble tools manually, pass a shared `BackgroundProcessManager` so `bash` and `bash_status` see the same process pool:
+`codetool.Toolset(...)` is now stateless. If you use `Toolset(...)` or `AllTools(...)` directly, pass an explicit `BackgroundProcessManager` and wire lifecycle manually:
+
+```go
+mgr := codetool.NewBackgroundProcessManager()
+ts := codetool.Toolset(
+    codetool.WithWorkDir("/repo"),
+    codetool.WithBackgroundProcessManager(mgr),
+)
+
+agent := gollem.NewAgent[string](model,
+    gollem.WithToolsets[string](ts),
+    gollem.WithHooks[string](gollem.Hook{
+        OnRunEnd: func(_ context.Context, _ *gollem.RunContext, _ []gollem.ModelMessage, _ error) {
+            mgr.Cleanup()
+        },
+    }),
+    gollem.WithDynamicSystemPrompt[string](mgr.CompletionPrompt),
+)
+```
+
+If you assemble individual tools manually, pass the same manager to both `bash` and `bash_status` so they share the same process pool:
 
 ```go
 mgr := codetool.NewBackgroundProcessManager()
@@ -328,6 +347,8 @@ result, _ := leader.Run(ctx, "Coordinate the code review across all teammates")
 
 t.Shutdown(ctx)
 ```
+
+If your teammate toolset contains per-worker state, use `team.TeamConfig.ToolsetFactory` instead of sharing a single `Toolset`. This is the right pattern for stateful helpers such as background-process managers. `codetool.AgentOptions(...)` handles that automatically in team mode.
 
 ### Multi-Agent with Event Coordination
 

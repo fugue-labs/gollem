@@ -19,11 +19,29 @@
 //
 // # Usage
 //
-// Use [Toolset] to get all tools as a [core.Toolset], or pick individual tools:
+// Use [AgentOptions] for the recommended coding-agent setup with automatic
+// background-process lifecycle, or use [Toolset] / individual tools directly
+// when you want to wire that lifecycle yourself:
 //
-//	// All tools with defaults
-//	ts := codetool.Toolset()
-//	agent := core.NewAgent(model, "You are a coding agent.", core.WithToolsets[string](ts))
+//	// Recommended: automatic lifecycle via AgentOptions
+//	opts := codetool.AgentOptions("/my/project")
+//	agent := core.NewAgent(model, opts...)
+//
+//	// Direct toolset use: stateless, so provide a manager yourself
+//	mgr := codetool.NewBackgroundProcessManager()
+//	ts := codetool.Toolset(
+//		codetool.WithWorkDir("/my/project"),
+//		codetool.WithBackgroundProcessManager(mgr),
+//	)
+//	agent := core.NewAgent(model, "You are a coding agent.",
+//		core.WithToolsets[string](ts),
+//		core.WithHooks[string](core.Hook{
+//			OnRunEnd: func(_ context.Context, _ *core.RunContext, _ []core.ModelMessage, _ error) {
+//				mgr.Cleanup()
+//			},
+//		}),
+//		core.WithDynamicSystemPrompt[string](mgr.CompletionPrompt),
+//	)
 //
 //	// Individual tools with options
 //	mgr := codetool.NewBackgroundProcessManager()
@@ -40,6 +58,7 @@
 //   - Tool-level: call Bash with `background=true` and query progress with BashStatus.
 //     When you construct tools manually, pass a shared BackgroundProcessManager via
 //     WithBackgroundProcessManager so both tools reference the same process pool.
+//     [Toolset] is stateless and does not auto-wire cleanup or completion prompts.
 //   - Manager-level: if you start a process yourself, hand it to
 //     BackgroundProcessManager.Adopt or AdoptWithWait so the manager assigns an ID,
 //     captures output, tracks completion, and exposes status through BashStatus.
