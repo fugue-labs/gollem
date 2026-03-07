@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	maxBackgroundProcesses = 5
+	maxBackgroundProcesses = 10
 	ringBufferCapacity     = 1000
 )
 
