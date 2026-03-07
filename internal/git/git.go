@@ -4,6 +4,7 @@ package git
 import (
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -29,12 +30,12 @@ func ResetHard(commit string) (string, error) {
 	if err := run("git", "reset", "--hard", commit); err != nil {
 		return "", fmt.Errorf("git reset: %w", err)
 	}
-	return fmt.Sprintf("reset to %s", commit), nil
+	return "reset to " + commit, nil
 }
 
 // Log returns the last n commit log entries (oneline format).
 func Log(n int) (string, error) {
-	out, err := output("git", "log", "--oneline", fmt.Sprintf("-%d", n))
+	out, err := output("git", "log", "--oneline", "-"+strconv.Itoa(n))
 	if err != nil {
 		return "", fmt.Errorf("git log: %w", err)
 	}
@@ -55,7 +56,7 @@ func run(name string, args ...string) error {
 	cmd.Dir = "."
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -65,7 +66,7 @@ func output(name string, args ...string) (string, error) {
 	cmd.Dir = "."
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("%s: %s", err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
 }

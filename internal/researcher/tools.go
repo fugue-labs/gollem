@@ -52,19 +52,19 @@ func writeFileTool(subjectDir string) core.Tool {
 		func(_ context.Context, p WriteFileParams) (string, error) {
 			// Resolve the requested path to absolute and clean it to prevent
 			// path traversal attacks (e.g., "autoeval-subject/../internal/eval/constants.go").
-			absPath, err := filepath.Abs(filepath.Clean(p.Path))
-			if err != nil {
-				return "", fmt.Errorf("resolve path: %w", err)
+			absPath, pathErr := filepath.Abs(filepath.Clean(p.Path))
+			if pathErr != nil {
+				return "", fmt.Errorf("resolve path: %w", pathErr)
 			}
 			if !strings.HasPrefix(absPath, absSubjectDir+string(filepath.Separator)) && absPath != absSubjectDir {
 				return "", fmt.Errorf("can only modify files in %s/, got: %s (resolved: %s)", subjectDir, p.Path, absPath)
 			}
 			// Use the cleaned absolute path for actual I/O to prevent TOCTOU issues.
-			if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
-				return "", fmt.Errorf("mkdir: %w", err)
+			if mkdirErr := os.MkdirAll(filepath.Dir(absPath), 0o755); mkdirErr != nil {
+				return "", fmt.Errorf("mkdir: %w", mkdirErr)
 			}
-			if err := os.WriteFile(absPath, []byte(p.Content), 0o644); err != nil {
-				return "", fmt.Errorf("write: %w", err)
+			if writeErr := os.WriteFile(absPath, []byte(p.Content), 0o644); writeErr != nil {
+				return "", fmt.Errorf("write: %w", writeErr)
 			}
 			return fmt.Sprintf("wrote %d bytes to %s", len(p.Content), p.Path), nil
 		},
@@ -85,12 +85,18 @@ func runEvalTool(cfg Config) core.Tool {
 			if err != nil {
 				// Return partial results with the error so the agent can see what happened.
 				if output != nil {
-					data, _ := json.MarshalIndent(output, "", "  ")
+					data, marshalErr := json.MarshalIndent(output, "", "  ")
+					if marshalErr != nil {
+						return fmt.Sprintf("eval error: %v (could not marshal partial results)", err), nil
+					}
 					return fmt.Sprintf("eval error: %v\npartial results: %s", err, string(data)), nil
 				}
 				return "", fmt.Errorf("eval failed: %w", err)
 			}
-			data, _ := json.MarshalIndent(output, "", "  ")
+			data, marshalErr := json.MarshalIndent(output, "", "  ")
+			if marshalErr != nil {
+				return "", fmt.Errorf("marshal eval results: %w", marshalErr)
+			}
 			return string(data), nil
 		},
 	)
@@ -110,7 +116,7 @@ func gitCommitTool() core.Tool {
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("committed: %s", hash), nil
+			return "committed: " + hash, nil
 		},
 	)
 }
@@ -171,9 +177,9 @@ func readTracesTool(tracesDir string) core.Tool {
 
 			var sb strings.Builder
 			for _, match := range matches {
-				data, err := os.ReadFile(match)
-				if err != nil {
-					fmt.Fprintf(&sb, "error reading %s: %v\n", match, err)
+				data, readErr := os.ReadFile(match)
+				if readErr != nil {
+					fmt.Fprintf(&sb, "error reading %s: %v\n", match, readErr)
 					continue
 				}
 				fmt.Fprintf(&sb, "=== %s ===\n%s\n\n", filepath.Base(match), string(data))
@@ -216,8 +222,8 @@ func listDirTool() core.Tool {
 				if entry.IsDir() {
 					fmt.Fprintf(&sb, "%s/\n", entry.Name())
 				} else {
-					info, _ := entry.Info()
-					if info != nil {
+					info, infoErr := entry.Info()
+					if infoErr == nil && info != nil {
 						fmt.Fprintf(&sb, "%s (%d bytes)\n", entry.Name(), info.Size())
 					} else {
 						fmt.Fprintf(&sb, "%s\n", entry.Name())
@@ -269,8 +275,8 @@ func appendResultTool(resultsFile string) core.Tool {
 			if !strings.HasSuffix(line, "\n") {
 				line += "\n"
 			}
-			if _, err := f.WriteString(line); err != nil {
-				return "", fmt.Errorf("write result: %w", err)
+			if _, writeErr := f.WriteString(line); writeErr != nil {
+				return "", fmt.Errorf("write result: %w", writeErr)
 			}
 			return "appended to " + resultsFile, nil
 		},

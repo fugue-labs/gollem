@@ -22,32 +22,32 @@ func NewResearcherAgent(cfg Config) *core.Agent[ExperimentResult] {
 	costTracker := core.NewCostTracker(modelPricing(cfg))
 
 	return core.NewAgent[ExperimentResult](model,
-		// Identity
+		// Identity.
 		core.WithSystemPrompt[ExperimentResult](BuildSystemPrompt(cfg.SubjectDir)),
 
-		// Tools — the researcher's capabilities
+		// Tools — the researcher's capabilities.
 		core.WithTools[ExperimentResult](BuildTools(cfg)...),
 
-		// Safety: turn guardrail limits steps per experiment cycle
+		// Safety: turn guardrail limits steps per experiment cycle.
 		core.WithTurnGuardrail[ExperimentResult]("max_turns",
 			core.MaxTurns(100),
 		),
 
-		// Safety: input guardrail prevents writes outside subject/
+		// Safety: input guardrail validates prompts before each run.
 		core.WithInputGuardrail[ExperimentResult]("scope",
 			scopeGuardrail(cfg.SubjectDir),
 		),
 
-		// Observability: cost tracking
+		// Observability: cost tracking.
 		core.WithCostTracker[ExperimentResult](costTracker),
 
-		// Observability: tracing with JSON file export
+		// Observability: tracing with JSON file export.
 		core.WithTracing[ExperimentResult](),
 		core.WithTraceExporter[ExperimentResult](
 			core.NewJSONFileExporter(cfg.HarnessTracesDir),
 		),
 
-		// Observability: lifecycle hooks
+		// Observability: lifecycle hooks.
 		core.WithHooks[ExperimentResult](core.Hook{
 			OnToolStart: func(_ context.Context, _ *core.RunContext, name, _ string) {
 				log.Printf("[researcher] tool: %s", name)
@@ -59,14 +59,14 @@ func NewResearcherAgent(cfg Config) *core.Agent[ExperimentResult] {
 			},
 		}),
 
-		// Middleware: timing
+		// Middleware: timing.
 		core.WithAgentMiddleware[ExperimentResult](
 			core.TimingMiddleware(func(d time.Duration) {
 				log.Printf("[researcher] model call: %v", d)
 			}),
 		),
 
-		// Context management for long conversations
+		// Context management for long conversations.
 		core.WithAutoContext[ExperimentResult](core.AutoContextConfig{
 			MaxTokens: 100000,
 			KeepLastN: 20,
@@ -107,8 +107,8 @@ func selectModel(cfg Config) core.Model {
 	}
 }
 
-// scopeGuardrail is an input guardrail that validates prompts.
-// Tool-level scope enforcement is handled by writeFileTool directly.
+// scopeGuardrail is an input guardrail placeholder.
+// Write scope enforcement is handled by writeFileTool directly.
 func scopeGuardrail(_ string) core.InputGuardrailFunc {
 	return func(_ context.Context, prompt string) (string, error) {
 		return prompt, nil
