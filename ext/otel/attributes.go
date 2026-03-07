@@ -64,22 +64,30 @@ const (
 	AttrPipelineStepIndex = "gollem.pipeline.step_index"
 	AttrHandoffStepName   = "gollem.handoff.step_name"
 	AttrHandoffStepIndex  = "gollem.handoff.step_index"
+
+	// Context compaction attributes.
+	AttrCompactionStrategy     = "gollem.compaction.strategy"
+	AttrCompactionMsgsBefore   = "gollem.compaction.messages_before"
+	AttrCompactionMsgsAfter    = "gollem.compaction.messages_after"
+	AttrCompactionTokensBefore = "gollem.compaction.estimated_tokens_before"
+	AttrCompactionTokensAfter  = "gollem.compaction.estimated_tokens_after"
 )
 
 // Span names used by the tracing system.
 const (
-	SpanAgentRun         = "agent.run"
-	SpanAgentTurn        = "agent.turn"
-	SpanModelRequest     = "model.request"
-	SpanToolExecute      = "tool.execute"
-	SpanGuardrail        = "guardrail"
-	SpanOutputValidation = "output.validation"
-	SpanOutputRepair     = "output.repair"
-	SpanRunCondition     = "run_condition"
-	SpanPipelineRun      = "pipeline.run"
-	SpanPipelineStep     = "pipeline.step"
-	SpanHandoffRun       = "handoff.run"
-	SpanHandoffStep      = "handoff.step"
+	SpanAgentRun          = "agent.run"
+	SpanAgentTurn         = "agent.turn"
+	SpanModelRequest      = "model.request"
+	SpanToolExecute       = "tool.execute"
+	SpanGuardrail         = "guardrail"
+	SpanOutputValidation  = "output.validation"
+	SpanOutputRepair      = "output.repair"
+	SpanRunCondition      = "run_condition"
+	SpanContextCompaction = "context.compaction"
+	SpanPipelineRun       = "pipeline.run"
+	SpanPipelineStep      = "pipeline.step"
+	SpanHandoffRun        = "handoff.run"
+	SpanHandoffStep       = "handoff.step"
 )
 
 // agentNameAttr returns an attribute for the agent name.

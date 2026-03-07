@@ -939,6 +939,106 @@ func TestTracingHooksNestedDelegation(t *testing.T) {
 	}
 }
 
+// TestTracingHooksContextCompaction verifies that context compaction events
+// produce spans with before/after token and message count attributes.
+func TestTracingHooksContextCompaction(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "compaction-run",
+	}
+
+	hook.OnRunStart(ctx, rc, "long task")
+	hook.OnTurnStart(ctx, rc, 5)
+
+	// Simulate auto-summary compaction.
+	hook.OnContextCompaction(ctx, rc, core.ContextCompactionStats{
+		Strategy:              "auto_summary",
+		MessagesBefore:        42,
+		MessagesAfter:         6,
+		EstimatedTokensBefore: 150000,
+		EstimatedTokensAfter:  12000,
+	})
+
+	hook.OnTurnEnd(ctx, rc, 5, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+
+	var compactionFound bool
+	for _, s := range spans {
+		if s.Name == SpanContextCompaction+".auto_summary" {
+			compactionFound = true
+			attrs := spanAttrs(s)
+			if v := attrs[AttrCompactionStrategy]; v != "auto_summary" {
+				t.Errorf("expected strategy 'auto_summary', got %v", v)
+			}
+			if v := attrs[AttrCompactionMsgsBefore]; v != int64(42) {
+				t.Errorf("expected messages_before=42, got %v", v)
+			}
+			if v := attrs[AttrCompactionMsgsAfter]; v != int64(6) {
+				t.Errorf("expected messages_after=6, got %v", v)
+			}
+			if v := attrs[AttrCompactionTokensBefore]; v != int64(150000) {
+				t.Errorf("expected tokens_before=150000, got %v", v)
+			}
+			if v := attrs[AttrCompactionTokensAfter]; v != int64(12000) {
+				t.Errorf("expected tokens_after=12000, got %v", v)
+			}
+		}
+	}
+	if !compactionFound {
+		t.Error("expected context.compaction.auto_summary span")
+	}
+}
+
+// TestTracingHooksContextCompactionParentage verifies compaction spans
+// are children of the current turn span.
+func TestTracingHooksContextCompactionParentage(t *testing.T) {
+	hook, exporter := setupTracing(t)
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "compaction-parent-run",
+	}
+
+	hook.OnRunStart(ctx, rc, "test")
+	hook.OnTurnStart(ctx, rc, 3)
+	hook.OnContextCompaction(ctx, rc, core.ContextCompactionStats{
+		Strategy:              "history_processor",
+		MessagesBefore:        20,
+		MessagesAfter:         20,
+		EstimatedTokensBefore: 80000,
+		EstimatedTokensAfter:  50000,
+	})
+	hook.OnTurnEnd(ctx, rc, 3, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+
+	var turnSpanID, compactionParentID string
+	for _, s := range spans {
+		if s.Name == SpanAgentTurn {
+			turnSpanID = s.SpanContext.SpanID().String()
+		}
+		if s.Name == SpanContextCompaction+".history_processor" {
+			compactionParentID = s.Parent.SpanID().String()
+		}
+	}
+
+	if turnSpanID == "" {
+		t.Fatal("turn span not found")
+	}
+	if compactionParentID == "" {
+		t.Fatal("compaction span not found")
+	}
+	if compactionParentID != turnSpanID {
+		t.Errorf("compaction span should be child of turn span: got %s, want %s",
+			compactionParentID, turnSpanID)
+	}
+}
+
 // spanAttrs converts a span's attributes to a map for easy lookup.
 func spanAttrs(s tracetest.SpanStub) map[string]any {
 	m := make(map[string]any)

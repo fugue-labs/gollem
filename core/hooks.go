@@ -29,6 +29,27 @@ type Hook struct {
 	OnOutputRepair func(ctx context.Context, rc *RunContext, succeeded bool, err error)
 	// OnRunConditionChecked fires when a run condition is evaluated and stops the run.
 	OnRunConditionChecked func(ctx context.Context, rc *RunContext, stopped bool, reason string)
+	// OnContextCompaction fires when the message history is compressed to
+	// fit within the context window. This includes auto-summarization
+	// (AutoContext) and emergency truncation (ContextOverflowMiddleware).
+	OnContextCompaction func(ctx context.Context, rc *RunContext, stats ContextCompactionStats)
+}
+
+// ContextCompactionStats captures before/after state of a context compaction event.
+type ContextCompactionStats struct {
+	// Strategy identifies the compaction mechanism.
+	// Values: "auto_summary", "history_processor", "emergency_truncation"
+	Strategy string
+
+	// MessagesBefore is the message count before compaction.
+	MessagesBefore int
+	// MessagesAfter is the message count after compaction.
+	MessagesAfter int
+
+	// EstimatedTokensBefore is the estimated token count before compaction.
+	EstimatedTokensBefore int
+	// EstimatedTokensAfter is the estimated token count after compaction.
+	EstimatedTokensAfter int
 }
 
 // WithHooks adds lifecycle hooks to the agent. Multiple hooks can be added;

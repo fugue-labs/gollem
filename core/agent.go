@@ -851,18 +851,47 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 		// to eventually exceed the summary model's own context window,
 		// leading to silent failure → main model 413 → emergency truncation.
 		if a.autoContext != nil {
+			beforeCount := len(state.messages)
+			beforeTokens := estimateTokens(state.messages)
 			compressed, compErr := autoCompressMessages(ctx, state.messages, a.autoContext, a.model)
-			if compErr == nil && len(compressed) < len(state.messages) {
+			if compErr == nil && len(compressed) < beforeCount {
 				state.messages = compressed
+				a.fireHook(func(h Hook) {
+					if h.OnContextCompaction != nil {
+						h.OnContextCompaction(ctx, turnRC, ContextCompactionStats{
+							Strategy:              "auto_summary",
+							MessagesBefore:        beforeCount,
+							MessagesAfter:         len(compressed),
+							EstimatedTokensBefore: beforeTokens,
+							EstimatedTokensAfter:  estimateTokens(compressed),
+						})
+					}
+				})
 			}
 		}
 
 		// Apply history processors.
 		messages := state.messages
 		for _, proc := range a.historyProcessors {
+			beforeCount := len(messages)
+			beforeTokens := estimateTokens(messages)
 			processed, procErr := proc(ctx, messages)
 			if procErr != nil {
 				return nil, fmt.Errorf("history processor failed: %w", procErr)
+			}
+			// Fire compaction hook if the processor changed message count or content.
+			if estimateTokens(processed) != beforeTokens {
+				a.fireHook(func(h Hook) {
+					if h.OnContextCompaction != nil {
+						h.OnContextCompaction(ctx, turnRC, ContextCompactionStats{
+							Strategy:              "history_processor",
+							MessagesBefore:        beforeCount,
+							MessagesAfter:         len(processed),
+							EstimatedTokensBefore: beforeTokens,
+							EstimatedTokensAfter:  estimateTokens(processed),
+						})
+					}
+				})
 			}
 			messages = processed
 		}

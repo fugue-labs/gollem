@@ -41,6 +41,7 @@ type runSpanState struct {
 //
 //	agent.run (root)
 //	├── agent.turn[N]
+//	│   ├── context.compaction.{strategy}
 //	│   ├── model.request
 //	│   └── tool.execute.{name}
 //	│       └── agent.run (child — delegate, teammate, AgentTool)
@@ -79,6 +80,7 @@ func TracingHooks(opts ...TracingOption) core.Hook {
 		OnOutputValidation:    onOutputValidation(tracer, cfg),
 		OnOutputRepair:        onOutputRepair(tracer, cfg),
 		OnRunConditionChecked: onRunConditionChecked(tracer, cfg),
+		OnContextCompaction:   onContextCompaction(tracer, cfg),
 	}
 }
 
@@ -524,6 +526,40 @@ func onRunConditionChecked(tracer trace.Tracer, cfg *tracingConfig) func(ctx con
 			trace.WithAttributes(
 				attribute.Bool(AttrRunConditionStopped, stopped),
 				attribute.String(AttrRunConditionReason, reason),
+			),
+		)
+		span.SetStatus(codes.Ok, "")
+		span.End()
+	}
+}
+
+// onContextCompaction creates a span when the agent's context window is compressed.
+func onContextCompaction(tracer trace.Tracer, cfg *tracingConfig) func(ctx context.Context, rc *core.RunContext, stats core.ContextCompactionStats) {
+	return func(ctx context.Context, rc *core.RunContext, stats core.ContextCompactionStats) {
+		state := loadRunState(rc.RunID)
+		if state == nil {
+			return
+		}
+
+		state.mu.Lock()
+		parent := state.turnSpan
+		if parent == nil {
+			parent = state.rootSpan
+		}
+		state.mu.Unlock()
+
+		if parent == nil {
+			return
+		}
+
+		parentCtx := trace.ContextWithSpan(ctx, parent)
+		_, span := tracer.Start(parentCtx, cfg.spanName(SpanContextCompaction+"."+stats.Strategy),
+			trace.WithAttributes(
+				attribute.String(AttrCompactionStrategy, stats.Strategy),
+				attribute.Int(AttrCompactionMsgsBefore, stats.MessagesBefore),
+				attribute.Int(AttrCompactionMsgsAfter, stats.MessagesAfter),
+				attribute.Int(AttrCompactionTokensBefore, stats.EstimatedTokensBefore),
+				attribute.Int(AttrCompactionTokensAfter, stats.EstimatedTokensAfter),
 			),
 		)
 		span.SetStatus(codes.Ok, "")
