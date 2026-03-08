@@ -27,8 +27,15 @@ func WithAutoContext[T any](config AutoContextConfig) AgentOption[T] {
 	}
 }
 
-// estimateTokens estimates the token count of messages using a simple word-based heuristic.
+// EstimateTokens estimates the token count of messages using a simple word-based heuristic.
 // Uses ~1.3 tokens per word as a rough approximation.
+// Exported so that middleware (e.g., ContextOverflowMiddleware) can compute
+// before/after token counts for compaction reporting.
+func EstimateTokens(messages []ModelMessage) int {
+	return estimateTokens(messages)
+}
+
+// estimateTokens is the internal implementation.
 func estimateTokens(messages []ModelMessage) int {
 	total := 0
 	for _, msg := range messages {

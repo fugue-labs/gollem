@@ -33,6 +33,7 @@ linters:
       max-func-lines: 30
     gosec:
       excludes:
+        - G101 # false positive on OTEL attribute names containing "token"
         - G104 # unhandled errors on deferred Close, fmt.Fprint — intentional
         - G204 # subprocess with variable args — required for MCP stdio transport
         - G301 # directory permissions 0755 — standard for trace export dirs

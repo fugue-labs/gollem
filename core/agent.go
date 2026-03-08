@@ -512,6 +512,18 @@ func (a *Agent[T]) Run(ctx context.Context, prompt string, opts ...RunOption) (*
 	for _, g := range a.inputGuardrails {
 		var gErr error
 		prompt, gErr = g.fn(ctx, prompt)
+		passed := gErr == nil
+		a.fireHook(func(h Hook) {
+			if h.OnGuardrailEvaluated != nil {
+				h.OnGuardrailEvaluated(ctx, &RunContext{
+					Deps:         deps,
+					Usage:        state.usage,
+					Prompt:       prompt,
+					RunID:        state.runID,
+					RunStartTime: state.startTime,
+				}, g.name, passed, gErr)
+			}
+		})
 		if gErr != nil {
 			return nil, &GuardrailError{
 				GuardrailName: g.name,
@@ -520,7 +532,11 @@ func (a *Agent[T]) Run(ctx context.Context, prompt string, opts ...RunOption) (*
 		}
 	}
 
-	// Fire OnRunStart hooks.
+	// Fire OnRunStart hooks BEFORE injecting this run's RunID into context.
+	// This ordering is critical: hooks need to see the PARENT's RunID in
+	// context (if any) to establish parent-child span relationships. After
+	// hooks fire, we inject this run's RunID so that tool handlers (which
+	// may spawn child agents) propagate the correct parent identity.
 	rc := a.buildRunContext(state, deps, prompt)
 
 	// Publish RunStartedEvent.
@@ -532,6 +548,11 @@ func (a *Agent[T]) Run(ctx context.Context, prompt string, opts ...RunOption) (*
 			h.OnRunStart(ctx, rc, prompt)
 		}
 	})
+
+	// Inject this run's RunID into context so child agents (subagents,
+	// teammates, AgentTool) can discover their parent agent's tracing state.
+	// Must come AFTER OnRunStart so hooks see the parent's RunID.
+	ctx = ContextWithRunID(ctx, state.runID)
 
 	result, runErr := a.runLoop(ctx, state, prompt, settings, limits, deps, cfg.deferredResults, cfg.initialRequestParts)
 
@@ -617,6 +638,16 @@ func (a *Agent[T]) RunStream(ctx context.Context, prompt string, opts ...RunOpti
 	for _, g := range a.inputGuardrails {
 		var gErr error
 		prompt, gErr = g.fn(ctx, prompt)
+		passed := gErr == nil
+		a.fireHook(func(h Hook) {
+			if h.OnGuardrailEvaluated != nil {
+				h.OnGuardrailEvaluated(ctx, &RunContext{
+					Prompt:       prompt,
+					RunID:        state.runID,
+					RunStartTime: state.startTime,
+				}, g.name, passed, gErr)
+			}
+		})
 		if gErr != nil {
 			return nil, &GuardrailError{
 				GuardrailName: g.name,
@@ -837,6 +868,22 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 
 		state.runStep++
 
+		// Fire OnTurnStart hooks.
+		turnRC := &RunContext{
+			Deps:         deps,
+			Usage:        state.usage,
+			Prompt:       prompt,
+			RunStep:      state.runStep,
+			RunID:        state.runID,
+			RunStartTime: state.startTime,
+			EventBus:     a.eventBus,
+		}
+		a.fireHook(func(h Hook) {
+			if h.OnTurnStart != nil {
+				h.OnTurnStart(ctx, turnRC, state.runStep)
+			}
+		})
+
 		// Apply prepare functions to filter/modify tools for this iteration.
 		preparedTools := a.prepareTools(ctx, state, allTools, deps, prompt)
 
@@ -861,18 +908,48 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 		// to eventually exceed the summary model's own context window,
 		// leading to silent failure → main model 413 → emergency truncation.
 		if a.autoContext != nil {
+			beforeCount := len(state.messages)
+			beforeTokens := estimateTokens(state.messages)
 			compressed, compErr := autoCompressMessages(ctx, state.messages, a.autoContext, a.model)
-			if compErr == nil && len(compressed) < len(state.messages) {
+			if compErr == nil && len(compressed) < beforeCount {
 				state.messages = compressed
+				a.fireHook(func(h Hook) {
+					if h.OnContextCompaction != nil {
+						h.OnContextCompaction(ctx, turnRC, ContextCompactionStats{
+							Strategy:              CompactionStrategyAutoSummary,
+							MessagesBefore:        beforeCount,
+							MessagesAfter:         len(compressed),
+							EstimatedTokensBefore: beforeTokens,
+							EstimatedTokensAfter:  estimateTokens(compressed),
+						})
+					}
+				})
 			}
 		}
 
 		// Apply history processors.
 		messages := state.messages
 		for _, proc := range a.historyProcessors {
+			beforeCount := len(messages)
+			beforeTokens := estimateTokens(messages)
 			processed, procErr := proc(ctx, messages)
 			if procErr != nil {
 				return nil, fmt.Errorf("history processor failed: %w", procErr)
+			}
+			// Fire compaction hook if the processor changed token count.
+			afterTokens := estimateTokens(processed)
+			if afterTokens != beforeTokens {
+				a.fireHook(func(h Hook) {
+					if h.OnContextCompaction != nil {
+						h.OnContextCompaction(ctx, turnRC, ContextCompactionStats{
+							Strategy:              CompactionStrategyHistoryProcessor,
+							MessagesBefore:        beforeCount,
+							MessagesAfter:         len(processed),
+							EstimatedTokensBefore: beforeTokens,
+							EstimatedTokensAfter:  afterTokens,
+						})
+					}
+				})
 			}
 			messages = processed
 		}
@@ -888,10 +965,17 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 		}
 
 		// Run turn guardrails.
-		turnRC := a.buildRunContext(state, deps, prompt)
-		turnRC.Messages = messages
+		turnGuardRC := a.buildRunContext(state, deps, prompt)
+		turnGuardRC.Messages = messages
 		for _, g := range a.turnGuardrails {
-			if gErr := g.fn(ctx, turnRC, messages); gErr != nil {
+			gErr := g.fn(ctx, turnGuardRC, messages)
+			passed := gErr == nil
+			a.fireHook(func(h Hook) {
+				if h.OnGuardrailEvaluated != nil {
+					h.OnGuardrailEvaluated(ctx, turnGuardRC, g.name, passed, gErr)
+				}
+			})
+			if gErr != nil {
 				return nil, &GuardrailError{
 					GuardrailName: g.name,
 					Message:       gErr.Error(),
@@ -922,8 +1006,17 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 		var resp *ModelResponse
 		var err error
 		if len(a.middleware) > 0 {
+			// Inject compaction callback so middleware (e.g.,
+			// ContextOverflowMiddleware) can report emergency compression.
+			mwCtx := ContextWithCompactionCallback(ctx, func(stats ContextCompactionStats) {
+				a.fireHook(func(h Hook) {
+					if h.OnContextCompaction != nil {
+						h.OnContextCompaction(ctx, turnRC, stats)
+					}
+				})
+			})
 			chain := buildMiddlewareChain(a.middleware, a.model)
-			resp, err = chain(ctx, messages, settings, params)
+			resp, err = chain(mwCtx, messages, settings, params)
 		} else {
 			resp, err = a.model.Request(ctx, messages, settings, params)
 		}
@@ -988,6 +1081,11 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 			condRC := a.buildRunContext(state, deps, prompt)
 			for _, cond := range a.runConditions {
 				if stop, reason := cond(ctx, condRC, resp); stop {
+					a.fireHook(func(h Hook) {
+						if h.OnRunConditionChecked != nil {
+							h.OnRunConditionChecked(ctx, condRC, true, reason)
+						}
+					})
 					// Return the text output if available, otherwise error.
 					if hasText := resp.TextContent() != ""; hasText && a.outputSchema.AllowsText {
 						text := resp.TextContent()
@@ -1017,6 +1115,14 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 
 		// Process the response.
 		result, nextParts, deferredReqs, err := a.processResponse(ctx, state, resp, toolMap, outputToolNames, deps, prompt)
+
+		// Fire OnTurnEnd hooks before any return from the loop.
+		a.fireHook(func(h Hook) {
+			if h.OnTurnEnd != nil {
+				h.OnTurnEnd(ctx, turnRC, state.runStep, resp)
+			}
+		})
+
 		if err != nil {
 			return nil, err
 		}
@@ -1125,6 +1231,16 @@ func (a *Agent[T]) processResponse(
 					return nil, nil, nil, fmt.Errorf("failed to parse text output: %w", err)
 				}
 				repaired, repairErr := repairFn(ctx, text, err)
+				repairSucceeded := repairErr == nil
+				a.fireHook(func(h Hook) {
+					if h.OnOutputRepair != nil {
+						repairRC := &RunContext{
+							Deps: deps, Usage: state.usage, Prompt: prompt,
+							RunStep: state.runStep, RunID: state.runID, RunStartTime: state.startTime,
+						}
+						h.OnOutputRepair(ctx, repairRC, repairSucceeded, repairErr)
+					}
+				})
 				if repairErr != nil {
 					return nil, nil, nil, fmt.Errorf("failed to parse text output: %w", err)
 				}
@@ -1137,6 +1253,12 @@ func (a *Agent[T]) processResponse(
 		// Validate output.
 		rc := a.buildRunContext(state, deps, prompt)
 		output, err = validateOutput(ctx, rc, output, a.outputValidators)
+		validationPassed := err == nil
+		a.fireHook(func(h Hook) {
+			if h.OnOutputValidation != nil {
+				h.OnOutputValidation(ctx, rc, validationPassed, err)
+			}
+		})
 		if err != nil {
 			var retryErr *ModelRetryError
 			if errors.As(err, &retryErr) {
@@ -1217,6 +1339,17 @@ func (a *Agent[T]) processResponse(
 			if a.repairFunc != nil {
 				if repairFn, ok := a.repairFunc.(RepairFunc[T]); ok {
 					repaired, repairErr := repairFn(ctx, tc.ArgsJSON, err)
+					repairSucceeded := repairErr == nil
+					a.fireHook(func(h Hook) {
+						if h.OnOutputRepair != nil {
+							repairRC := &RunContext{
+								Deps: deps, Usage: state.usage, Prompt: prompt,
+								ToolName: tc.ToolName, ToolCallID: tc.ToolCallID,
+								RunStep: state.runStep, RunID: state.runID, RunStartTime: state.startTime,
+							}
+							h.OnOutputRepair(ctx, repairRC, repairSucceeded, repairErr)
+						}
+					})
 					if repairErr == nil {
 						output = repaired
 						err = nil
@@ -1242,6 +1375,12 @@ func (a *Agent[T]) processResponse(
 		rc.ToolName = tc.ToolName
 		rc.ToolCallID = tc.ToolCallID
 		output, err = validateOutput(ctx, rc, output, a.outputValidators)
+		validationPassed := err == nil
+		a.fireHook(func(h Hook) {
+			if h.OnOutputValidation != nil {
+				h.OnOutputValidation(ctx, rc, validationPassed, err)
+			}
+		})
 		if err != nil {
 			var retryErr *ModelRetryError
 			if errors.As(err, &retryErr) {
@@ -1482,14 +1621,14 @@ func (a *Agent[T]) executeSingleTool(
 	}
 
 	// Apply tool timeout.
-	toolCtx := ctx
+	toolCtx := ContextWithToolCallID(ctx, call.ToolCallID)
 	timeout := tool.Timeout
 	if timeout == 0 && a.defaultToolTimeout > 0 {
 		timeout = a.defaultToolTimeout
 	}
 	if timeout > 0 {
 		var cancel context.CancelFunc
-		toolCtx, cancel = context.WithTimeout(ctx, timeout)
+		toolCtx, cancel = context.WithTimeout(toolCtx, timeout)
 		defer cancel()
 	}
 

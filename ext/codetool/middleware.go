@@ -8700,6 +8700,8 @@ func ContextOverflowMiddleware() core.AgentMiddleware {
 		}
 
 		for _, cfg := range configs {
+			beforeCount := len(current)
+			beforeTokens := core.EstimateTokens(current)
 			compressed := emergencyCompressMessagesWithConfig(current, cfg.maxContentBytes, cfg.keepLast)
 			// Note: we cannot compare compressed[0] == current[0] because
 			// ModelRequest/ModelResponse contain slice fields (Parts) which
@@ -8708,6 +8710,17 @@ func ContextOverflowMiddleware() core.AgentMiddleware {
 			// compression only truncated content which may still help.
 			if len(compressed) == 0 {
 				continue
+			}
+
+			// Notify hooks about the emergency compression via context callback.
+			if cb := core.CompactionCallbackFromContext(ctx); cb != nil {
+				cb(core.ContextCompactionStats{
+					Strategy:              core.CompactionStrategyEmergencyTruncation,
+					MessagesBefore:        beforeCount,
+					MessagesAfter:         len(compressed),
+					EstimatedTokensBefore: beforeTokens,
+					EstimatedTokensAfter:  core.EstimateTokens(compressed),
+				})
 			}
 
 			fmt.Fprintf(os.Stderr, "[gollem] 413 context overflow: compression %d → %d messages (max %dB/block), retrying\n",
