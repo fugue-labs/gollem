@@ -5,8 +5,6 @@
 // checks, and structured output validation.
 package otel
 
-import "go.opentelemetry.io/otel/attribute"
-
 // Semantic attribute keys for Gollem OTEL spans.
 const (
 	// Agent attributes.
@@ -89,8 +87,3 @@ const (
 	SpanHandoffRun        = "handoff.run"
 	SpanHandoffStep       = "handoff.step"
 )
-
-// agentNameAttr returns an attribute for the agent name.
-func agentNameAttr(name string) attribute.KeyValue {
-	return attribute.String(AttrAgentName, name)
-}
