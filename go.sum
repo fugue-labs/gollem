@@ -35,6 +35,8 @@ github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f h1:Y/CXytFA4m6
 github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f/go.mod h1:vw97MGsxSvLiUE2X8qFplwetxpGLQrlU1Q9AUEIzCaM=
 github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a h1:yDWHCSQ40h88yih2JAcL6Ls/kVkSE8GFACTGVnMPruw=
 github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a/go.mod h1:7Ga40egUymuWXxAe151lTNnCv97MddSOVsjpPPkityA=
+github.com/fugue-labs/gollem-langsmith v0.0.2 h1:h5Kx8A9m0WzpTyasPfBYeuna1y0vKvMfYaxlwUt0WXw=
+github.com/fugue-labs/gollem-langsmith v0.0.2/go.mod h1:9KHY48Uoz9YwS1vNll8yykTKnvOYcbZp1Sk5gkb8Vtc=
 github.com/fugue-labs/langfuse-go v0.0.0-20260221064316-0b4a57eccdb7 h1:B9GZ+edEipnEGjEXE89jb4uQcDOza0ocgVHSJwvW7rA=
 github.com/fugue-labs/langfuse-go v0.0.0-20260221064316-0b4a57eccdb7/go.mod h1:cEd2AEZMgBF3BpwvBn5bQXS8Wo78Sqk+RY5e0tQy2+8=
 github.com/fugue-labs/monty-go v0.0.0-20260221005309-f9f147b4245f h1:x1ndjBoWknSP+xffrwNMEB5WFitcHflxWqry1frrgIo=

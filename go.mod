@@ -5,7 +5,7 @@ go 1.25.1
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
-	github.com/fugue-labs/gollem-langsmith v0.0.1
+	github.com/fugue-labs/gollem-langsmith v0.0.2
 	github.com/fugue-labs/langfuse-go v0.0.0-20260221064316-0b4a57eccdb7
 	github.com/fugue-labs/monty-go v0.0.0-20260221005309-f9f147b4245f
 	github.com/gin-gonic/gin v1.11.0
@@ -117,5 +117,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-replace github.com/fugue-labs/gollem-langsmith => ../gollem-langsmith
