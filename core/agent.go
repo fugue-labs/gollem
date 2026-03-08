@@ -859,7 +859,7 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 				a.fireHook(func(h Hook) {
 					if h.OnContextCompaction != nil {
 						h.OnContextCompaction(ctx, turnRC, ContextCompactionStats{
-							Strategy:              "auto_summary",
+							Strategy:              CompactionStrategyAutoSummary,
 							MessagesBefore:        beforeCount,
 							MessagesAfter:         len(compressed),
 							EstimatedTokensBefore: beforeTokens,
@@ -879,16 +879,17 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 			if procErr != nil {
 				return nil, fmt.Errorf("history processor failed: %w", procErr)
 			}
-			// Fire compaction hook if the processor changed message count or content.
-			if estimateTokens(processed) != beforeTokens {
+			// Fire compaction hook if the processor changed token count.
+			afterTokens := estimateTokens(processed)
+			if afterTokens != beforeTokens {
 				a.fireHook(func(h Hook) {
 					if h.OnContextCompaction != nil {
 						h.OnContextCompaction(ctx, turnRC, ContextCompactionStats{
-							Strategy:              "history_processor",
+							Strategy:              CompactionStrategyHistoryProcessor,
 							MessagesBefore:        beforeCount,
 							MessagesAfter:         len(processed),
 							EstimatedTokensBefore: beforeTokens,
-							EstimatedTokensAfter:  estimateTokens(processed),
+							EstimatedTokensAfter:  afterTokens,
 						})
 					}
 				})
@@ -960,20 +961,19 @@ func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt str
 			})
 		}
 
-		// Inject compaction callback into context so middleware (e.g.,
-		// ContextOverflowMiddleware) can report emergency compression to hooks.
-		mwCtx := ContextWithCompactionCallback(ctx, func(stats ContextCompactionStats) {
-			a.fireHook(func(h Hook) {
-				if h.OnContextCompaction != nil {
-					h.OnContextCompaction(ctx, turnRC, stats)
-				}
-			})
-		})
-
 		// Call the model (through middleware chain if configured).
 		var resp *ModelResponse
 		var err error
 		if len(a.middleware) > 0 {
+			// Inject compaction callback so middleware (e.g.,
+			// ContextOverflowMiddleware) can report emergency compression.
+			mwCtx := ContextWithCompactionCallback(ctx, func(stats ContextCompactionStats) {
+				a.fireHook(func(h Hook) {
+					if h.OnContextCompaction != nil {
+						h.OnContextCompaction(ctx, turnRC, stats)
+					}
+				})
+			})
 			chain := buildMiddlewareChain(a.middleware, a.model)
 			resp, err = chain(mwCtx, messages, settings, params)
 		} else {

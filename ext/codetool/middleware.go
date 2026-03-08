@@ -8715,7 +8715,7 @@ func ContextOverflowMiddleware() core.AgentMiddleware {
 			// Notify hooks about the emergency compression via context callback.
 			if cb := core.CompactionCallbackFromContext(ctx); cb != nil {
 				cb(core.ContextCompactionStats{
-					Strategy:              "emergency_truncation",
+					Strategy:              core.CompactionStrategyEmergencyTruncation,
 					MessagesBefore:        beforeCount,
 					MessagesAfter:         len(compressed),
 					EstimatedTokensBefore: beforeTokens,

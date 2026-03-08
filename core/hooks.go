@@ -35,10 +35,16 @@ type Hook struct {
 	OnContextCompaction func(ctx context.Context, rc *RunContext, stats ContextCompactionStats)
 }
 
+// Compaction strategy constants identify which mechanism performed the compression.
+const (
+	CompactionStrategyAutoSummary        = "auto_summary"
+	CompactionStrategyHistoryProcessor   = "history_processor"
+	CompactionStrategyEmergencyTruncation = "emergency_truncation"
+)
+
 // ContextCompactionStats captures before/after state of a context compaction event.
 type ContextCompactionStats struct {
-	// Strategy identifies the compaction mechanism.
-	// Values: "auto_summary", "history_processor", "emergency_truncation"
+	// Strategy identifies the compaction mechanism (use CompactionStrategy* constants).
 	Strategy string
 
 	// MessagesBefore is the message count before compaction.
