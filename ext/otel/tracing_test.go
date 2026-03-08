@@ -109,7 +109,7 @@ func TestTracingHooksToolExecution(t *testing.T) {
 	}
 }
 
-func TestTracingHooksToolArgsNotCapturedByDefault(t *testing.T) {
+func TestTracingHooksToolArgsCapturedByDefault(t *testing.T) {
 	hook, exporter := setupTracing(t)
 
 	ctx := context.Background()
@@ -121,7 +121,7 @@ func TestTracingHooksToolArgsNotCapturedByDefault(t *testing.T) {
 
 	hook.OnRunStart(ctx, rc, "test")
 	hook.OnTurnStart(ctx, rc, 1)
-	hook.OnToolStart(ctx, rc, "call_1", "search", `{"query": "sensitive"}`)
+	hook.OnToolStart(ctx, rc, "call_1", "search", `{"query": "test"}`)
 	hook.OnToolEnd(ctx, rc, "call_1", "search", `result`, nil)
 	hook.OnTurnEnd(ctx, rc, 1, &core.ModelResponse{})
 	hook.OnRunEnd(ctx, rc, nil, nil)
@@ -130,11 +130,12 @@ func TestTracingHooksToolArgsNotCapturedByDefault(t *testing.T) {
 	for _, s := range spans {
 		if s.Name == SpanToolExecute+".search" {
 			attrMap := spanAttrs(s)
-			if _, ok := attrMap[AttrToolArgs]; ok {
-				t.Error("tool args should not be captured by default")
+			if _, ok := attrMap[AttrToolArgs]; !ok {
+				t.Error("tool args should be captured by default")
 			}
+			// Results are still off by default.
 			if _, ok := attrMap[AttrToolResult]; ok {
-				t.Error("tool result should not be captured by default")
+				t.Error("tool results should not be captured by default")
 			}
 		}
 	}
@@ -1126,6 +1127,75 @@ func TestCompactionCallbackContextNil(t *testing.T) {
 	cb := core.CompactionCallbackFromContext(context.Background())
 	if cb != nil {
 		t.Error("expected nil callback from empty context")
+	}
+}
+
+// TestTracingHooksConcurrentToolExecution verifies that concurrent tool
+// executions produce distinct spans with correct parent relationships.
+func TestTracingHooksConcurrentToolExecution(t *testing.T) {
+	hook, exporter := setupTracing(t, WithCaptureToolArgs(true))
+
+	ctx := context.Background()
+	rc := &core.RunContext{
+		RunID: "concurrent-run",
+	}
+
+	hook.OnRunStart(ctx, rc, "parallel tools")
+	hook.OnTurnStart(ctx, rc, 1)
+	hook.OnModelRequest(ctx, rc, nil)
+	hook.OnModelResponse(ctx, rc, &core.ModelResponse{
+		ModelName: "test",
+		Parts: []core.ModelResponsePart{
+			core.ToolCallPart{ToolName: "fetch", ToolCallID: "call-a"},
+			core.ToolCallPart{ToolName: "search", ToolCallID: "call-b"},
+			core.ToolCallPart{ToolName: "compute", ToolCallID: "call-c"},
+		},
+	})
+
+	// Start all three tools concurrently.
+	rcA := &core.RunContext{RunID: "concurrent-run", ToolCallID: "call-a"}
+	rcB := &core.RunContext{RunID: "concurrent-run", ToolCallID: "call-b"}
+	rcC := &core.RunContext{RunID: "concurrent-run", ToolCallID: "call-c"}
+
+	hook.OnToolStart(ctx, rcA, "call-a", "fetch", `{"url":"x"}`)
+	hook.OnToolStart(ctx, rcB, "call-b", "search", `{"q":"y"}`)
+	hook.OnToolStart(ctx, rcC, "call-c", "compute", `{"n":42}`)
+
+	// End in different order than started.
+	hook.OnToolEnd(ctx, rcB, "call-b", "search", "results", nil)
+	hook.OnToolEnd(ctx, rcC, "call-c", "compute", "84", nil)
+	hook.OnToolEnd(ctx, rcA, "call-a", "fetch", "html", nil)
+
+	hook.OnTurnEnd(ctx, rc, 1, &core.ModelResponse{})
+	hook.OnRunEnd(ctx, rc, nil, nil)
+
+	spans := exporter.GetSpans()
+
+	// Find the turn span ID.
+	var turnSpanID string
+	for _, s := range spans {
+		if s.Name == SpanAgentTurn {
+			turnSpanID = s.SpanContext.SpanID().String()
+		}
+	}
+	if turnSpanID == "" {
+		t.Fatal("turn span not found")
+	}
+
+	// Verify all three tool spans exist, have distinct IDs, and parent to turn.
+	toolSpanNames := make(map[string]bool)
+	for _, s := range spans {
+		if s.Name == SpanToolExecute+".fetch" ||
+			s.Name == SpanToolExecute+".search" ||
+			s.Name == SpanToolExecute+".compute" {
+			toolSpanNames[s.Name] = true
+			if s.Parent.SpanID().String() != turnSpanID {
+				t.Errorf("tool span %q should be child of turn span", s.Name)
+			}
+		}
+	}
+	if len(toolSpanNames) != 3 {
+		t.Errorf("expected 3 distinct tool spans, got %d: %v", len(toolSpanNames), toolSpanNames)
 	}
 }
 

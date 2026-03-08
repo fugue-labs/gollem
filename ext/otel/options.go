@@ -7,7 +7,6 @@ type TracingOption func(*tracingConfig)
 
 type tracingConfig struct {
 	tracerProvider     trace.TracerProvider
-	serviceName        string
 	captureToolArgs    bool
 	captureToolResults bool
 	captureModelMsgs   bool
@@ -16,15 +15,14 @@ type tracingConfig struct {
 }
 
 const (
-	defaultServiceName         = "gollem"
 	defaultMaxAttributeLength  = 4096
 	tracingInstrumentationName = "github.com/fugue-labs/gollem/ext/otel"
 )
 
 func defaultConfig() *tracingConfig {
 	return &tracingConfig{
-		serviceName:        defaultServiceName,
 		maxAttributeLength: defaultMaxAttributeLength,
+		captureToolArgs:    true,
 	}
 }
 
@@ -36,15 +34,9 @@ func WithTracerProvider(tp trace.TracerProvider) TracingOption {
 	}
 }
 
-// WithServiceName sets the service name used in span attributes.
-func WithServiceName(name string) TracingOption {
-	return func(c *tracingConfig) {
-		c.serviceName = name
-	}
-}
-
-// WithCaptureToolArgs includes tool call arguments in span attributes.
-// This may contain sensitive data; off by default.
+// WithCaptureToolArgs controls whether tool call arguments are included in
+// span attributes. Enabled by default for debuggability. Disable with
+// WithCaptureToolArgs(false) if tool arguments may contain sensitive data.
 func WithCaptureToolArgs(capture bool) TracingOption {
 	return func(c *tracingConfig) {
 		c.captureToolArgs = capture
@@ -52,7 +44,8 @@ func WithCaptureToolArgs(capture bool) TracingOption {
 }
 
 // WithCaptureToolResults includes tool results in span attributes.
-// This may contain sensitive data; off by default.
+// WARNING: Tool results may contain sensitive data (API keys, PII).
+// Only enable in secure, access-controlled environments. Off by default.
 func WithCaptureToolResults(capture bool) TracingOption {
 	return func(c *tracingConfig) {
 		c.captureToolResults = capture
@@ -60,7 +53,8 @@ func WithCaptureToolResults(capture bool) TracingOption {
 }
 
 // WithCaptureModelMessages includes full model message content in spans.
-// This may contain PII; off by default.
+// WARNING: Model messages often contain PII and user data.
+// Only enable in secure, access-controlled environments. Off by default.
 func WithCaptureModelMessages(capture bool) TracingOption {
 	return func(c *tracingConfig) {
 		c.captureModelMsgs = capture

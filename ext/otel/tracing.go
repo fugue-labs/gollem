@@ -112,10 +112,11 @@ func onRunStart(tracer trace.Tracer, cfg *tracingConfig) func(ctx context.Contex
 			if toolCallID := core.ToolCallIDFromContext(ctx); toolCallID != "" {
 				if parentState := loadRunState(parentRunID); parentState != nil {
 					parentState.mu.Lock()
-					if span, ok := parentState.childSpanCtxs[toolCallID]; ok {
-						parentCtx = trace.ContextWithSpan(ctx, span)
-					}
+					parentSpan := parentState.childSpanCtxs[toolCallID]
 					parentState.mu.Unlock()
+					if parentSpan != nil {
+						parentCtx = trace.ContextWithSpan(ctx, parentSpan)
+					}
 				}
 			}
 		}
@@ -129,9 +130,11 @@ func onRunStart(tracer trace.Tracer, cfg *tracingConfig) func(ctx context.Contex
 		)
 
 		state := &runSpanState{
-			rootSpan: span,
-			cfg:      cfg,
-			tracer:   tracer,
+			rootSpan:      span,
+			cfg:           cfg,
+			tracer:        tracer,
+			toolSpans:     make(map[string]toolSpanInfo),
+			childSpanCtxs: make(map[string]trace.Span),
 		}
 
 		// We can't modify the context from hooks (hooks don't return context),
@@ -333,10 +336,7 @@ func onToolStart(tracer trace.Tracer, cfg *tracingConfig) func(ctx context.Conte
 		)
 
 		// Store tool spans keyed by toolCallID in a map on the state.
-		if state.toolSpans == nil {
-			state.toolSpans = make(map[string]toolSpanInfo)
-		}
-		state.toolSpans[rc.ToolCallID] = toolSpanInfo{
+		state.toolSpans[toolCallID] = toolSpanInfo{
 			span:  toolSpan,
 			start: time.Now(),
 		}
@@ -344,10 +344,7 @@ func onToolStart(tracer trace.Tracer, cfg *tracingConfig) func(ctx context.Conte
 		// Also store in childSpanCtxs for child agent lookup. This map
 		// persists until OnRunEnd, unlike toolSpans which is cleaned up
 		// in OnToolEnd — necessary for async children (teammates).
-		if state.childSpanCtxs == nil {
-			state.childSpanCtxs = make(map[string]trace.Span)
-		}
-		state.childSpanCtxs[rc.ToolCallID] = toolSpan
+		state.childSpanCtxs[toolCallID] = toolSpan
 	}
 }
 
@@ -362,7 +359,7 @@ func onToolEnd(cfg *tracingConfig) func(ctx context.Context, rc *core.RunContext
 		state.mu.Lock()
 		defer state.mu.Unlock()
 
-		info, ok := state.toolSpans[rc.ToolCallID]
+		info, ok := state.toolSpans[toolCallID]
 		if !ok {
 			return
 		}
@@ -418,13 +415,13 @@ func onGuardrailEvaluated(tracer trace.Tracer, cfg *tracingConfig) func(ctx cont
 				attribute.Bool(AttrGuardrailPassed, passed),
 			),
 		)
+		defer span.End()
 		if err != nil {
 			span.SetAttributes(attribute.String(AttrGuardrailError, err.Error()))
 			span.SetStatus(codes.Error, err.Error())
 		} else {
 			span.SetStatus(codes.Ok, "")
 		}
-		span.End()
 	}
 }
 
@@ -453,13 +450,13 @@ func onOutputValidation(tracer trace.Tracer, cfg *tracingConfig) func(ctx contex
 				attribute.Bool(AttrOutputValid, passed),
 			),
 		)
+		defer span.End()
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 		} else {
 			span.SetStatus(codes.Ok, "")
 		}
-		span.End()
 	}
 }
 
@@ -488,13 +485,13 @@ func onOutputRepair(tracer trace.Tracer, cfg *tracingConfig) func(ctx context.Co
 				attribute.Bool(AttrOutputRepaired, succeeded),
 			),
 		)
+		defer span.End()
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 		} else {
 			span.SetStatus(codes.Ok, "")
 		}
-		span.End()
 	}
 }
 
@@ -528,8 +525,8 @@ func onRunConditionChecked(tracer trace.Tracer, cfg *tracingConfig) func(ctx con
 				attribute.String(AttrRunConditionReason, reason),
 			),
 		)
+		defer span.End()
 		span.SetStatus(codes.Ok, "")
-		span.End()
 	}
 }
 
@@ -562,8 +559,8 @@ func onContextCompaction(tracer trace.Tracer, cfg *tracingConfig) func(ctx conte
 				attribute.Int(AttrCompactionTokensAfter, stats.EstimatedTokensAfter),
 			),
 		)
+		defer span.End()
 		span.SetStatus(codes.Ok, "")
-		span.End()
 	}
 }
 
@@ -575,6 +572,10 @@ type toolSpanInfo struct {
 
 // Global run state map — allows hooks (which can't return modified contexts)
 // to share span state across the lifecycle of a single run.
+//
+// Entries are cleaned up in OnRunEnd, which the core agent framework always
+// invokes via defer in Agent.Run/RunStream. If a panic bypasses the defer,
+// the entry will leak — but that is an exceptional case.
 var (
 	runStateMu sync.RWMutex
 	runStates  = make(map[string]*runSpanState)
