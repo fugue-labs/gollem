@@ -4,10 +4,10 @@ package researcher
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"log/slog"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/fugue-labs/gollem/core"
@@ -294,8 +294,7 @@ func LoadConfig() Config {
 		cfg.ExperimentTimeout = v
 	}
 	if v := os.Getenv("AUTOEVAL_THINKING_BUDGET"); v != "" {
-		var n int
-		if _, err := fmt.Sscanf(v, "%d", &n); err == nil {
+		if n, err := strconv.Atoi(v); err == nil {
 			cfg.ThinkingBudget = n
 		}
 	}
@@ -303,8 +302,7 @@ func LoadConfig() Config {
 		cfg.ReasoningEffort = v
 	}
 	if v := os.Getenv("AUTOEVAL_MAX_EXPERIMENTS"); v != "" {
-		var n int
-		if _, err := fmt.Sscanf(v, "%d", &n); err == nil {
+		if n, err := strconv.Atoi(v); err == nil {
 			cfg.MaxExperiments = n
 		}
 	}

@@ -12,14 +12,6 @@ type ExperimentResult struct {
 	NextIdea    string  `json:"next_idea" jsonschema:"description=What to try next based on results"`
 }
 
-// TraceAnalysis is what the agent produces after reading failure traces.
-type TraceAnalysis struct {
-	TaskID       string `json:"task_id"`
-	FailureMode  string `json:"failure_mode"`
-	RootCause    string `json:"root_cause"`
-	SuggestedFix string `json:"suggested_fix"`
-}
-
 // Config holds configuration for the autoeval harness.
 type Config struct {
 	// Provider selects the model provider: "anthropic", "openai", "ollama",
