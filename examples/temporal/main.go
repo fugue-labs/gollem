@@ -1,6 +1,6 @@
 // Example temporal demonstrates the current Temporal integration surface:
-// model requests and tool calls are exported as Temporal activities that you
-// can register with a worker and call from your own workflow.
+// compatible model requests and tool calls are exported as Temporal activities
+// that you can register with a worker and call from your own workflow.
 //
 // This example uses TestModel so it compiles and runs without a real Temporal
 // server or LLM provider. In production, you would replace TestModel with a
@@ -73,6 +73,8 @@ func main() {
 	)
 
 	// Wrap the agent and export Temporal activities for a custom workflow.
+	// NewTemporalAgent validates that the agent only uses features supported by
+	// the current Temporal activity scaffolding path.
 	ta := temporal.NewTemporalAgent(agent,
 		temporal.WithName("project-assistant"),
 		temporal.WithActivityConfig(temporal.ActivityConfig{

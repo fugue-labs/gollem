@@ -114,7 +114,7 @@ Gollem ships **50+ composable primitives** in a single framework. Here's what yo
 - **Code mode (monty)** — LLM writes a single Python script that calls N tools as functions; executes in a WASM sandbox via [monty-go](https://github.com/fugue-labs/monty-go) — N tool calls in 1 model round-trip
 - **Graph workflow engine** — Typed state machines with conditional branching, fan-out/map-reduce, cycle detection, and Mermaid export
 - **Deep context management** — Three-tier compression, planning tools, and checkpointing for long-running agents
-- **Temporal durable execution** — Fault-tolerant agents with automatic checkpointing via Temporal
+- **Temporal activity scaffolding (preview)** — Export named model and tool activities for custom Temporal workflows
 - **MCP integration** — Stdio and SSE transports with multi-server management and namespaced tools
 - **Evaluation framework** — Datasets, built-in evaluators (`ExactMatch`, `Contains`, `JSONMatch`, `Custom`), LLM-as-judge scoring
 - **Persistent memory store** — Namespace-scoped CRUD and search with in-memory and SQLite backends
@@ -993,9 +993,9 @@ lra := deep.NewLongRunAgent[string](model,
 result, _ := lra.Run(ctx, "Analyze this large codebase...")
 ```
 
-### Temporal Durable Execution
+### Temporal Activity Scaffolding
 
-Fault-tolerant agents with automatic retries and checkpointing:
+Preview support for exporting named model and tool activities to a Temporal worker:
 
 ```go
 import "github.com/fugue-labs/gollem/ext/temporal"
@@ -1008,6 +1008,11 @@ ta := temporal.NewTemporalAgent(agent,
     }),
 )
 ```
+
+`NewTemporalAgent` currently validates that the wrapped agent only uses the
+subset of features supported by the activity scaffolding path. `ta.Run(...)`
+still executes in-process; durable execution requires calling the exported
+activities from your own Temporal workflow.
 
 ### Evaluation Framework
 
@@ -1071,7 +1076,7 @@ agent := gollem.NewAgent[string](wrapped)
 | [`examples/streaming`](examples/streaming) | Real-time streaming with `iter.Seq2` |
 | [`examples/multi-provider`](examples/multi-provider) | Same agent across different providers |
 | [`examples/mcp`](examples/mcp) | MCP server integration |
-| [`examples/temporal`](examples/temporal) | Temporal durable execution setup |
+| [`examples/temporal`](examples/temporal) | Temporal activity scaffolding setup |
 | [`examples/evaluation`](examples/evaluation) | Evaluation framework with datasets |
 | [`examples/multi-agent/delegation`](examples/multi-agent/delegation) | Agent-as-tool delegation |
 | [`examples/deep/context_management`](examples/deep/context_management) | Three-tier context compression |

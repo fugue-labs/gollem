@@ -94,6 +94,9 @@ func NewTemporalAgent[T any](agent *core.Agent[T], opts ...Option) *TemporalAgen
 	if cfg.name == "" {
 		panic("gollem/temporal: WithName is required for TemporalAgent")
 	}
+	if err := ValidateCompatibility(agent); err != nil {
+		panic(err)
+	}
 
 	modelConfig := cfg.defaultConfig
 	if cfg.modelConfig != nil {

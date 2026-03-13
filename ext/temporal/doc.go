@@ -1,10 +1,11 @@
 // Package temporal provides Temporal activity scaffolding for gollem agents.
 // It exports named model and tool activities plus worker registration helpers
-// so callers can build Temporal workflows around standard core.Agent runs.
+// so callers can build Temporal workflows around compatible core.Agent runs.
 //
 // TemporalAgent.Run itself delegates to the wrapped agent directly. Durable
 // execution happens when you call the exported activities from your own
-// Temporal workflow.
+// Temporal workflow. NewTemporalAgent conservatively rejects agent features
+// that the current integration cannot support yet.
 //
 // Usage:
 //
