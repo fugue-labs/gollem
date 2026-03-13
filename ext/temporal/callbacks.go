@@ -500,22 +500,23 @@ func (ta *TemporalAgent[T]) inputGuardrailActivity(ctx context.Context, input in
 	}
 	output := &inputGuardrailActivityOutput{Prompt: prompt}
 	for _, guardrail := range ta.runtime.InputGuardrails {
-		nextPrompt, err := guardrail.Func(ctx, prompt)
+		nextPrompt, guardrailErr := guardrail.Func(ctx, prompt)
 		eval := guardrailEvaluation{
 			Name:   guardrail.Name,
-			Passed: err == nil,
+			Passed: guardrailErr == nil,
 		}
-		if err != nil {
-			eval.Message = err.Error()
+		if guardrailErr == nil {
 			ta.runGuardrailHooks(ctx, rc, eval)
 			output.Evaluations = append(output.Evaluations, eval)
-			output.Rejected = true
-			return output, nil
+			prompt = nextPrompt
+			output.Prompt = prompt
+			continue
 		}
+		eval.Message = guardrailErr.Error()
 		ta.runGuardrailHooks(ctx, rc, eval)
 		output.Evaluations = append(output.Evaluations, eval)
-		prompt = nextPrompt
-		output.Prompt = prompt
+		output.Rejected = true
+		break
 	}
 	return output, nil
 }
@@ -527,20 +528,21 @@ func (ta *TemporalAgent[T]) turnGuardrailActivity(ctx context.Context, input tur
 	}
 	output := &turnGuardrailActivityOutput{}
 	for _, guardrail := range ta.runtime.TurnGuardrails {
-		err := guardrail.Func(ctx, rc, rc.Messages)
+		guardrailErr := guardrail.Func(ctx, rc, rc.Messages)
 		eval := guardrailEvaluation{
 			Name:   guardrail.Name,
-			Passed: err == nil,
+			Passed: guardrailErr == nil,
 		}
-		if err != nil {
-			eval.Message = err.Error()
+		if guardrailErr == nil {
 			ta.runGuardrailHooks(ctx, rc, eval)
 			output.Evaluations = append(output.Evaluations, eval)
-			output.Rejected = true
-			return output, nil
+			continue
 		}
+		eval.Message = guardrailErr.Error()
 		ta.runGuardrailHooks(ctx, rc, eval)
 		output.Evaluations = append(output.Evaluations, eval)
+		output.Rejected = true
+		break
 	}
 	return output, nil
 }
@@ -748,11 +750,14 @@ func (ta *TemporalAgent[T]) toolApprovalActivity(ctx context.Context, input tool
 	if ta.runtime.ToolApprovalFunc == nil {
 		return nil, errors.New("tool approval callback is not configured")
 	}
-	approved, err := ta.runtime.ToolApprovalFunc(ctx, input.ToolName, input.ArgsJSON)
-	if err != nil {
-		return &toolApprovalActivityOutput{Error: err.Error()}, nil
+	output := &toolApprovalActivityOutput{}
+	approved, approvalErr := ta.runtime.ToolApprovalFunc(ctx, input.ToolName, input.ArgsJSON)
+	if approvalErr != nil {
+		output.Error = approvalErr.Error()
+	} else {
+		output.Approved = approved
 	}
-	return &toolApprovalActivityOutput{Approved: approved}, nil
+	return output, nil
 }
 
 func (ta *TemporalAgent[T]) runConditionActivity(ctx context.Context, input runConditionActivityInput) (*runConditionActivityOutput, error) {
@@ -841,17 +846,6 @@ func (ta *TemporalAgent[T]) runGuardrailHooks(ctx context.Context, rc *core.RunC
 			hook.OnGuardrailEvaluated(ctx, rc, eval.Name, eval.Passed, hookErr)
 		}
 	}
-}
-
-func encodeResponseJSON(resp *core.ModelResponse) ([]byte, error) {
-	if resp == nil {
-		return nil, errors.New("nil model response")
-	}
-	data, err := core.MarshalMessages([]core.ModelMessage{*resp})
-	if err != nil {
-		return nil, fmt.Errorf("marshal model response: %w", err)
-	}
-	return data, nil
 }
 
 func decodeResponse(response *core.SerializedMessage, data []byte) (*core.ModelResponse, error) {

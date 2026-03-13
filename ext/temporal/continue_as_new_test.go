@@ -17,7 +17,7 @@ func executeWorkflowChain[T any](t *testing.T, ta *TemporalAgent[T], input Workf
 	t.Helper()
 
 	dc := converter.GetDefaultDataConverter()
-	for run := 0; run < 8; run++ {
+	for range 8 {
 		var suite testsuite.WorkflowTestSuite
 		env := suite.NewTestWorkflowEnvironment()
 		registerTemporalWorkflow(env, ta)

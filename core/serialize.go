@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -164,7 +165,7 @@ func DecodeRequestParts(parts []SerializedPart) ([]ModelRequestPart, error) {
 // EncodeModelResponse converts a model response into its serialized envelope form.
 func EncodeModelResponse(resp *ModelResponse) (*SerializedMessage, error) {
 	if resp == nil {
-		return nil, fmt.Errorf("nil model response")
+		return nil, errors.New("nil model response")
 	}
 	env, err := encodeMessage(*resp)
 	if err != nil {
@@ -176,7 +177,7 @@ func EncodeModelResponse(resp *ModelResponse) (*SerializedMessage, error) {
 // DecodeModelResponse converts a serialized response envelope back into a model response.
 func DecodeModelResponse(env *SerializedMessage) (*ModelResponse, error) {
 	if env == nil {
-		return nil, fmt.Errorf("nil serialized response")
+		return nil, errors.New("nil serialized response")
 	}
 	msg, err := decodeMessage(*env)
 	if err != nil {

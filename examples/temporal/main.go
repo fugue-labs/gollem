@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"go.temporal.io/sdk/client"
@@ -58,7 +59,7 @@ func main() {
 	}
 	defer c.Close()
 
-	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
 	taskQueue := "gollem-release-brief-" + suffix
 	workflowID := "gollem-release-brief-" + suffix
 

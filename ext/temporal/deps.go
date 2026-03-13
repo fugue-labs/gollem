@@ -2,7 +2,7 @@ package temporal
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"reflect"
 )
 
@@ -32,7 +32,7 @@ func (JSONDepsCodec) UnmarshalDeps(data []byte, target any) error {
 // MarshalDeps serializes workflow dep overrides using the TemporalAgent codec.
 func (ta *TemporalAgent[T]) MarshalDeps(deps any) ([]byte, error) {
 	if ta == nil {
-		return nil, fmt.Errorf("nil TemporalAgent")
+		return nil, errors.New("nil TemporalAgent")
 	}
 	if deps == nil {
 		return nil, nil
@@ -52,7 +52,7 @@ func decodeTemporalDeps(codec DepsCodec, depsType reflect.Type, defaultDeps any,
 		codec = JSONDepsCodec{}
 	}
 	if depsType == nil {
-		return nil, fmt.Errorf("workflow deps provided but no default deps or WithDepsPrototype was configured")
+		return nil, errors.New("workflow deps provided but no default deps or WithDepsPrototype was configured")
 	}
 
 	if depsType.Kind() == reflect.Ptr {

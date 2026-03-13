@@ -193,17 +193,6 @@ func temporalizeTool(
 	}
 }
 
-func decodeToolMessages(data []byte) ([]core.ModelMessage, error) {
-	if len(data) == 0 {
-		return nil, nil
-	}
-	messages, err := core.UnmarshalMessages(data)
-	if err != nil {
-		return nil, fmt.Errorf("unmarshal tool messages: %w", err)
-	}
-	return messages, nil
-}
-
 func safeTemporalToolCall(handler core.ToolHandler, ctx context.Context, rc *core.RunContext, argsJSON string) (result any, err error) {
 	defer func() {
 		if r := recover(); r != nil {

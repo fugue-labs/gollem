@@ -2,7 +2,7 @@ package core
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"time"
 )
 
@@ -129,7 +129,7 @@ func UnmarshalSnapshot(data []byte) (*RunSnapshot, error) {
 // EncodeRunSnapshot converts a run snapshot into its structured serialized form.
 func EncodeRunSnapshot(snap *RunSnapshot) (*SerializedRunSnapshot, error) {
 	if snap == nil {
-		return nil, fmt.Errorf("nil run snapshot")
+		return nil, errors.New("nil run snapshot")
 	}
 	msgs, err := EncodeMessages(snap.Messages)
 	if err != nil {

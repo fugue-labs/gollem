@@ -13,6 +13,8 @@ import (
 	"github.com/fugue-labs/gollem/core"
 )
 
+const maxTemporalActivityAttempts = 1<<31 - 1
+
 type workflowRunState struct {
 	Messages                      []core.ModelMessage
 	Usage                         core.RunUsage
@@ -92,23 +94,6 @@ func (s *workflowRunState) snapshotJSON(prompt string, now time.Time) ([]byte, e
 	return core.MarshalSnapshot(snap)
 }
 
-func (s *workflowRunState) traceJSON(prompt string, now time.Time, success bool, runErr error) ([]byte, error) {
-	trace := &core.RunTrace{
-		RunID:     s.RunID,
-		Prompt:    prompt,
-		StartTime: s.RunStartTime,
-		EndTime:   now,
-		Duration:  deterministicWorkflowDuration(s.RunStartTime, now),
-		Steps:     cloneTraceSteps(s.TraceSteps),
-		Usage:     s.Usage,
-		Success:   success,
-	}
-	if runErr != nil {
-		trace.Error = runErr.Error()
-	}
-	return json.Marshal(trace)
-}
-
 func buildActivityOptions(cfg ActivityConfig) workflow.ActivityOptions {
 	normalized := cfg
 	if normalized.StartToCloseTimeout <= 0 {
@@ -117,21 +102,20 @@ func buildActivityOptions(cfg ActivityConfig) workflow.ActivityOptions {
 	if normalized.InitialInterval <= 0 {
 		normalized.InitialInterval = DefaultActivityConfig().InitialInterval
 	}
+	maximumAttempts := normalized.MaxRetries + 1
+	if maximumAttempts < 1 {
+		maximumAttempts = 1
+	}
+	if maximumAttempts > maxTemporalActivityAttempts {
+		maximumAttempts = maxTemporalActivityAttempts
+	}
 	return workflow.ActivityOptions{
 		StartToCloseTimeout: normalized.StartToCloseTimeout,
 		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: int32(normalized.MaxRetries + 1),
+			MaximumAttempts: int32(maximumAttempts),
 			InitialInterval: normalized.InitialInterval,
 		},
 	}
-}
-
-func buildWorkflowRequestParams[T any](config core.AgentRuntimeConfig[T], tools []core.Tool) *core.ModelRequestParameters {
-	defs := make([]core.ToolDefinition, 0, len(tools))
-	for _, tool := range tools {
-		defs = append(defs, tool.Definition)
-	}
-	return buildWorkflowRequestParamsFromDefinitions(config, defs)
 }
 
 func buildWorkflowRequestParamsFromDefinitions[T any](config core.AgentRuntimeConfig[T], defs []core.ToolDefinition) *core.ModelRequestParameters {

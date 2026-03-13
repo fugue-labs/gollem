@@ -2,7 +2,7 @@ package temporal
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 
 	"github.com/fugue-labs/gollem/core"
 )
@@ -84,7 +84,7 @@ type WorkflowStatus struct {
 // DecodeWorkflowStatusMessages decodes the queried message history.
 func DecodeWorkflowStatusMessages(status *WorkflowStatus) ([]core.ModelMessage, error) {
 	if status == nil {
-		return nil, fmt.Errorf("nil workflow status")
+		return nil, errors.New("nil workflow status")
 	}
 	if len(status.Messages) > 0 {
 		return core.DecodeMessages(status.Messages)
@@ -98,7 +98,7 @@ func DecodeWorkflowStatusMessages(status *WorkflowStatus) ([]core.ModelMessage, 
 // DecodeWorkflowStatusTrace decodes the queried workflow trace payload.
 func DecodeWorkflowStatusTrace(status *WorkflowStatus) (*core.RunTrace, error) {
 	if status == nil {
-		return nil, fmt.Errorf("nil workflow status")
+		return nil, errors.New("nil workflow status")
 	}
 	return decodeTrace(status.Trace, status.TraceJSON)
 }
