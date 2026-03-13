@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -446,5 +447,182 @@ func TestTemporalAgent_RunWorkflow_DeferredSignal(t *testing.T) {
 	}
 	if !foundDeferredResult {
 		t.Error("expected follow-up model call to include deferred tool result")
+	}
+}
+
+func TestTemporalAgent_RunWorkflow_ApprovalDeniedSignal(t *testing.T) {
+	type Params struct{}
+
+	executed := false
+	tool := core.FuncTool[Params]("dangerous_action", "Dangerous action", func(_ context.Context, _ Params) (string, error) {
+		executed = true
+		return "done", nil
+	}, core.WithRequiresApproval())
+
+	model := core.NewTestModel(
+		core.ToolCallResponseWithID("dangerous_action", `{}`, "call_denied"),
+		core.TextResponse("fallback after denial"),
+	)
+	agent := core.NewAgent[string](model, core.WithTools[string](tool))
+	ta := NewTemporalAgent(agent, WithName("workflow-approval-denied"))
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	registerTemporalWorkflow(env, ta)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(ta.ApprovalSignalName(), ApprovalSignal{
+			ToolName:   "dangerous_action",
+			ToolCallID: "call_denied",
+			Approved:   false,
+			Message:    "needs review",
+		})
+	}, time.Second)
+
+	env.ExecuteWorkflow(ta.RunWorkflow, WorkflowInput{Prompt: "do dangerous thing"})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+
+	var output WorkflowOutput
+	if err := env.GetWorkflowResult(&output); err != nil {
+		t.Fatalf("workflow result: %v", err)
+	}
+	result, err := ta.DecodeWorkflowOutput(&output)
+	if err != nil {
+		t.Fatalf("decode workflow output: %v", err)
+	}
+	if result.Output != "fallback after denial" {
+		t.Fatalf("expected fallback output after denial, got %q", result.Output)
+	}
+	if executed {
+		t.Fatal("expected tool execution to be skipped after denial")
+	}
+
+	calls := model.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 model calls after denial, got %d", len(calls))
+	}
+	foundRetry := false
+	for _, msg := range calls[1].Messages {
+		req, ok := msg.(core.ModelRequest)
+		if !ok {
+			continue
+		}
+		for _, part := range req.Parts {
+			retry, ok := part.(core.RetryPromptPart)
+			if ok && retry.ToolCallID == "call_denied" &&
+				retry.Content == `tool call "dangerous_action" was denied by the user: needs review` {
+				foundRetry = true
+			}
+		}
+	}
+	if !foundRetry {
+		t.Fatal("expected denied approval to be sent back as a retry prompt")
+	}
+}
+
+func TestTemporalWorkflowHelpers(t *testing.T) {
+	if got := waitingReason(nil, nil); got != "" {
+		t.Fatalf("expected empty waiting reason, got %q", got)
+	}
+	if got := waitingReason([]ToolApprovalRequest{{ToolCallID: "a"}}, nil); got != "approval" {
+		t.Fatalf("expected approval waiting reason, got %q", got)
+	}
+	if got := waitingReason(nil, []core.DeferredToolRequest{{ToolCallID: "b"}}); got != "deferred" {
+		t.Fatalf("expected deferred waiting reason, got %q", got)
+	}
+	if got := waitingReason(
+		[]ToolApprovalRequest{{ToolCallID: "a"}},
+		[]core.DeferredToolRequest{{ToolCallID: "b"}},
+	); got != "approval_and_deferred" {
+		t.Fatalf("expected combined waiting reason, got %q", got)
+	}
+
+	if err := workflowAbortError("   "); err == nil || err.Error() != "workflow aborted" {
+		t.Fatalf("expected default abort error, got %v", err)
+	}
+	if err := workflowAbortError(" user stopped "); err == nil || err.Error() != "workflow aborted: user stopped" {
+		t.Fatalf("expected trimmed abort error, got %v", err)
+	}
+
+	if got := approvalDeniedMessage("dangerous_action", ""); got != `tool call "dangerous_action" was denied by the user` {
+		t.Fatalf("unexpected approval denied message %q", got)
+	}
+	if got := approvalDeniedMessage("dangerous_action", " not now "); got != `tool call "dangerous_action" was denied by the user: not now` {
+		t.Fatalf("unexpected approval denied message with detail %q", got)
+	}
+
+	limit := 2
+	if err := limitsToolCalls(core.UsageLimits{}, 2, 2); err != nil {
+		t.Fatalf("expected no error without tool call limit, got %v", err)
+	}
+	if err := limitsToolCalls(core.UsageLimits{ToolCallsLimit: &limit}, 1, 1); err != nil {
+		t.Fatalf("expected no error within tool call limit, got %v", err)
+	}
+	err := limitsToolCalls(core.UsageLimits{ToolCallsLimit: &limit}, 1, 2)
+	var usageErr *core.UsageLimitExceeded
+	if !errors.As(err, &usageErr) {
+		t.Fatalf("expected usage limit exceeded, got %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "tool call limit of 2 exceeded") {
+		t.Fatalf("unexpected tool call limit error %v", err)
+	}
+}
+
+func TestTemporalAgent_DecodeWorkflowOutput_LegacyAndPausedBranches(t *testing.T) {
+	ta := NewTemporalAgent(core.NewAgent[string](core.NewTestModel(core.TextResponse("ok"))), WithName("decode-legacy"))
+
+	if _, err := ta.DecodeWorkflowOutput(nil); err == nil {
+		t.Fatal("expected nil workflow output error")
+	}
+	if _, err := ta.DecodeWorkflowOutput(&WorkflowOutput{
+		Completed:        false,
+		DeferredRequests: []core.DeferredToolRequest{{ToolCallID: "call_1"}},
+	}); err == nil || !strings.Contains(err.Error(), "workflow paused with 1 deferred tool request") {
+		t.Fatalf("expected paused workflow error, got %v", err)
+	}
+
+	now := time.Unix(40, 0).UTC()
+	snapshotJSON, err := core.MarshalSnapshot(&core.RunSnapshot{
+		Messages: []core.ModelMessage{
+			core.ModelRequest{
+				Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "legacy", Timestamp: now}},
+				Timestamp: now,
+			},
+		},
+		Usage:     core.RunUsage{Requests: 1},
+		RunID:     "legacy-run",
+		ToolState: map[string]any{"tool": map[string]any{"count": 1}},
+		Timestamp: now,
+	})
+	if err != nil {
+		t.Fatalf("marshal legacy snapshot: %v", err)
+	}
+	traceJSON, err := json.Marshal(core.RunTrace{RunID: "legacy-run"})
+	if err != nil {
+		t.Fatalf("marshal legacy trace: %v", err)
+	}
+
+	result, err := ta.DecodeWorkflowOutput(&WorkflowOutput{
+		Completed:    true,
+		OutputJSON:   json.RawMessage(`"legacy-output"`),
+		SnapshotJSON: snapshotJSON,
+		TraceJSON:    traceJSON,
+		Cost:         &core.RunCost{TotalCost: 1.23},
+	})
+	if err != nil {
+		t.Fatalf("decode legacy workflow output: %v", err)
+	}
+	if result.Output != "legacy-output" {
+		t.Fatalf("expected legacy output, got %q", result.Output)
+	}
+	if result.RunID != "legacy-run" {
+		t.Fatalf("expected legacy run id, got %q", result.RunID)
+	}
+	if result.Trace == nil || result.Trace.RunID != "legacy-run" {
+		t.Fatalf("expected decoded legacy trace, got %+v", result.Trace)
+	}
+	if result.Cost == nil || result.Cost.TotalCost != 1.23 {
+		t.Fatalf("expected cost to be preserved, got %+v", result.Cost)
 	}
 }

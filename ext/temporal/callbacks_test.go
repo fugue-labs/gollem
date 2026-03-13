@@ -430,6 +430,80 @@ func TestTemporalAgent_RunWorkflow_ToolsetGuardrailsAndHooks(t *testing.T) {
 	})
 }
 
+func TestTemporalAgent_RunWorkflow_InputGuardrailRejects(t *testing.T) {
+	evaluated := 0
+	model := core.NewTestModel(core.TextResponse("should not run"))
+	agent := core.NewAgent[string](model,
+		core.WithInputGuardrail[string]("block", func(_ context.Context, _ string) (string, error) {
+			return "", errors.New("blocked")
+		}),
+		core.WithHooks[string](core.Hook{
+			OnGuardrailEvaluated: func(_ context.Context, _ *core.RunContext, name string, passed bool, err error) {
+				if name == "block" && !passed && err != nil {
+					evaluated++
+				}
+			},
+		}),
+	)
+	ta := NewTemporalAgent(agent, WithName("workflow-input-guardrail-reject"))
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	registerTemporalWorkflow(env, ta)
+
+	env.ExecuteWorkflow(ta.RunWorkflow, WorkflowInput{Prompt: "reject me"})
+	err := env.GetWorkflowError()
+	if err == nil {
+		t.Fatal("expected workflow error from input guardrail rejection")
+	}
+	if !strings.Contains(err.Error(), `guardrail "block": blocked`) {
+		t.Fatalf("unexpected input guardrail error: %v", err)
+	}
+	if evaluated != 1 {
+		t.Fatalf("expected one failed guardrail evaluation hook, got %d", evaluated)
+	}
+	if got := len(model.Calls()); got != 0 {
+		t.Fatalf("expected model not to run after input guardrail rejection, got %d calls", got)
+	}
+}
+
+func TestTemporalAgent_RunWorkflow_TurnGuardrailRejects(t *testing.T) {
+	evaluated := 0
+	model := core.NewTestModel(core.TextResponse("should not run"))
+	agent := core.NewAgent[string](model,
+		core.WithTurnGuardrail[string]("halt", func(_ context.Context, _ *core.RunContext, _ []core.ModelMessage) error {
+			return errors.New("turn blocked")
+		}),
+		core.WithHooks[string](core.Hook{
+			OnGuardrailEvaluated: func(_ context.Context, _ *core.RunContext, name string, passed bool, err error) {
+				if name == "halt" && !passed && err != nil {
+					evaluated++
+				}
+			},
+		}),
+	)
+	ta := NewTemporalAgent(agent, WithName("workflow-turn-guardrail-reject"))
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	registerTemporalWorkflow(env, ta)
+
+	env.ExecuteWorkflow(ta.RunWorkflow, WorkflowInput{Prompt: "reject turn"})
+	err := env.GetWorkflowError()
+	if err == nil {
+		t.Fatal("expected workflow error from turn guardrail rejection")
+	}
+	if !strings.Contains(err.Error(), `guardrail "halt": turn blocked`) {
+		t.Fatalf("unexpected turn guardrail error: %v", err)
+	}
+	if evaluated != 1 {
+		t.Fatalf("expected one failed turn guardrail evaluation hook, got %d", evaluated)
+	}
+	if got := len(model.Calls()); got != 0 {
+		t.Fatalf("expected model not to run after turn guardrail rejection, got %d calls", got)
+	}
+}
+
 func TestTemporalAgent_RunWorkflow_RunConditionTextOutput(t *testing.T) {
 	runConditionChecks := 0
 	model := core.NewTestModel(core.TextResponse("stop here"))
