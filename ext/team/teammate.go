@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/fugue-labs/gollem/core"
 )
@@ -47,14 +46,16 @@ type TeammateInfo struct {
 
 // Teammate represents a worker agent running as a goroutine.
 type Teammate struct {
-	mu      sync.Mutex
-	name    string
-	state   TeammateState
-	mailbox *Mailbox
-	agent   *core.Agent[string]
-	cancel  context.CancelFunc
-	team    *Team
-	wakeCh  chan struct{}
+	mu                sync.Mutex
+	name              string
+	state             TeammateState
+	mailbox           *Mailbox
+	agent             *core.Agent[string]
+	cancel            context.CancelFunc
+	team              *Team
+	wakeCh            chan struct{}
+	shutdownRequested bool
+	shutdownMessage   Message
 }
 
 // Name returns the teammate's name.
@@ -75,6 +76,50 @@ func (tm *Teammate) setState(s TeammateState) {
 	tm.state = s
 }
 
+func (tm *Teammate) requestShutdown(msg Message) Message {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	msg = ensureMessageIdentity(msg)
+	if msg.Type == "" {
+		msg.Type = MessageShutdownRequest
+	}
+	if !tm.shutdownRequested {
+		tm.shutdownRequested = true
+		tm.shutdownMessage = msg
+		if tm.state == TeammateIdle {
+			tm.state = TeammateShuttingDown
+		}
+	}
+	return tm.shutdownMessage
+}
+
+func (tm *Teammate) shutdownRequest() (Message, bool) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if !tm.shutdownRequested {
+		return Message{}, false
+	}
+	return tm.shutdownMessage, true
+}
+
+func (tm *Teammate) filterControlMessages(msgs []Message) []Message {
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	filtered := make([]Message, 0, len(msgs))
+	for _, msg := range msgs {
+		msg = ensureMessageIdentity(msg)
+		if msg.Type == MessageShutdownRequest {
+			tm.requestShutdown(msg)
+			continue
+		}
+		filtered = append(filtered, msg)
+	}
+	return filtered
+}
+
 // Wake signals the teammate to process new messages.
 func (tm *Teammate) Wake() {
 	select {
@@ -88,11 +133,17 @@ func (tm *Teammate) Wake() {
 func (tm *Teammate) run(ctx context.Context, initialTask string) {
 	defer func() {
 		tm.setState(TeammateStopped)
+		reason := "stopped"
+		if _, ok := tm.shutdownRequest(); ok {
+			reason = "shutdown_requested"
+		} else if ctx.Err() != nil {
+			reason = "context_cancelled"
+		}
 		if tm.team.eventBus != nil {
 			core.PublishAsync(tm.team.eventBus, TeammateTerminatedEvent{
 				TeamName:     tm.team.name,
 				TeammateName: tm.name,
-				Reason:       "stopped",
+				Reason:       reason,
 			})
 		}
 		tm.team.wg.Done()
@@ -108,6 +159,13 @@ func (tm *Teammate) run(ctx context.Context, initialTask string) {
 	firstRun := true
 
 	for {
+		if msg, ok := tm.shutdownRequest(); ok {
+			tm.setState(TeammateShuttingDown)
+			fmt.Fprintf(os.Stderr, "[gollem] team:%s teammate:%s stopping after shutdown request from %s: %s\n",
+				tm.team.name, tm.name, msg.From, previewForLog(msg.Content, 240))
+			return
+		}
+
 		tm.setState(TeammateRunning)
 		fmt.Fprintf(os.Stderr, "[gollem] team:%s teammate:%s running\n", tm.team.name, tm.name)
 
@@ -118,6 +176,12 @@ func (tm *Teammate) run(ctx context.Context, initialTask string) {
 		firstRun = false
 
 		result, err := tm.agent.Run(runCtx, prompt)
+		if msg, ok := tm.shutdownRequest(); ok {
+			tm.setState(TeammateShuttingDown)
+			fmt.Fprintf(os.Stderr, "[gollem] team:%s teammate:%s stopping after current run due to shutdown request from %s: %s\n",
+				tm.team.name, tm.name, msg.From, previewForLog(msg.Content, 240))
+			return
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				// Context cancelled — shut down.
@@ -128,16 +192,20 @@ func (tm *Teammate) run(ctx context.Context, initialTask string) {
 				tm.team.name, tm.name, consecutiveErrors, err)
 
 			// Notify leader of error.
-			if tm.team.leader != "" {
-				if leaderMB := tm.team.getMailbox(tm.team.leader); leaderMB != nil {
-					leaderMB.Send(Message{
-						From:      tm.name,
-						To:        tm.team.leader,
-						Type:      MessageStatusUpdate,
-						Content:   fmt.Sprintf("Error on attempt %d: %v", consecutiveErrors, err),
-						Summary:   tm.name + " encountered an error",
-						Timestamp: time.Now(),
-					})
+			if leaderName := tm.team.leaderName(); leaderName != "" {
+				if leaderMB := tm.team.getMailbox(leaderName); leaderMB != nil {
+					statusMsg := newMessage(
+						tm.name,
+						leaderName,
+						MessageStatusUpdate,
+						fmt.Sprintf("Error on attempt %d: %v", consecutiveErrors, err),
+						tm.name+" encountered an error",
+						"",
+					)
+					if sendErr := leaderMB.TrySend(statusMsg); sendErr != nil {
+						fmt.Fprintf(os.Stderr, "[gollem] WARNING: failed to deliver error update from %s to leader %s: %v\n",
+							tm.name, leaderName, sendErr)
+					}
 				}
 			}
 
@@ -155,17 +223,21 @@ func (tm *Teammate) run(ctx context.Context, initialTask string) {
 				summary = tm.name + ": " + outputPreview
 			}
 			// Notify leader of completion via their mailbox.
-			if tm.team.leader != "" {
-				leaderMB := tm.team.getMailbox(tm.team.leader)
+			if leaderName := tm.team.leaderName(); leaderName != "" {
+				leaderMB := tm.team.getMailbox(leaderName)
 				if leaderMB != nil {
-					leaderMB.Send(Message{
-						From:      tm.name,
-						To:        tm.team.leader,
-						Type:      MessageStatusUpdate,
-						Content:   result.Output,
-						Summary:   summary,
-						Timestamp: time.Now(),
-					})
+					statusMsg := newMessage(
+						tm.name,
+						leaderName,
+						MessageStatusUpdate,
+						result.Output,
+						summary,
+						"",
+					)
+					if sendErr := leaderMB.TrySend(statusMsg); sendErr != nil {
+						fmt.Fprintf(os.Stderr, "[gollem] WARNING: failed to deliver completion update from %s to leader %s: %v\n",
+							tm.name, leaderName, sendErr)
+					}
 				}
 			}
 
@@ -177,6 +249,12 @@ func (tm *Teammate) run(ctx context.Context, initialTask string) {
 
 		// Go idle and wait for new work or shutdown.
 		tm.setState(TeammateIdle)
+		if msg, ok := tm.shutdownRequest(); ok {
+			tm.setState(TeammateShuttingDown)
+			fmt.Fprintf(os.Stderr, "[gollem] team:%s teammate:%s stopping while idle due to shutdown request from %s: %s\n",
+				tm.team.name, tm.name, msg.From, previewForLog(msg.Content, 240))
+			return
+		}
 		if tm.team.eventBus != nil {
 			core.PublishAsync(tm.team.eventBus, TeammateIdleEvent{
 				TeamName:     tm.team.name,
@@ -197,18 +275,15 @@ func (tm *Teammate) run(ctx context.Context, initialTask string) {
 			case <-tm.team.done:
 				return
 			case <-tm.wakeCh:
-				msgs := tm.mailbox.DrainAll()
+				msgs := tm.filterControlMessages(tm.mailbox.DrainAll())
+				if msg, ok := tm.shutdownRequest(); ok {
+					tm.setState(TeammateShuttingDown)
+					fmt.Fprintf(os.Stderr, "[gollem] team:%s teammate:%s received shutdown request from %s: %s\n",
+						tm.team.name, tm.name, msg.From, previewForLog(msg.Content, 240))
+					return
+				}
 				if len(msgs) == 0 {
 					continue // spurious wake — go back to select
-				}
-
-				// Check for shutdown request.
-				for _, msg := range msgs {
-					if msg.Type == MessageShutdownRequest {
-						fmt.Fprintf(os.Stderr, "[gollem] team:%s teammate:%s received shutdown request\n",
-							tm.team.name, tm.name)
-						return
-					}
 				}
 
 				// Build prompt from messages.

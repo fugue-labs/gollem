@@ -104,6 +104,15 @@ func TestShutdownTool(t *testing.T) {
 	if resultMap["status"] != "shutdown_requested" {
 		t.Errorf("expected status 'shutdown_requested', got %v", resultMap["status"])
 	}
+	if resultMap["requested_by"] != "leader" {
+		t.Errorf("expected requested_by 'leader', got %v", resultMap["requested_by"])
+	}
+	if resultMap["shutdown_id"] == "" {
+		t.Error("expected non-empty shutdown_id")
+	}
+	if resultMap["correlation_id"] == "" {
+		t.Error("expected non-empty correlation_id")
+	}
 
 	// Worker should stop.
 	deadline := time.After(3 * time.Second)
@@ -124,6 +133,35 @@ func TestShutdownTool_NotFound(t *testing.T) {
 	_, err := tool.Handler(context.Background(), nil, `{"name":"nobody"}`)
 	if err == nil {
 		t.Error("expected error for missing teammate")
+	}
+}
+
+func TestShutdownTool_UsesConfiguredLeaderName(t *testing.T) {
+	model := core.NewTestModel(core.TextResponse("done"))
+	tm := NewTeam(TeamConfig{
+		Name:   "test",
+		Leader: "lead",
+		Model:  model,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := tm.SpawnTeammate(ctx, "worker", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := tm.GetTeammate("worker")
+	waitForState(t, w, TeammateIdle, 3*time.Second)
+
+	tool := shutdownTool(tm)
+	result, err := tool.Handler(ctx, nil, `{"name":"worker","reason":"all done"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultMap := result.(map[string]any)
+	if resultMap["requested_by"] != "lead" {
+		t.Errorf("expected requested_by 'lead', got %v", resultMap["requested_by"])
 	}
 }
 
@@ -165,6 +203,12 @@ func TestSendMessageTool(t *testing.T) {
 	if resultMap["status"] != "sent" {
 		t.Errorf("expected status 'sent', got %v", resultMap["status"])
 	}
+	if resultMap["message_id"] == "" {
+		t.Error("expected non-empty message_id")
+	}
+	if resultMap["correlation_id"] == "" {
+		t.Error("expected non-empty correlation_id")
+	}
 
 	// The send_message tool also wakes bob, which causes the teammate loop
 	// to drain the mailbox and run. So instead of checking the mailbox directly
@@ -188,6 +232,15 @@ func TestSendMessageTool(t *testing.T) {
 	if sentEvents[0].Summary != "review request" {
 		t.Errorf("expected summary 'review request', got %q", sentEvents[0].Summary)
 	}
+	if sentEvents[0].MessageID == "" {
+		t.Error("expected sent event to include message ID")
+	}
+	if sentEvents[0].CorrelationID == "" {
+		t.Error("expected sent event to include correlation ID")
+	}
+	if sentEvents[0].Type != MessageText {
+		t.Errorf("expected message type %q, got %q", MessageText, sentEvents[0].Type)
+	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer shutdownCancel()
@@ -200,6 +253,28 @@ func TestSendMessageTool_NotFound(t *testing.T) {
 	_, err := tool.Handler(context.Background(), nil, `{"to":"nobody","content":"hello"}`)
 	if err == nil {
 		t.Error("expected error for missing recipient")
+	}
+}
+
+func TestSendMessageTool_MailboxFullReturnsError(t *testing.T) {
+	tm := NewTeam(TeamConfig{
+		Name:        "test",
+		Leader:      "lead",
+		Model:       core.NewTestModel(core.TextResponse("done")),
+		MailboxSize: 1,
+	})
+	_ = tm.RegisterLeader("lead")
+
+	leaderMB := tm.getMailbox("lead")
+	if leaderMB == nil {
+		t.Fatal("expected leader mailbox")
+	}
+	leaderMB.Send(Message{From: "existing", To: "lead", Type: MessageText, Content: "already full"})
+
+	tool := sendMessageTool(tm, "alice")
+	_, err := tool.Handler(context.Background(), nil, `{"to":"lead","content":"overflow"}`)
+	if err == nil {
+		t.Fatal("expected mailbox full error")
 	}
 }
 

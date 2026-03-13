@@ -9,6 +9,7 @@ import (
 
 	"github.com/fugue-labs/gollem/core"
 	"github.com/fugue-labs/gollem/modelutil"
+	"github.com/google/uuid"
 )
 
 // TeamConfig configures a new team.
@@ -156,6 +157,7 @@ func WithTeammateAgentOptions(opts ...core.AgentOption[string]) TeammateOption {
 // messages from teammates are not lost.
 func (t *Team) RegisterLeader(name string) core.AgentMiddleware {
 	t.mu.Lock()
+	t.leader = name
 	existing := t.members[name]
 	t.mu.Unlock()
 
@@ -285,23 +287,47 @@ func (t *Team) SpawnTeammate(ctx context.Context, name, task string, opts ...Tea
 	return tm, nil
 }
 
+func (t *Team) leaderName() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.leader
+}
+
+func (t *Team) leaderSenderName() string {
+	if leader := t.leaderName(); leader != "" {
+		return leader
+	}
+	return "leader"
+}
+
+func (t *Team) requestShutdown(name, from, reason, correlationID string) (Message, error) {
+	tm := t.GetTeammate(name)
+	if tm == nil {
+		return Message{}, fmt.Errorf("teammate %q not found", name)
+	}
+	if reason == "" {
+		reason = "work complete"
+	}
+	// First shutdown wins; Teammate.requestShutdown is intentionally idempotent.
+	msg := newMessage(from, name, MessageShutdownRequest, reason, "shutdown requested", correlationID)
+	msg = tm.requestShutdown(msg)
+	tm.Wake()
+	return msg, nil
+}
+
 // Shutdown gracefully shuts down all teammates.
 func (t *Team) Shutdown(ctx context.Context) error {
 	fmt.Fprintf(os.Stderr, "[gollem] team:%s shutting down\n", t.name)
 
 	// Signal all teammates to stop (skip the leader — it's the caller).
+	correlationID := uuid.NewString()
 	t.mu.RLock()
 	for _, tm := range t.members {
 		if tm.name == t.leader {
 			continue
 		}
-		tm.mailbox.Send(Message{
-			From:      "team",
-			To:        tm.name,
-			Type:      MessageShutdownRequest,
-			Content:   "Team is shutting down",
-			Timestamp: time.Now(),
-		})
+		msg := newMessage("team", tm.name, MessageShutdownRequest, "Team is shutting down", "team shutdown", correlationID)
+		tm.requestShutdown(msg)
 		tm.Wake()
 	}
 	t.mu.RUnlock()

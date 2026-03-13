@@ -36,8 +36,11 @@ type TaskCompletedEvent struct {
 
 // MessageSentEvent is published when a message is sent between teammates.
 type MessageSentEvent struct {
-	TeamName string
-	From     string
-	To       string
-	Summary  string
+	TeamName      string
+	MessageID     string
+	CorrelationID string
+	From          string
+	To            string
+	Type          MessageType
+	Summary       string
 }

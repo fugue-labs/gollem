@@ -324,6 +324,76 @@ func TestE2E_ShutdownViaMessage(t *testing.T) {
 	}
 }
 
+// TestE2E_InFlightShutdownMessageSurvivesMiddlewareDrain verifies that a
+// shutdown message delivered during a running turn still stops the teammate
+// after the current run, even when the middleware drains the mailbox entry
+// before the run finishes.
+func TestE2E_InFlightShutdownMessageSurvivesMiddlewareDrain(t *testing.T) {
+	toolStarted := make(chan struct{})
+	releaseTool := make(chan struct{})
+	waitTool := core.FuncTool[struct{}](
+		"wait",
+		"Wait until released",
+		func(ctx context.Context, _ struct{}) (string, error) {
+			select {
+			case <-toolStarted:
+			default:
+				close(toolStarted)
+			}
+			select {
+			case <-releaseTool:
+				return "released", nil
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		},
+	)
+
+	model := core.NewTestModel(
+		core.ToolCallResponseWithID("wait", `{}`, "call_wait"),
+		core.TextResponse("final"),
+	)
+	tm := NewTeam(TeamConfig{
+		Name:             "inflight-shutdown-team",
+		Leader:           "leader",
+		Model:            model,
+		WorkerExtraTools: []core.Tool{waitTool},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	w, err := tm.SpawnTeammate(ctx, "worker", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-toolStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for blocking tool to start")
+	}
+
+	w.mailbox.Send(Message{
+		From:    "leader",
+		To:      "worker",
+		Type:    MessageShutdownRequest,
+		Content: "all done",
+	})
+	w.Wake()
+
+	close(releaseTool)
+
+	deadline := time.After(3 * time.Second)
+	for w.State() != TeammateStopped {
+		select {
+		case <-deadline:
+			t.Fatalf("worker did not stop after in-flight shutdown message, state: %v", w.State())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 // TestE2E_MultipleWakeCycles tests that a teammate can be woken multiple times.
 func TestE2E_MultipleWakeCycles(t *testing.T) {
 	model := core.NewTestModel(core.TextResponse("done"))

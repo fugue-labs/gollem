@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/fugue-labs/gollem/core"
 )
@@ -33,14 +32,14 @@ type taskCreateParams struct {
 }
 
 type taskUpdateParams struct {
-	ID          string            `json:"id" jsonschema:"description=Task ID to update"`
-	Status      string            `json:"status,omitempty" jsonschema:"description=New status: pending, in_progress, completed, or blocked"`
-	Owner       string            `json:"owner,omitempty" jsonschema:"description=Assign to a teammate by name"`
-	Subject     string            `json:"subject,omitempty" jsonschema:"description=New subject"`
-	Description string            `json:"description,omitempty" jsonschema:"description=New description"`
-	AddBlocks   []string          `json:"add_blocks,omitempty" jsonschema:"description=Task IDs that this task blocks"`
-	AddBlockedBy []string         `json:"add_blocked_by,omitempty" jsonschema:"description=Task IDs that block this task"`
-	Metadata    map[string]any    `json:"metadata,omitempty" jsonschema:"description=Key-value metadata to merge"`
+	ID           string         `json:"id" jsonschema:"description=Task ID to update"`
+	Status       string         `json:"status,omitempty" jsonschema:"description=New status: pending, in_progress, completed, or blocked"`
+	Owner        string         `json:"owner,omitempty" jsonschema:"description=Assign to a teammate by name"`
+	Subject      string         `json:"subject,omitempty" jsonschema:"description=New subject"`
+	Description  string         `json:"description,omitempty" jsonschema:"description=New description"`
+	AddBlocks    []string       `json:"add_blocks,omitempty" jsonschema:"description=Task IDs that this task blocks"`
+	AddBlockedBy []string       `json:"add_blocked_by,omitempty" jsonschema:"description=Task IDs that block this task"`
+	Metadata     map[string]any `json:"metadata,omitempty" jsonschema:"description=Key-value metadata to merge"`
 }
 
 type taskGetParams struct {
@@ -49,7 +48,7 @@ type taskGetParams struct {
 
 // LeaderTools returns tools available only to the team leader.
 func LeaderTools(t *Team) []core.Tool {
-	shared := SharedTools(t, "leader")
+	shared := SharedTools(t, t.leaderSenderName())
 	leader := []core.Tool{
 		spawnTool(t),
 		shutdownTool(t),
@@ -114,33 +113,23 @@ func shutdownTool(t *Team) core.Tool {
 				return nil, &core.ModelRetryError{Message: "name must not be empty"}
 			}
 
-			mb := t.getMailbox(params.Name)
-			if mb == nil {
-				return nil, fmt.Errorf("teammate %q not found", params.Name)
-			}
-
 			reason := params.Reason
 			if reason == "" {
 				reason = "work complete"
 			}
 
-			mb.Send(Message{
-				From:      "leader",
-				To:        params.Name,
-				Type:      MessageShutdownRequest,
-				Content:   reason,
-				Timestamp: time.Now(),
-			})
-
-			// Wake the teammate if idle.
-			if tm := t.GetTeammate(params.Name); tm != nil {
-				tm.Wake()
+			msg, err := t.requestShutdown(params.Name, t.leaderSenderName(), reason, "")
+			if err != nil {
+				return nil, err
 			}
 
 			return map[string]any{
-				"status":  "shutdown_requested",
-				"name":    params.Name,
-				"message": fmt.Sprintf("Shutdown request sent to %q", params.Name),
+				"status":         "shutdown_requested",
+				"name":           params.Name,
+				"requested_by":   msg.From,
+				"shutdown_id":    msg.ID,
+				"correlation_id": msg.CorrelationID,
+				"message":        fmt.Sprintf("Shutdown request sent to %q", params.Name),
 			}, nil
 		},
 	)
@@ -172,14 +161,10 @@ func sendMessageTool(t *Team, selfName string) core.Tool {
 				summary = params.Content
 			}
 
-			mb.Send(Message{
-				From:      selfName,
-				To:        params.To,
-				Content:   params.Content,
-				Type:      MessageText,
-				Summary:   summary,
-				Timestamp: time.Now(),
-			})
+			msg := newMessage(selfName, params.To, MessageText, params.Content, summary, "")
+			if err := mb.TrySend(msg); err != nil {
+				return nil, fmt.Errorf("failed to deliver message to %q: %w", params.To, err)
+			}
 
 			// Wake the recipient if idle.
 			if tm := t.GetTeammate(params.To); tm != nil {
@@ -188,17 +173,22 @@ func sendMessageTool(t *Team, selfName string) core.Tool {
 
 			if t.eventBus != nil {
 				core.PublishAsync(t.eventBus, MessageSentEvent{
-					TeamName: t.name,
-					From:     selfName,
-					To:       params.To,
-					Summary:  summary,
+					TeamName:      t.name,
+					MessageID:     msg.ID,
+					CorrelationID: msg.CorrelationID,
+					From:          selfName,
+					To:            params.To,
+					Type:          msg.Type,
+					Summary:       summary,
 				})
 			}
 
 			return map[string]any{
-				"status":  "sent",
-				"to":      params.To,
-				"message": fmt.Sprintf("Message sent to %q", params.To),
+				"status":         "sent",
+				"to":             params.To,
+				"message_id":     msg.ID,
+				"correlation_id": msg.CorrelationID,
+				"message":        fmt.Sprintf("Message sent to %q", params.To),
 			}, nil
 		},
 	)

@@ -21,8 +21,9 @@ func TeamAwarenessMiddleware(tm *Teammate) core.AgentMiddleware {
 		next func(context.Context, []core.ModelMessage, *core.ModelSettings, *core.ModelRequestParameters) (*core.ModelResponse, error),
 	) (*core.ModelResponse, error) {
 		// Drain any pending messages.
-		pending := tm.mailbox.DrainAll()
-		if len(pending) == 0 {
+		pending := tm.filterControlMessages(tm.mailbox.DrainAll())
+		shutdownMsg, hasShutdown := tm.shutdownRequest()
+		if len(pending) == 0 && !hasShutdown {
 			return next(ctx, messages, settings, params)
 		}
 
@@ -46,14 +47,22 @@ func TeamAwarenessMiddleware(tm *Teammate) core.AgentMiddleware {
 
 		// Format messages and inject as UserPromptPart.
 		var parts []string
-		hasShutdown := false
 		for _, msg := range pending {
-			if msg.Type == MessageShutdownRequest {
-				hasShutdown = true
-				parts = append(parts, fmt.Sprintf("[SHUTDOWN REQUEST from %s]: %s — Wrap up your current work and finish.", msg.From, msg.Content))
-			} else {
-				parts = append(parts, fmt.Sprintf("[Message from %s]: %s", msg.From, msg.Content))
+			parts = append(parts, fmt.Sprintf("[Message from %s]: %s", msg.From, msg.Content))
+		}
+		if hasShutdown {
+			from := shutdownMsg.From
+			if from == "" {
+				from = "team"
 			}
+			reason := shutdownMsg.Content
+			if reason == "" {
+				reason = "No reason provided"
+			}
+			// TODO: Phase 1+ should stop expressing shutdown via prompt text.
+			// The control path is now out-of-band; this injection remains only so
+			// the worker can wrap up gracefully within the current run.
+			parts = append(parts, fmt.Sprintf("[SHUTDOWN REQUEST from %s]: %s — Wrap up your current work and finish.", from, reason))
 		}
 
 		injection := strings.Join(parts, "\n\n")

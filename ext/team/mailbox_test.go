@@ -1,6 +1,7 @@
 package team
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -17,6 +18,12 @@ func TestMailbox_SendAndDrain(t *testing.T) {
 	}
 	if msgs[0].From != "alice" {
 		t.Errorf("expected first message from alice, got %q", msgs[0].From)
+	}
+	if msgs[0].ID == "" {
+		t.Error("expected first message to have a generated ID")
+	}
+	if msgs[0].CorrelationID == "" {
+		t.Error("expected first message to have a generated correlation ID")
 	}
 	if msgs[1].From != "bob" {
 		t.Errorf("expected second message from bob, got %q", msgs[1].From)
@@ -40,9 +47,15 @@ func TestMailbox_DrainEmpty(t *testing.T) {
 func TestMailbox_BufferFull(t *testing.T) {
 	mb := NewMailbox(2)
 
-	mb.Send(Message{Content: "1"})
-	mb.Send(Message{Content: "2"})
-	mb.Send(Message{Content: "3"}) // Should be dropped silently.
+	if err := mb.TrySend(Message{Content: "1"}); err != nil {
+		t.Fatalf("first send failed: %v", err)
+	}
+	if err := mb.TrySend(Message{Content: "2"}); err != nil {
+		t.Fatalf("second send failed: %v", err)
+	}
+	if err := mb.TrySend(Message{Content: "3"}); !errors.Is(err, ErrMailboxFull) {
+		t.Fatalf("expected ErrMailboxFull, got %v", err)
+	}
 
 	msgs := mb.DrainAll()
 	if len(msgs) != 2 {

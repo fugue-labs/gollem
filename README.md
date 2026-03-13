@@ -76,13 +76,13 @@ Gollem ships **50+ composable primitives** in a single framework. Here's what yo
 - **Batch execution** — `RunBatch` for concurrent multi-prompt runs with ordered results
 
 ### Multi-Agent Team Swarms
-- **Team orchestration** — Spawn concurrent teammate agents as goroutines with shared task boards, mailbox-based messaging, and automatic lifecycle management (`ext/team`)
+- **Team orchestration** — Spawn concurrent teammate agents as goroutines with shared task boards, best-effort mailbox messaging, out-of-band shutdown control, and automatic lifecycle management (`ext/team`)
 - **Dynamic personality generation** — LLM generates task-specific system prompts for each subagent and teammate before they start, dramatically improving agent effectiveness (`modelutil`)
 - **Cached personality generation** — SHA256-keyed cache prevents redundant LLM calls when identical tasks are delegated multiple times
-- **Mailbox messaging** — Buffered channel-based message queues with automatic draining via agent middleware; teammates see messages between model turns
+- **Mailbox messaging** — Best-effort buffered note delivery with automatic draining via agent middleware; `send_message` returns an error if the recipient mailbox is full
 - **Shared task board** — Concurrency-safe task tracking with status, ownership, blocking dependencies, and metadata
 - **Teammate lifecycle** — Starting, running, idle, shutting down, stopped states with automatic error recovery and leader notification
-- **Team-aware agent middleware** — Injects pending messages as `UserPromptPart` between model calls so agents stay coordinated without polling
+- **Team-aware agent middleware** — Injects pending teammate notes as `UserPromptPart` between model calls while team control signals remain out-of-band
 
 ### Composition & Multi-Agent
 - **Agent cloning** — `Clone()` creates independent copies with additional options
@@ -109,7 +109,7 @@ Gollem ships **50+ composable primitives** in a single framework. Here's what yo
 - **Unified `StreamText`** — Single function with `StreamTextOptions` for all modes
 
 ### Extensions
-- **Multi-agent team swarms** — Concurrent teammate agents with mailbox messaging, shared task boards, dynamic personality generation, and automatic lifecycle management (`ext/team`)
+- **Multi-agent team swarms** — Concurrent teammate agents with best-effort mailbox messaging, shared task boards, dynamic personality generation, and automatic lifecycle management (`ext/team`)
 - **Dynamic personality generation** — LLM-generated task-specific system prompts for subagents and teammates with SHA256-keyed caching (`modelutil`)
 - **Code mode (monty)** — LLM writes a single Python script that calls N tools as functions; executes in a WASM sandbox via [monty-go](https://github.com/fugue-labs/monty-go) — N tool calls in 1 model round-trip
 - **Graph workflow engine** — Typed state machines with conditional branching, fan-out/map-reduce, cycle detection, and Mermaid export
@@ -309,7 +309,7 @@ Use `AdoptWithWait(...)` instead when your code already wraps `cmd.Wait()` behin
 
 ### Multi-Agent Team Swarm
 
-Spawn concurrent teammates that coordinate through mailboxes and a shared task board. Each teammate gets a dynamically generated personality tailored to its specific task — the LLM itself writes the system prompt.
+Spawn concurrent teammates that coordinate through best-effort mailbox notes and a shared task board. Each teammate gets a dynamically generated personality tailored to its specific task — the LLM itself writes the system prompt.
 
 ```go
 import (
@@ -328,7 +328,7 @@ t := team.NewTeam(team.TeamConfig{
     ),
 })
 
-// Register the leader — returns middleware that auto-injects teammate messages.
+// Register the leader — returns middleware that auto-injects teammate notes.
 middleware := t.RegisterLeader("lead")
 leader := gollem.NewAgent[string](model,
     gollem.WithAgentMiddleware[string](middleware),
@@ -341,14 +341,16 @@ t.SpawnTeammate(ctx, "reviewer", "Review auth module for security vulnerabilitie
 t.SpawnTeammate(ctx, "tester", "Write comprehensive tests for the payment flow")
 t.SpawnTeammate(ctx, "docs", "Update API documentation for the new endpoints")
 
-// The leader coordinates — messages from teammates arrive automatically
-// between model turns via the team-awareness middleware.
+// The leader coordinates — teammate notes arrive automatically between
+// model turns via the team-awareness middleware.
 result, _ := leader.Run(ctx, "Coordinate the code review across all teammates")
 
 t.Shutdown(ctx)
 ```
 
 If your teammate toolset contains per-worker state, use `team.TeamConfig.ToolsetFactory` instead of sharing a single `Toolset`. This is the right pattern for stateful helpers such as background-process managers. `codetool.AgentOptions(...)` handles that automatically in team mode.
+
+Mailbox delivery is best-effort: `send_message` fails if the recipient mailbox is full. Shutdown is handled separately from mailbox note delivery so an in-flight worker cannot lose the request when its mailbox is drained for prompt injection.
 
 ### Multi-Agent with Event Coordination
 
@@ -793,7 +795,7 @@ summary, _ := orchestration.ChainRun(ctx, researcher, writer, "Topic: AI safety"
 
 ### Multi-Agent Team Swarms
 
-Spawn teams of concurrent agents that coordinate through mailbox messaging and a shared task board. Each teammate runs as a goroutine with its own context window and tools.
+Spawn teams of concurrent agents that coordinate through best-effort mailbox messaging and a shared task board. Each teammate runs as a goroutine with its own context window and tools.
 
 ```go
 import "github.com/fugue-labs/gollem/ext/team"
@@ -806,22 +808,22 @@ t := team.NewTeam(team.TeamConfig{
     Toolset: codingTools,
 })
 
-// Leader's middleware auto-injects messages from teammates between turns.
+// Leader's middleware auto-injects teammate notes between turns.
 middleware := t.RegisterLeader("lead")
 
 // Spawn teammates — each runs concurrently in its own goroutine.
 t.SpawnTeammate(ctx, "analyzer", "Analyze the codebase for dead code and unused imports")
 t.SpawnTeammate(ctx, "migrator", "Migrate database queries from raw SQL to the ORM")
 
-// Teammates can send messages, create/update tasks, and coordinate.
-// The leader sees all messages via the team-awareness middleware.
+// Teammates can send notes, create/update tasks, and coordinate.
+// The leader sees pending notes via the team-awareness middleware.
 leader := gollem.NewAgent[string](model,
     gollem.WithAgentMiddleware[string](middleware),
     gollem.WithTools[string](team.LeaderTools(t)...),
 )
 result, _ := leader.Run(ctx, "Coordinate the refactoring effort")
 
-// Graceful shutdown — sends shutdown messages, waits for completion.
+// Graceful shutdown — requests out-of-band shutdown, then waits for completion.
 t.Shutdown(ctx)
 ```
 
