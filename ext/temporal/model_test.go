@@ -64,23 +64,32 @@ func TestTemporalModel_ModelRequestActivity(t *testing.T) {
 	model := core.NewTestModel(core.TextResponse("Activity response"))
 	tm := NewTemporalModel(model, "test-agent", DefaultActivityConfig())
 
-	params := requestParams{
-		Messages: []core.ModelMessage{
-			core.ModelRequest{
-				Parts: []core.ModelRequestPart{
-					core.UserPromptPart{Content: "Hello"},
-				},
-				Timestamp: time.Now(),
+	messagesJSON, err := core.MarshalMessages([]core.ModelMessage{
+		core.ModelRequest{
+			Parts: []core.ModelRequestPart{
+				core.UserPromptPart{Content: "Hello"},
 			},
+			Timestamp: time.Now(),
 		},
+	})
+	if err != nil {
+		t.Fatalf("marshal messages: %v", err)
+	}
+
+	params := ModelActivityInput{
+		MessagesJSON: messagesJSON,
 		Parameters: &core.ModelRequestParameters{
 			AllowTextOutput: true,
 		},
 	}
 
-	resp, err := tm.ModelRequestActivity(context.Background(), params)
+	output, err := tm.ModelRequestActivity(context.Background(), params)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	resp, err := decodeModelActivityOutput(output)
+	if err != nil {
+		t.Fatalf("decode model output: %v", err)
 	}
 	if resp.TextContent() != "Activity response" {
 		t.Errorf("expected 'Activity response', got %q", resp.TextContent())
@@ -145,17 +154,21 @@ func TestModelRequestStreamActivity_MidStreamError(t *testing.T) {
 	}
 
 	tm := NewTemporalModel(model, "test-agent", DefaultActivityConfig())
-	params := requestParams{
-		Messages: []core.ModelMessage{
-			core.ModelRequest{
-				Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "Hello"}},
-				Timestamp: time.Now(),
-			},
+	messagesJSON, err := core.MarshalMessages([]core.ModelMessage{
+		core.ModelRequest{
+			Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "Hello"}},
+			Timestamp: time.Now(),
 		},
-		Parameters: &core.ModelRequestParameters{AllowTextOutput: true},
+	})
+	if err != nil {
+		t.Fatalf("marshal messages: %v", err)
+	}
+	params := ModelActivityInput{
+		MessagesJSON: messagesJSON,
+		Parameters:   &core.ModelRequestParameters{AllowTextOutput: true},
 	}
 
-	_, err := tm.ModelRequestStreamActivity(context.Background(), params)
+	_, err = tm.ModelRequestStreamActivity(context.Background(), params)
 	if err == nil {
 		t.Fatal("expected error from mid-stream failure, got nil")
 	}
@@ -192,8 +205,8 @@ func (s *errorTestStream) Next() (core.ModelResponseStreamEvent, error) {
 	return nil, s.err
 }
 func (s *errorTestStream) Response() *core.ModelResponse { return s.response }
-func (s *errorTestStream) Usage() core.Usage              { return s.response.Usage }
-func (s *errorTestStream) Close() error                   { return nil }
+func (s *errorTestStream) Usage() core.Usage             { return s.response.Usage }
+func (s *errorTestStream) Close() error                  { return nil }
 
 // TestModelRequestStreamActivity_Success verifies normal stream consumption.
 func TestModelRequestStreamActivity_Success(t *testing.T) {
@@ -206,22 +219,80 @@ func TestModelRequestStreamActivity_Success(t *testing.T) {
 	}
 
 	tm := NewTemporalModel(model, "test-agent", DefaultActivityConfig())
-	params := requestParams{
-		Messages: []core.ModelMessage{
-			core.ModelRequest{
-				Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "Hello"}},
-				Timestamp: time.Now(),
-			},
+	messagesJSON, err := core.MarshalMessages([]core.ModelMessage{
+		core.ModelRequest{
+			Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "Hello"}},
+			Timestamp: time.Now(),
 		},
-		Parameters: &core.ModelRequestParameters{AllowTextOutput: true},
+	})
+	if err != nil {
+		t.Fatalf("marshal messages: %v", err)
+	}
+	params := ModelActivityInput{
+		MessagesJSON: messagesJSON,
+		Parameters:   &core.ModelRequestParameters{AllowTextOutput: true},
 	}
 
-	resp, err := tm.ModelRequestStreamActivity(context.Background(), params)
+	output, err := tm.ModelRequestStreamActivity(context.Background(), params)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	resp, err := decodeModelActivityOutput(output)
+	if err != nil {
+		t.Fatalf("decode model output: %v", err)
+	}
 	if resp.TextContent() != "streamed result" {
 		t.Errorf("expected 'streamed result', got %q", resp.TextContent())
+	}
+}
+
+func TestModelRequestStreamActivity_StreamMiddleware(t *testing.T) {
+	model := &countingStreamTestModel{
+		response: &core.ModelResponse{
+			Parts:     []core.ModelResponsePart{core.TextPart{Content: "should not be used"}},
+			ModelName: "test-model",
+			Usage:     core.Usage{InputTokens: 10, OutputTokens: 5},
+		},
+	}
+
+	tm := NewTemporalModelWithMiddleware(
+		model,
+		"test-agent",
+		DefaultActivityConfig(),
+		nil,
+		[]core.AgentStreamMiddleware{
+			func(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters, _ core.AgentStreamFunc) (core.StreamedResponse, error) {
+				resp := core.TextResponse("stream middleware intercepted")
+				return &completedStream{response: resp}, nil
+			},
+		},
+	)
+	messagesJSON, err := core.MarshalMessages([]core.ModelMessage{
+		core.ModelRequest{
+			Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "Hello"}},
+			Timestamp: time.Now(),
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal messages: %v", err)
+	}
+
+	output, err := tm.ModelRequestStreamActivity(context.Background(), ModelActivityInput{
+		MessagesJSON: messagesJSON,
+		Parameters:   &core.ModelRequestParameters{AllowTextOutput: true},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp, err := decodeModelActivityOutput(output)
+	if err != nil {
+		t.Fatalf("decode model output: %v", err)
+	}
+	if resp.TextContent() != "stream middleware intercepted" {
+		t.Fatalf("expected intercepted stream response, got %q", resp.TextContent())
+	}
+	if model.streamCalls != 0 {
+		t.Fatalf("expected underlying stream model to be skipped, got %d calls", model.streamCalls)
 	}
 }
 
@@ -250,5 +321,19 @@ func (s *successTestStream) Next() (core.ModelResponseStreamEvent, error) {
 	return nil, io.EOF
 }
 func (s *successTestStream) Response() *core.ModelResponse { return s.response }
-func (s *successTestStream) Usage() core.Usage              { return s.response.Usage }
-func (s *successTestStream) Close() error                   { return nil }
+func (s *successTestStream) Usage() core.Usage             { return s.response.Usage }
+func (s *successTestStream) Close() error                  { return nil }
+
+type countingStreamTestModel struct {
+	response    *core.ModelResponse
+	streamCalls int
+}
+
+func (m *countingStreamTestModel) ModelName() string { return "test-model" }
+func (m *countingStreamTestModel) Request(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (*core.ModelResponse, error) {
+	return m.response, nil
+}
+func (m *countingStreamTestModel) RequestStream(_ context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (core.StreamedResponse, error) {
+	m.streamCalls++
+	return &successTestStream{response: m.response}, nil
+}

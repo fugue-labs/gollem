@@ -993,26 +993,70 @@ lra := deep.NewLongRunAgent[string](model,
 result, _ := lra.Run(ctx, "Analyze this large codebase...")
 ```
 
-### Temporal Activity Scaffolding
+### Temporal Durable Execution
 
-Preview support for exporting named model and tool activities to a Temporal worker:
+Durable Temporal workflow support for gollem agents:
 
 ```go
 import "github.com/fugue-labs/gollem/ext/temporal"
 
 ta := temporal.NewTemporalAgent(agent,
     temporal.WithName("my-agent"),
+    temporal.WithVersion("2026_03"),
+    temporal.WithContinueAsNew(temporal.ContinueAsNewConfig{
+        MaxTurns:         50,
+        MaxHistoryLength: 10000,
+        OnSuggested:      true,
+    }),
     temporal.WithActivityConfig(temporal.ActivityConfig{
         StartToCloseTimeout: 120 * time.Second,
         MaxRetries:          3,
     }),
 )
+
+w := worker.New(client, "my-queue", worker.Options{})
+_ = temporal.RegisterAll(w, ta)
+
+run, _ := client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+    TaskQueue: "my-queue",
+}, ta.WorkflowName(), temporal.WorkflowInput{
+    Prompt: "Summarize the current project status",
+})
+
+var output temporal.WorkflowOutput
+_ = run.Get(ctx, &output)
+result, _ := ta.DecodeWorkflowOutput(&output)
 ```
 
-`NewTemporalAgent` currently validates that the wrapped agent only uses the
-subset of features supported by the activity scaffolding path. `ta.Run(...)`
-still executes in-process; durable execution requires calling the exported
-activities from your own Temporal workflow.
+`NewTemporalAgent` validates construction-time invariants; `ta.Run(...)` still
+executes in-process, while `RunWorkflow`, `Register(...)`, and
+`RegisterAll(...)` are the durable entry points. `WithVersion(...)` gives the
+workflow/activity names a stable deployment suffix, and
+`WithContinueAsNew(...)` rolls long runs into fresh workflow executions while
+preserving snapshot state. Use `ta.StatusQueryName()` to query
+`WorkflowStatus`, which includes workflow identity, current history metrics,
+continue-as-new counters, and readable structured `Messages`, `Snapshot`, and
+`Trace` payloads for operator-facing inspection. Signal
+`ta.ApprovalSignalName()` for tools marked with `WithRequiresApproval()`,
+signal `ta.DeferredResultSignalName()` to resolve deferred tool calls, and
+signal `ta.AbortSignalName()` to abort a waiting workflow. The current
+activity-backed callback surface includes dynamic
+system prompts, history processors, input/turn guardrails, lifecycle hooks,
+run conditions, tool preparation callbacks, request middleware,
+message/response interceptors, output repair/validation, custom
+`WithToolApproval(...)` callbacks, knowledge-base retrieval/storage, usage
+quota checks, toolsets, tool result validators, tracing, trace exporters, cost
+estimates, event bus integration, agent deps, and auto-context compression.
+The built-in workflow uses non-streaming model requests; the streaming model
+activity is available for custom workflows. JSON-valued workflow/activity
+payloads are emitted as nested JSON so Temporal history stays readable, while
+the legacy raw `*JSON` fields remain as decode fallbacks for older histories.
+See [`ext/temporal/README.md`](ext/temporal/README.md) for the full execution
+model, payload shapes, status/signal API, dep override flow, continue-as-new
+behavior, custom workflow hooks, and current caveats. The runnable example is
+[`examples/temporal/main.go`](examples/temporal/main.go), which starts a real
+worker, runs a durable workflow, queries waiting status, and signals tool
+approval.
 
 ### Evaluation Framework
 
@@ -1076,7 +1120,7 @@ agent := gollem.NewAgent[string](wrapped)
 | [`examples/streaming`](examples/streaming) | Real-time streaming with `iter.Seq2` |
 | [`examples/multi-provider`](examples/multi-provider) | Same agent across different providers |
 | [`examples/mcp`](examples/mcp) | MCP server integration |
-| [`examples/temporal`](examples/temporal) | Temporal activity scaffolding setup |
+| [`examples/temporal`](examples/temporal) | Durable Temporal workflow with query + approval signal |
 | [`examples/evaluation`](examples/evaluation) | Evaluation framework with datasets |
 | [`examples/multi-agent/delegation`](examples/multi-agent/delegation) | Agent-as-tool delegation |
 | [`examples/deep/context_management`](examples/deep/context_management) | Three-tier context compression |

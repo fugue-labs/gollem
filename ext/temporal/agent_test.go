@@ -2,10 +2,35 @@ package temporal
 
 import (
 	"context"
+	"strings"
 	"testing"
+
+	"github.com/nexus-rpc/sdk-go/nexus"
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/fugue-labs/gollem/core"
 )
+
+type recordingWorker struct {
+	workflowNames []string
+	activityNames []string
+}
+
+func (w *recordingWorker) RegisterWorkflow(interface{}) {}
+func (w *recordingWorker) RegisterWorkflowWithOptions(_ interface{}, options workflow.RegisterOptions) {
+	w.workflowNames = append(w.workflowNames, options.Name)
+}
+func (w *recordingWorker) RegisterDynamicWorkflow(interface{}, workflow.DynamicRegisterOptions) {}
+func (w *recordingWorker) RegisterActivity(interface{})                                         {}
+func (w *recordingWorker) RegisterActivityWithOptions(_ interface{}, options activity.RegisterOptions) {
+	w.activityNames = append(w.activityNames, options.Name)
+}
+func (w *recordingWorker) RegisterDynamicActivity(interface{}, activity.DynamicRegisterOptions) {}
+func (w *recordingWorker) RegisterNexusService(*nexus.Service)                                  {}
+func (w *recordingWorker) Start() error                                                         { return nil }
+func (w *recordingWorker) Run(<-chan interface{}) error                                         { return nil }
+func (w *recordingWorker) Stop()                                                                {}
 
 func TestTemporalAgent_Construction(t *testing.T) {
 	type Params struct {
@@ -53,11 +78,26 @@ func TestTemporalAgent_RunOutsideWorkflow(t *testing.T) {
 	}
 }
 
+func TestTemporalAgent_EventHandlerAccessor(t *testing.T) {
+	model := core.NewTestModel(core.TextResponse("ok"))
+	agent := core.NewAgent[string](model)
+	handler := func(_ context.Context, _ core.ModelResponseStreamEvent) error { return nil }
+
+	ta := NewTemporalAgent(agent, WithName("handler-agent"), WithEventHandler(handler))
+	if ta.EventHandler() == nil {
+		t.Fatal("expected event handler accessor to return configured handler")
+	}
+}
+
 func TestTemporalAgent_Activities(t *testing.T) {
 	model := core.NewTestModel(core.TextResponse("Hi"))
 
-	type P1 struct{ Q string `json:"q"` }
-	type P2 struct{ N int `json:"n"` }
+	type P1 struct {
+		Q string `json:"q"`
+	}
+	type P2 struct {
+		N int `json:"n"`
+	}
 
 	tool1 := core.FuncTool[P1]("tool1", "Tool 1",
 		func(_ context.Context, p P1) (string, error) { return p.Q, nil })
@@ -87,7 +127,7 @@ func TestTemporalAgent_NameRequired(t *testing.T) {
 	_ = NewTemporalAgent(agent) // Should panic.
 }
 
-func TestTemporalAgent_WithPassthrough(t *testing.T) {
+func TestTemporalAgent_WithPassthroughRejected(t *testing.T) {
 	type P struct{}
 
 	model := core.NewTestModel(core.TextResponse("Hi"))
@@ -97,20 +137,21 @@ func TestTemporalAgent_WithPassthrough(t *testing.T) {
 		func(_ context.Context, _ P) (string, error) { return "slow", nil })
 
 	agent := core.NewAgent[string](model, core.WithTools[string](tool1, tool2))
-	ta := NewTemporalAgent(agent,
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic when passthrough tools are configured")
+		}
+		if !strings.Contains(r.(error).Error(), "WithToolPassthrough") {
+			t.Fatalf("unexpected panic: %v", r)
+		}
+	}()
+
+	_ = NewTemporalAgent(agent,
 		WithName("passthrough-test"),
 		WithToolPassthrough("fast_tool"),
 	)
-
-	activities := ta.Activities()
-	// fast_tool should be skipped (passthrough).
-	if _, ok := activities["agent__passthrough-test__tool__fast_tool"]; ok {
-		t.Error("fast_tool should be passthrough, not an activity")
-	}
-	// slow_tool should be an activity.
-	if _, ok := activities["agent__passthrough-test__tool__slow_tool"]; !ok {
-		t.Error("slow_tool should be an activity")
-	}
 }
 
 func TestTemporalAgent_WithActivityConfig(t *testing.T) {
@@ -129,5 +170,47 @@ func TestTemporalAgent_WithActivityConfig(t *testing.T) {
 
 	if ta.config.defaultConfig.MaxRetries != 3 {
 		t.Errorf("expected 3 max retries, got %d", ta.config.defaultConfig.MaxRetries)
+	}
+}
+
+func TestTemporalAgent_WithVersion(t *testing.T) {
+	model := core.NewTestModel(core.TextResponse("Hi"))
+	agent := core.NewAgent[string](model)
+	ta := NewTemporalAgent(agent, WithName("versioned"), WithVersion("2026_03"))
+
+	if ta.Name() != "versioned" {
+		t.Fatalf("expected logical name %q, got %q", "versioned", ta.Name())
+	}
+	if ta.Version() != "2026_03" {
+		t.Fatalf("expected version %q, got %q", "2026_03", ta.Version())
+	}
+	if ta.RegistrationName() != "versioned__v__2026_03" {
+		t.Fatalf("unexpected registration name %q", ta.RegistrationName())
+	}
+	if ta.WorkflowName() != "agent__versioned__v__2026_03__workflow" {
+		t.Fatalf("unexpected workflow name %q", ta.WorkflowName())
+	}
+	if _, ok := ta.Activities()["agent__versioned__v__2026_03__model_request"]; !ok {
+		t.Fatal("expected versioned model activity name")
+	}
+}
+
+func TestRegisterAll(t *testing.T) {
+	worker := &recordingWorker{}
+
+	agent1 := NewTemporalAgent(core.NewAgent[string](core.NewTestModel(core.TextResponse("one"))), WithName("one"))
+	agent2 := NewTemporalAgent(core.NewAgent[string](core.NewTestModel(core.TextResponse("two"))), WithName("two"), WithVersion("v2"))
+
+	if err := RegisterAll(worker, agent1, agent2); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	if len(worker.workflowNames) != 2 {
+		t.Fatalf("expected 2 workflows, got %d", len(worker.workflowNames))
+	}
+	if worker.workflowNames[0] != agent1.WorkflowName() || worker.workflowNames[1] != agent2.WorkflowName() {
+		t.Fatalf("unexpected workflow registrations: %v", worker.workflowNames)
+	}
+	if len(worker.activityNames) == 0 {
+		t.Fatal("expected activities to be registered")
 	}
 }

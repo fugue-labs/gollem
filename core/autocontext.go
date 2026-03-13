@@ -27,6 +27,12 @@ func WithAutoContext[T any](config AutoContextConfig) AgentOption[T] {
 	}
 }
 
+// AutoCompressMessages exposes the agent's auto-context compaction logic for
+// alternative execution backends that need to preserve the same behavior.
+func AutoCompressMessages(ctx context.Context, messages []ModelMessage, config *AutoContextConfig, fallbackModel Model, tokenCount int) ([]ModelMessage, error) {
+	return autoCompressMessages(ctx, messages, config, fallbackModel, tokenCount)
+}
+
 // EstimateTokens estimates the token count of messages using a simple word-based heuristic.
 // Uses ~1.3 tokens per word as a rough approximation.
 // Exported so that middleware (e.g., ContextOverflowMiddleware) can compute

@@ -11,6 +11,7 @@ type AgentExecutionFeatures struct {
 	ToolsWithPrepareFunc       int
 	ToolsWithResultValidator   int
 	ToolsRequiringApproval     int
+	HasToolApprovalFunc        bool
 	Hooks                      int
 	InputGuardrails            int
 	TurnGuardrails             int
@@ -27,6 +28,7 @@ type AgentExecutionFeatures struct {
 	HasKnowledgeAutoStore      bool
 	HasCostTracker             bool
 	HasAutoContext             bool
+	HasUsageQuota              bool
 	RequestMiddleware          int
 	StreamMiddleware           int
 }
@@ -39,6 +41,7 @@ func (a *Agent[T]) ExecutionFeatures() AgentExecutionFeatures {
 		HistoryProcessors:          len(a.historyProcessors),
 		Toolsets:                   len(a.toolsets),
 		HasAgentToolsPrepare:       a.toolsPrepareFunc != nil,
+		HasToolApprovalFunc:        a.toolApprovalFunc != nil,
 		Hooks:                      len(a.hooks),
 		InputGuardrails:            len(a.inputGuardrails),
 		TurnGuardrails:             len(a.turnGuardrails),
@@ -55,6 +58,7 @@ func (a *Agent[T]) ExecutionFeatures() AgentExecutionFeatures {
 		HasKnowledgeAutoStore:      a.kbAutoStore,
 		HasCostTracker:             a.costTracker != nil,
 		HasAutoContext:             a.autoContext != nil,
+		HasUsageQuota:              a.usageQuota != nil,
 		RequestMiddleware:          len(a.middleware),
 		StreamMiddleware:           len(a.streamMiddleware),
 	}

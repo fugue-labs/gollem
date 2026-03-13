@@ -352,6 +352,9 @@ func (a *Agent[T]) buildRunContext(state *agentRunState, deps any, prompt string
 		toolStateGetter: func() map[string]any {
 			return a.exportToolState()
 		},
+		runStateSnapshotGetter: func() *RunStateSnapshot {
+			return state.snapshot(prompt, a.exportToolState())
+		},
 	}
 }
 
@@ -383,6 +386,7 @@ type runConfig struct {
 	modelSettings       *ModelSettings
 	usageLimits         *UsageLimits
 	messages            []ModelMessage
+	snapshot            *RunStateSnapshot
 	initialRequestParts []ModelRequestPart
 	deferredResults     []DeferredToolResult
 	batchConcurrency    int
@@ -452,22 +456,6 @@ func WithDetach(ch <-chan struct{}) RunOption {
 	}
 }
 
-// agentRunState tracks mutable state across the agent loop.
-type agentRunState struct {
-	messages        []ModelMessage
-	usage           RunUsage
-	lastInputTokens int // input tokens from the most recent model response (0 on first turn)
-	retries         int
-	toolRetries     map[string]int
-	runStep         int
-	runID           string
-	startTime       time.Time
-	limits          UsageLimits
-	detach          <-chan struct{} // UI detach signal; nil if not configured
-	mu              sync.Mutex      // protects usage, toolRetries, and traceSteps during concurrent tool execution
-	traceSteps      []TraceStep
-}
-
 func (a *Agent[T]) ensureOutputSchema() *OutputSchema {
 	a.outputSchemaMu.Lock()
 	defer a.outputSchemaMu.Unlock()
@@ -487,64 +475,20 @@ func (a *Agent[T]) Run(ctx context.Context, prompt string, opts ...RunOption) (*
 	// Build output schema.
 	a.ensureOutputSchema()
 
-	// Initialize state.
-	state := &agentRunState{
-		toolRetries: make(map[string]int),
-		runID:       newRunID(),
-		startTime:   time.Now(),
-		detach:      cfg.detach,
+	exec := a.initializeRunExecution(cfg)
+	state := exec.state
+	settings := exec.settings
+	limits := exec.limits
+	deps := exec.deps
+
+	var err error
+	prompt, err = a.applyInputGuardrails(ctx, state, deps, prompt, true)
+	if err != nil {
+		return nil, err
 	}
 
-	// Copy any provided history.
-	if len(cfg.messages) > 0 {
-		state.messages = make([]ModelMessage, len(cfg.messages))
-		copy(state.messages, cfg.messages)
-	}
-
-	// Restore stateful tools from a previous run.
-	if len(cfg.toolState) > 0 {
-		a.restoreToolState(cfg.toolState)
-	}
-
-	// Resolve settings.
-	settings := a.modelSettings
-	if cfg.modelSettings != nil {
-		settings = cfg.modelSettings
-	}
-	limits := a.usageLimits
-	if cfg.usageLimits != nil {
-		limits = *cfg.usageLimits
-	}
-	state.limits = limits
-
-	// Resolve deps: run-level deps override agent-level deps.
-	deps := a.deps
-	if cfg.deps != nil {
-		deps = cfg.deps
-	}
-
-	// Run input guardrails.
-	for _, g := range a.inputGuardrails {
-		var gErr error
-		prompt, gErr = g.fn(ctx, prompt)
-		passed := gErr == nil
-		a.fireHook(func(h Hook) {
-			if h.OnGuardrailEvaluated != nil {
-				h.OnGuardrailEvaluated(ctx, &RunContext{
-					Deps:         deps,
-					Usage:        state.usage,
-					Prompt:       prompt,
-					RunID:        state.runID,
-					RunStartTime: state.startTime,
-				}, g.name, passed, gErr)
-			}
-		})
-		if gErr != nil {
-			return nil, &GuardrailError{
-				GuardrailName: g.name,
-				Message:       gErr.Error(),
-			}
-		}
+	if err := a.bootstrapRunMessages(ctx, state, prompt, deps, cfg.deferredResults, cfg.initialRequestParts); err != nil {
+		return nil, err
 	}
 
 	// Fire OnRunStart hooks BEFORE injecting this run's RunID into context.
@@ -569,7 +513,7 @@ func (a *Agent[T]) Run(ctx context.Context, prompt string, opts ...RunOption) (*
 	// Must come AFTER OnRunStart so hooks see the parent's RunID.
 	ctx = ContextWithRunID(ctx, state.runID)
 
-	result, runErr := a.runLoop(ctx, state, prompt, settings, limits, deps, cfg.deferredResults, cfg.initialRequestParts)
+	result, runErr := a.runLoop(ctx, state, prompt, settings, limits, deps)
 
 	endRC := a.buildRunContext(state, deps, prompt)
 
@@ -632,59 +576,16 @@ func (a *Agent[T]) RunStream(ctx context.Context, prompt string, opts ...RunOpti
 	// Build output schema.
 	a.ensureOutputSchema()
 
-	// Initialize state.
-	state := &agentRunState{
-		toolRetries: make(map[string]int),
-		runID:       newRunID(),
-		startTime:   time.Now(),
-		detach:      cfg.detach,
-	}
-	if len(cfg.messages) > 0 {
-		state.messages = make([]ModelMessage, len(cfg.messages))
-		copy(state.messages, cfg.messages)
-	}
-	if len(cfg.toolState) > 0 {
-		a.restoreToolState(cfg.toolState)
-	}
+	exec := a.initializeRunExecution(cfg)
+	state := exec.state
+	settings := exec.settings
+	limits := exec.limits
+	deps := exec.deps
 
-	settings := a.modelSettings
-	if cfg.modelSettings != nil {
-		settings = cfg.modelSettings
-	}
-	limits := a.usageLimits
-	if cfg.usageLimits != nil {
-		limits = *cfg.usageLimits
-	}
-	state.limits = limits
-
-	// Resolve deps: run-level deps override agent-level deps.
-	deps := a.deps
-	if cfg.deps != nil {
-		deps = cfg.deps
-	}
-
-	// Run input guardrails (must apply to streaming too).
-	for _, g := range a.inputGuardrails {
-		var gErr error
-		prompt, gErr = g.fn(ctx, prompt)
-		passed := gErr == nil
-		a.fireHook(func(h Hook) {
-			if h.OnGuardrailEvaluated != nil {
-				h.OnGuardrailEvaluated(ctx, &RunContext{
-					Deps:         deps,
-					Usage:        state.usage,
-					Prompt:       prompt,
-					RunID:        state.runID,
-					RunStartTime: state.startTime,
-				}, g.name, passed, gErr)
-			}
-		})
-		if gErr != nil {
-			return nil, &GuardrailError{
-				GuardrailName: g.name,
-				Message:       gErr.Error(),
-			}
-		}
+	var err error
+	prompt, err = a.applyInputGuardrails(ctx, state, deps, prompt, true)
+	if err != nil {
+		return nil, err
 	}
 
 	// Fire OnRunStart hooks before injecting this run's RunID into context.
@@ -713,49 +614,9 @@ func (a *Agent[T]) RunStream(ctx context.Context, prompt string, opts ...RunOpti
 
 	stream := newAgentStream(a, ctx, state, settings, limits, deps, prompt, allTools, toolMap, outputToolNames)
 
-	// Handle deferred results resume before the first model call.
-	if len(cfg.deferredResults) > 0 && len(state.messages) > 0 {
-		var deferredParts []ModelRequestPart
-		for _, dr := range cfg.deferredResults {
-			if dr.IsError {
-				deferredParts = append(deferredParts, RetryPromptPart{
-					Content:    dr.Content,
-					ToolName:   dr.ToolName,
-					ToolCallID: dr.ToolCallID,
-					Timestamp:  time.Now(),
-				})
-			} else {
-				deferredParts = append(deferredParts, ToolReturnPart{
-					ToolName:   dr.ToolName,
-					Content:    dr.Content,
-					ToolCallID: dr.ToolCallID,
-					Timestamp:  time.Now(),
-				})
-			}
-		}
-
-		merged := false
-		if lastIdx := len(state.messages) - 1; lastIdx >= 0 {
-			if lastReq, ok := state.messages[lastIdx].(ModelRequest); ok {
-				lastReq.Parts = append(lastReq.Parts, deferredParts...)
-				state.messages[lastIdx] = lastReq
-				merged = true
-			}
-		}
-		if !merged {
-			state.messages = append(state.messages, ModelRequest{
-				Parts:     deferredParts,
-				Timestamp: time.Now(),
-			})
-		}
-	} else {
-		req, err := a.buildInitialRequestWithDynamic(ctx, prompt, state, deps, cfg.initialRequestParts)
-		if err != nil {
-			runErr := fmt.Errorf("failed to build initial request: %w", err)
-			stream.finish(nil, runErr)
-			return nil, runErr
-		}
-		state.messages = append(state.messages, req)
+	if err := a.bootstrapRunMessages(ctx, state, prompt, deps, cfg.deferredResults, cfg.initialRequestParts); err != nil {
+		stream.finish(nil, err)
+		return nil, err
 	}
 
 	initialMessages := make([]ModelMessage, len(state.messages))
@@ -846,422 +707,15 @@ func (a *Agent[T]) hasToolPrepareFuncs(tools []Tool) bool {
 }
 
 // runLoop is the core agent loop.
-func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt string, settings *ModelSettings, limits UsageLimits, deps any, deferredResults []DeferredToolResult, initialRequestParts []ModelRequestPart) (*RunResult[T], error) {
-	// When deferred results are provided with pre-existing messages (resume
-	// case), inject the tool results and skip building a new initial request.
-	// The original system prompt and user prompt are already in the message
-	// history from WithMessages. Adding a new initial request would create
-	// two consecutive ModelRequests (user role), which violates the Anthropic
-	// API's strict user/assistant alternation requirement.
-	if len(deferredResults) > 0 && len(state.messages) > 0 {
-		var deferredParts []ModelRequestPart
-		for _, dr := range deferredResults {
-			if dr.IsError {
-				deferredParts = append(deferredParts, RetryPromptPart{
-					Content:    dr.Content,
-					ToolName:   dr.ToolName,
-					ToolCallID: dr.ToolCallID,
-					Timestamp:  time.Now(),
-				})
-			} else {
-				deferredParts = append(deferredParts, ToolReturnPart{
-					ToolName:   dr.ToolName,
-					Content:    dr.Content,
-					ToolCallID: dr.ToolCallID,
-					Timestamp:  time.Now(),
-				})
-			}
-		}
-		// If the last message is already a ModelRequest (containing
-		// non-deferred tool results appended before ErrDeferred was
-		// returned), merge the deferred results into it rather than
-		// creating a separate message. This keeps all tool results for
-		// a single model response in one ModelRequest, which is required
-		// by the Anthropic API (all tool_result blocks must be in the
-		// same user message following the assistant's tool_use).
-		merged := false
-		if lastIdx := len(state.messages) - 1; lastIdx >= 0 {
-			if lastReq, ok := state.messages[lastIdx].(ModelRequest); ok {
-				lastReq.Parts = append(lastReq.Parts, deferredParts...)
-				state.messages[lastIdx] = lastReq
-				merged = true
-			}
-		}
-		if !merged {
-			state.messages = append(state.messages, ModelRequest{
-				Parts:     deferredParts,
-				Timestamp: time.Now(),
-			})
-		}
-	} else {
-		// Normal case (no deferred results, or deferred without prior history):
-		// build the initial request with system prompts and user prompt.
-		req, err := a.buildInitialRequestWithDynamic(ctx, prompt, state, deps, initialRequestParts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to build initial request: %w", err)
-		}
-		state.messages = append(state.messages, req)
-	}
-
-	// Gather all tools (direct + toolsets).
-	allTools := a.allTools()
-
-	// Build tool lookup map.
-	toolMap := make(map[string]*Tool)
-	for i := range allTools {
-		toolMap[allTools[i].Definition.Name] = &allTools[i]
-	}
-
-	// Build output tool name set.
-	outputToolNames := make(map[string]bool)
-	for _, ot := range a.outputSchema.OutputTools {
-		outputToolNames[ot.Name] = true
-	}
-
+func (a *Agent[T]) runLoop(ctx context.Context, state *agentRunState, prompt string, settings *ModelSettings, limits UsageLimits, deps any) (*RunResult[T], error) {
+	engine := a.newTurnEngine(ctx, state, prompt, settings, limits, deps)
 	for {
-		// Check context.
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		// Check usage limits before request.
-		if err := limits.CheckBeforeRequest(state.usage); err != nil {
-			return nil, err
-		}
-
-		// Check tool call limits before request.
-		if limits.ToolCallsLimit != nil {
-			if err := limits.CheckToolCalls(state.usage); err != nil {
-				return nil, err
-			}
-		}
-
-		// Check usage quota before request.
-		if err := checkQuota(a.usageQuota, state.usage); err != nil {
-			return nil, err
-		}
-
-		state.runStep++
-
-		// Fire OnTurnStart hooks.
-		turnRC := &RunContext{
-			Deps:         deps,
-			Usage:        state.usage,
-			Prompt:       prompt,
-			RunStep:      state.runStep,
-			RunID:        state.runID,
-			RunStartTime: state.startTime,
-			EventBus:     a.eventBus,
-		}
-		a.fireHook(func(h Hook) {
-			if h.OnTurnStart != nil {
-				h.OnTurnStart(ctx, turnRC, state.runStep)
-			}
-		})
-
-		// Apply prepare functions to filter/modify tools for this iteration.
-		preparedTools := a.prepareTools(ctx, state, allTools, deps, prompt)
-
-		// Build model request parameters with prepared tools.
-		params := buildModelRequestParams(preparedTools, a.outputSchema)
-
-		// Apply tool choice to settings.
-		if a.toolChoice != nil {
-			if settings == nil {
-				settings = &ModelSettings{}
-			}
-			if settings.ToolChoice == nil {
-				settings.ToolChoice = a.toolChoice
-			}
-		}
-
-		// Apply auto context compression BEFORE history processors.
-		// Persisting the compressed result into state.messages is critical:
-		// without it, state.messages grows unbounded and the summary model
-		// is called on EVERY turn (not just when compression first triggers).
-		// For long conversations (200+ turns), this causes the summary input
-		// to eventually exceed the summary model's own context window,
-		// leading to silent failure → main model 413 → emergency truncation.
-		if a.autoContext != nil {
-			beforeCount := len(state.messages)
-			beforeTokens := currentContextTokenCount(state.messages, state.lastInputTokens)
-			compressed, compErr := autoCompressMessages(ctx, state.messages, a.autoContext, a.model, beforeTokens)
-			if compErr == nil && len(compressed) < beforeCount {
-				state.messages = compressed
-				afterTokens := estimateTokens(compressed)
-				a.fireHook(func(h Hook) {
-					if h.OnContextCompaction != nil {
-						h.OnContextCompaction(ctx, turnRC, ContextCompactionStats{
-							Strategy:              CompactionStrategyAutoSummary,
-							MessagesBefore:        beforeCount,
-							MessagesAfter:         len(compressed),
-							EstimatedTokensBefore: beforeTokens,
-							EstimatedTokensAfter:  afterTokens,
-						})
-					}
-				})
-			}
-		}
-
-		// Apply history processors.
-		messages := state.messages
-		for _, proc := range a.historyProcessors {
-			beforeCount := len(messages)
-			beforeTokens := estimateTokens(messages)
-			processed, procErr := proc(ctx, messages)
-			if procErr != nil {
-				return nil, fmt.Errorf("history processor failed: %w", procErr)
-			}
-			// Fire compaction hook if the processor made a meaningful change.
-			// Minor token fluctuations from normalization (e.g., stripping
-			// images, rewriting parts) are not worth reporting — they spam
-			// the UI with "Auto-compact" messages on every turn.
-			afterCount := len(processed)
-			afterTokens := estimateTokens(processed)
-			tokenDelta := beforeTokens - afterTokens
-			meaningfulChange := afterCount < beforeCount ||
-				(beforeTokens > 0 && tokenDelta > 0 && float64(tokenDelta)/float64(beforeTokens) > 0.05)
-			if meaningfulChange {
-				a.fireHook(func(h Hook) {
-					if h.OnContextCompaction != nil {
-						h.OnContextCompaction(ctx, turnRC, ContextCompactionStats{
-							Strategy:              CompactionStrategyHistoryProcessor,
-							MessagesBefore:        beforeCount,
-							MessagesAfter:         len(processed),
-							EstimatedTokensBefore: beforeTokens,
-							EstimatedTokensAfter:  afterTokens,
-						})
-					}
-				})
-			}
-			messages = processed
-		}
-
-		// Run message interceptors.
-		if len(a.messageInterceptors) > 0 {
-			var dropped bool
-			messages, dropped = runMessageInterceptors(ctx, a.messageInterceptors, messages)
-			if dropped {
-				// Message dropped — return empty text response.
-				return nil, errors.New("message interceptor dropped the request")
-			}
-		}
-
-		// Run turn guardrails.
-		turnGuardRC := a.buildRunContext(state, deps, prompt)
-		turnGuardRC.Messages = messages
-		for _, g := range a.turnGuardrails {
-			gErr := g.fn(ctx, turnGuardRC, messages)
-			passed := gErr == nil
-			a.fireHook(func(h Hook) {
-				if h.OnGuardrailEvaluated != nil {
-					h.OnGuardrailEvaluated(ctx, turnGuardRC, g.name, passed, gErr)
-				}
-			})
-			if gErr != nil {
-				return nil, &GuardrailError{
-					GuardrailName: g.name,
-					Message:       gErr.Error(),
-				}
-			}
-		}
-
-		// Fire OnModelRequest hooks.
-		modelRC := a.buildRunContext(state, deps, prompt)
-		modelRC.Messages = messages
-		a.fireHook(func(h Hook) {
-			if h.OnModelRequest != nil {
-				h.OnModelRequest(ctx, modelRC, messages)
-			}
-		})
-
-		// Add trace step for model request.
-		modelReqStart := time.Now()
-		if a.tracingEnabled {
-			state.traceSteps = append(state.traceSteps, TraceStep{
-				Kind:      TraceModelRequest,
-				Timestamp: modelReqStart,
-				Data:      map[string]any{"message_count": len(messages)},
-			})
-		}
-
-		// Call the model (through middleware chain if configured).
-		var resp *ModelResponse
-		var err error
-		if len(a.middleware) > 0 {
-			// Inject compaction callback so middleware (e.g.,
-			// ContextOverflowMiddleware) can report emergency compression.
-			mwCtx := ContextWithCompactionCallback(ctx, func(stats ContextCompactionStats) {
-				a.fireHook(func(h Hook) {
-					if h.OnContextCompaction != nil {
-						h.OnContextCompaction(ctx, turnRC, stats)
-					}
-				})
-			})
-			chain := buildMiddlewareChain(a.middleware, a.model)
-			resp, err = chain(mwCtx, messages, settings, params)
-		} else {
-			resp, err = a.model.Request(ctx, messages, settings, params)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("model request failed: %w", err)
-		}
-
-		// Track usage. Record the last request's input tokens so the
-		// auto-context compaction can use real provider counts instead
-		// of heuristic estimates.
-		state.usage.IncrRequest(resp.Usage)
-		if resp.Usage.InputTokens > 0 {
-			state.lastInputTokens = resp.Usage.InputTokens
-		}
-
-		// Track cost.
-		if a.costTracker != nil {
-			singleUsage := RunUsage{}
-			singleUsage.Incr(resp.Usage)
-			a.costTracker.Record(a.model.ModelName(), singleUsage)
-		}
-
-		// Run response interceptors.
-		if len(a.responseInterceptors) > 0 {
-			if runResponseInterceptors(ctx, a.responseInterceptors, resp) {
-				// Response dropped — treat as empty and retry.
-				continue
-			}
-		}
-
-		// Reset tool choice to auto after first tool call if auto-reset is enabled.
-		if a.toolChoiceAutoReset && len(resp.ToolCalls()) > 0 && settings != nil && settings.ToolChoice != nil {
-			s := *settings
-			s.ToolChoice = ToolChoiceAuto()
-			settings = &s
-		}
-
-		// Append response to history.
-		state.messages = append(state.messages, *resp)
-
-		// Fire OnModelResponse hooks.
-		a.fireHook(func(h Hook) {
-			if h.OnModelResponse != nil {
-				h.OnModelResponse(ctx, modelRC, resp)
-			}
-		})
-
-		// Add trace step for model response.
-		if a.tracingEnabled {
-			state.traceSteps = append(state.traceSteps, TraceStep{
-				Kind:      TraceModelResponse,
-				Timestamp: time.Now(),
-				Duration:  time.Since(modelReqStart),
-				Data:      map[string]any{"text": resp.TextContent(), "tool_calls": len(resp.ToolCalls())},
-			})
-		}
-
-		// Check token limits.
-		if limits.HasTokenLimits() {
-			if err := limits.CheckTokens(state.usage); err != nil {
-				return nil, err
-			}
-		}
-
-		// Check run conditions.
-		if len(a.runConditions) > 0 {
-			condRC := a.buildRunContext(state, deps, prompt)
-			for _, cond := range a.runConditions {
-				if stop, reason := cond(ctx, condRC, resp); stop {
-					a.fireHook(func(h Hook) {
-						if h.OnRunConditionChecked != nil {
-							h.OnRunConditionChecked(ctx, condRC, true, reason)
-						}
-					})
-					// Return the text output if available, otherwise error.
-					if hasText := resp.TextContent() != ""; hasText && a.outputSchema.AllowsText {
-						text := resp.TextContent()
-						output, parseErr := deserializeOutput[T](text, a.outputSchema.OuterTypedDictKey)
-						if parseErr != nil {
-							if a.outputSchema.Mode == OutputModeText {
-								if textOutput, ok := any(text).(T); ok {
-									output = textOutput
-									parseErr = nil
-								}
-							}
-						}
-						if parseErr == nil {
-							return &RunResult[T]{
-								Output:    output,
-								Messages:  state.messages,
-								Usage:     state.usage,
-								RunID:     state.runID,
-								ToolState: a.exportToolState(),
-							}, nil
-						}
-					}
-					return nil, &RunConditionError{Reason: reason}
-				}
-			}
-		}
-
-		// Process the response.
-		result, nextParts, deferredReqs, err := a.processResponse(ctx, state, resp, toolMap, outputToolNames, deps, prompt)
-
-		// Fire OnTurnEnd hooks before any return from the loop.
-		a.fireHook(func(h Hook) {
-			if h.OnTurnEnd != nil {
-				h.OnTurnEnd(ctx, turnRC, state.runStep, resp)
-			}
-		})
-
+		_, result, err := engine.Step()
 		if err != nil {
 			return nil, err
-		}
-		// If there are deferred tool calls, return ErrDeferred.
-		if len(deferredReqs) > 0 {
-			// Append non-deferred tool results to the message history before
-			// returning. Without this, when the caller resumes with the
-			// deferred results, the model would see tool_use blocks without
-			// matching tool_result blocks for the non-deferred calls, causing
-			// API 400 errors (Anthropic requires all tool_use to have results;
-			// OpenAI requires each tool_call to have a tool response).
-			if len(nextParts) > 0 {
-				state.messages = append(state.messages, ModelRequest{
-					Parts:     nextParts,
-					Timestamp: time.Now(),
-				})
-			}
-			return nil, &ErrDeferred[T]{
-				Result: RunResultDeferred[T]{
-					DeferredRequests: deferredReqs,
-					Messages:         state.messages,
-					Usage:            state.usage,
-				},
-			}
 		}
 		if result != nil {
-			// Auto-store successful response in knowledge base.
-			if a.kbAutoStore && a.knowledgeBase != nil {
-				responseText := resp.TextContent()
-				if responseText != "" {
-					if storeErr := a.knowledgeBase.Store(ctx, responseText); storeErr != nil {
-						return nil, fmt.Errorf("knowledge base store failed: %w", storeErr)
-					}
-				}
-			}
-			return &RunResult[T]{
-				Output:    result.output,
-				Messages:  state.messages,
-				Usage:     state.usage,
-				RunID:     state.runID,
-				ToolState: a.exportToolState(),
-			}, nil
-		}
-
-		// No final result yet — append tool results and continue.
-		if len(nextParts) > 0 {
-			nextReq := ModelRequest{
-				Parts:     nextParts,
-				Timestamp: time.Now(),
-			}
-			state.messages = append(state.messages, nextReq)
+			return result, nil
 		}
 	}
 }

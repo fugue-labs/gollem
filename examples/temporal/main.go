@@ -1,122 +1,213 @@
-// Example temporal demonstrates the current Temporal integration surface:
-// compatible model requests and tool calls are exported as Temporal activities
-// that you can register with a worker and call from your own workflow.
+// Example temporal runs a real Temporal-backed gollem agent against a Temporal
+// server. It demonstrates the durable path end to end:
+//   - start a worker
+//   - execute a workflow-backed agent run
+//   - query WorkflowStatus while the run is waiting
+//   - signal approval for a tool that requires human confirmation
+//   - decode the final durable result
 //
-// This example uses TestModel so it compiles and runs without a real Temporal
-// server or LLM provider. In production, you would replace TestModel with a
-// real provider, register the activities with a Temporal worker, and invoke
-// them from a workflow. Calling ta.Run directly still executes in-process.
+// By default it connects to a local Temporal dev server on localhost:7233 and
+// prints a workflow URL for the Temporal UI on localhost:8080. Override those
+// with TEMPORAL_ADDRESS, TEMPORAL_NAMESPACE, and TEMPORAL_UI_URL if needed.
 package main
 
 import (
 	"context"
 	"fmt"
 	"log"
-	"sort"
+	"os"
 	"time"
+
+	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/worker"
 
 	"github.com/fugue-labs/gollem/core"
 	"github.com/fugue-labs/gollem/ext/temporal"
 )
 
-// TaskResult is the structured output type for the agent.
-type TaskResult struct {
-	Summary  string `json:"summary" jsonschema:"description=Summary of the completed task"`
-	Status   string `json:"status" jsonschema:"description=Task status: success, warning, or failure"`
-	NextStep string `json:"next_step" jsonschema:"description=Recommended next step"`
+type releaseBrief struct {
+	Service        string `json:"service" jsonschema:"description=The service covered by the release brief"`
+	Summary        string `json:"summary" jsonschema:"description=The approved release summary"`
+	PublishChannel string `json:"publish_channel" jsonschema:"description=Where the brief was published"`
+	NextStep       string `json:"next_step" jsonschema:"description=What the operator should do next"`
+}
+
+type collectFactsParams struct {
+	Service string `json:"service" jsonschema:"description=The service to inspect"`
+}
+
+type publishBriefParams struct {
+	Channel string `json:"channel" jsonschema:"description=The destination channel"`
+	Brief   string `json:"brief" jsonschema:"description=The release brief to publish"`
 }
 
 func main() {
-	// Create a TestModel with canned responses simulating a tool call followed
-	// by a final result.
-	model := core.NewTestModel(
-		// Run 1: status check.
-		core.ToolCallResponse("lookup", `{"query":"project status"}`),
-		core.ToolCallResponse("final_result", `{
-			"summary":"Project is on track with 90% completion",
-			"status":"success",
-			"next_step":"Start release readiness checklist"
-		}`),
-		// Run 2: risk check.
-		core.ToolCallResponse("lookup", `{"query":"project risks"}`),
-		core.ToolCallResponse("final_result", `{
-			"summary":"Two delivery risks identified: QA staffing and dependency lag",
-			"status":"warning",
-			"next_step":"Escalate staffing request and lock dependency versions"
-		}`),
-	)
+	address := getenv("TEMPORAL_ADDRESS", "localhost:7233")
+	namespace := getenv("TEMPORAL_NAMESPACE", "default")
+	uiURL := getenv("TEMPORAL_UI_URL", "http://localhost:8080/namespaces/default/workflows")
 
-	// Create a tool that the agent can use.
-	lookupTool := core.FuncTool[struct {
-		Query string `json:"query" jsonschema:"description=The query to look up"`
-	}](
-		"lookup",
-		"Look up information about a topic",
-		func(_ context.Context, params struct {
-			Query string `json:"query" jsonschema:"description=The query to look up"`
-		}) (string, error) {
-			switch params.Query {
-			case "project status":
-				return `Timeline: green; Milestones: 9/10 complete; Blockers: none`, nil
-			case "project risks":
-				return `Risks: QA staffing low, upstream dependency still changing`, nil
-			default:
-				return fmt.Sprintf("Results for %q: no critical updates.", params.Query), nil
-			}
-		},
-	)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
 
-	// Create a standard gollem agent.
-	agent := core.NewAgent[TaskResult](model,
-		core.WithSystemPrompt[TaskResult]("You are a project management assistant."),
-		core.WithTools[TaskResult](lookupTool),
-	)
+	c, err := client.Dial(client.Options{
+		HostPort:  address,
+		Namespace: namespace,
+	})
+	if err != nil {
+		log.Fatalf("dial Temporal at %s (%s): %v", address, namespace, err)
+	}
+	defer c.Close()
 
-	// Wrap the agent and export Temporal activities for a custom workflow.
-	// NewTemporalAgent validates that the agent only uses features supported by
-	// the current Temporal activity scaffolding path.
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	taskQueue := "gollem-release-brief-" + suffix
+	workflowID := "gollem-release-brief-" + suffix
+
+	agent := buildReleaseAgent()
 	ta := temporal.NewTemporalAgent(agent,
-		temporal.WithName("project-assistant"),
+		temporal.WithName("release-brief-demo-"+suffix),
+		temporal.WithVersion("2026_03"),
+		temporal.WithContinueAsNew(temporal.ContinueAsNewConfig{
+			MaxTurns:         25,
+			MaxHistoryLength: 10000,
+			OnSuggested:      true,
+		}),
 		temporal.WithActivityConfig(temporal.ActivityConfig{
-			StartToCloseTimeout: 120 * time.Second,
-			MaxRetries:          3,
+			StartToCloseTimeout: 60 * time.Second,
+			MaxRetries:          2,
 			InitialInterval:     time.Second,
 		}),
 	)
 
-	// Retrieve the activities map. In production, you would register these
-	// with a Temporal worker:
-	//
-	//   w := worker.New(temporalClient, "task-queue", worker.Options{})
-	//   temporal.RegisterActivities(w, ta)
-	//   w.Run(worker.InterruptCh())
-	activities := ta.Activities()
-	fmt.Printf("Registered %d Temporal activities:\n", len(activities))
-	names := make([]string, 0, len(activities))
-	for name := range activities {
-		names = append(names, name)
+	w := worker.New(c, taskQueue, worker.Options{})
+	if err := ta.Register(w); err != nil {
+		log.Fatalf("register Temporal worker: %v", err)
 	}
-	// Stable ordering keeps example output easy to compare.
-	sort.Strings(names)
-	for _, name := range names {
-		fmt.Printf("  - %s\n", name)
+	if err := w.Start(); err != nil {
+		log.Fatalf("start Temporal worker: %v", err)
 	}
-	fmt.Println()
+	defer w.Stop()
 
-	scenarios := []string{
-		"What is the current project status?",
-		"What are the top project risks?",
+	fmt.Printf("Temporal address: %s\n", address)
+	fmt.Printf("Namespace: %s\n", namespace)
+	fmt.Printf("Task queue: %s\n", taskQueue)
+	fmt.Printf("Workflow name: %s\n", ta.WorkflowName())
+	fmt.Printf("Workflow URL: %s/%s\n\n", uiURL, workflowID)
+
+	run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:        workflowID,
+		TaskQueue: taskQueue,
+	}, ta.WorkflowName(), temporal.WorkflowInput{
+		Prompt: "Prepare and publish a release brief for billing-api.",
+	})
+	if err != nil {
+		log.Fatalf("execute workflow: %v", err)
 	}
-	for i, prompt := range scenarios {
-		result, err := ta.Run(context.Background(), prompt)
-		if err != nil {
-			log.Fatal(err)
+
+	status, err := waitForApprovalState(ctx, c, workflowID, ta)
+	if err != nil {
+		log.Fatalf("wait for approval state: %v", err)
+	}
+
+	fmt.Println("Workflow is waiting for approval.")
+	fmt.Printf("Run step: %d\n", status.RunStep)
+	fmt.Printf("Waiting reason: %s\n", status.WaitingReason)
+	fmt.Printf("Pending approvals: %d\n", len(status.PendingApprovals))
+	if len(status.PendingApprovals) > 0 {
+		req := status.PendingApprovals[0]
+		fmt.Printf("Tool awaiting approval: %s\n", req.ToolName)
+		fmt.Printf("Tool call ID: %s\n", req.ToolCallID)
+		fmt.Printf("Tool args: %s\n\n", req.ArgsJSON)
+
+		if err := c.SignalWorkflow(ctx, workflowID, "", ta.ApprovalSignalName(), temporal.ApprovalSignal{
+			ToolName:   req.ToolName,
+			ToolCallID: req.ToolCallID,
+			Approved:   true,
+			Message:    "Approved automatically by the example runner.",
+		}); err != nil {
+			log.Fatalf("signal approval: %v", err)
 		}
-		fmt.Printf("=== Scenario %d ===\n", i+1)
-		fmt.Printf("Prompt: %s\n", prompt)
-		fmt.Printf("Summary: %s\n", result.Output.Summary)
-		fmt.Printf("Status: %s\n", result.Output.Status)
-		fmt.Printf("Next step: %s\n", result.Output.NextStep)
-		fmt.Printf("Requests: %d, Tool calls: %d\n\n", result.Usage.Requests, result.Usage.ToolCalls)
 	}
+
+	var output temporal.WorkflowOutput
+	if err := run.Get(ctx, &output); err != nil {
+		log.Fatalf("get workflow result: %v", err)
+	}
+
+	result, err := ta.DecodeWorkflowOutput(&output)
+	if err != nil {
+		log.Fatalf("decode workflow output: %v", err)
+	}
+
+	fmt.Println("Workflow completed.")
+	fmt.Printf("Temporal workflow ID: %s\n", workflowID)
+	fmt.Printf("Temporal run ID: %s\n", run.GetRunID())
+	fmt.Printf("Gollem run ID: %s\n", result.RunID)
+	fmt.Printf("Continue-as-new count: %d\n", output.ContinueAsNewCount)
+	fmt.Printf("Requests: %d, Tool calls: %d\n", result.Usage.Requests, result.Usage.ToolCalls)
+	fmt.Printf("Service: %s\n", result.Output.Service)
+	fmt.Printf("Summary: %s\n", result.Output.Summary)
+	fmt.Printf("Published to: %s\n", result.Output.PublishChannel)
+	fmt.Printf("Next step: %s\n", result.Output.NextStep)
+}
+
+func buildReleaseAgent() *core.Agent[releaseBrief] {
+	model := core.NewTestModel(
+		core.ToolCallResponseWithID("collect_release_facts", `{"service":"billing-api"}`, "call_collect"),
+		core.ToolCallResponseWithID("publish_release_brief", `{"channel":"release-ops","brief":"billing-api is healthy, all release checks are green, and the release brief is ready to publish."}`, "call_publish"),
+		core.ToolCallResponse("final_result", `{
+			"service":"billing-api",
+			"summary":"Release brief published after approval with healthy checks and no open blockers.",
+			"publish_channel":"release-ops",
+			"next_step":"Share the approved brief with the deployment lead and start the rollout window."
+		}`),
+	)
+
+	collectFacts := core.FuncTool[collectFactsParams](
+		"collect_release_facts",
+		"Collect release health signals for a service",
+		func(_ context.Context, params collectFactsParams) (string, error) {
+			return fmt.Sprintf(
+				"service=%s; build=green; integration_tests=128/128; canary=healthy; incidents=0; open_blockers=none",
+				params.Service,
+			), nil
+		},
+	)
+
+	publishBrief := core.FuncTool[publishBriefParams](
+		"publish_release_brief",
+		"Publish the release brief to the operator channel",
+		func(_ context.Context, params publishBriefParams) (string, error) {
+			return fmt.Sprintf("Published to #%s: %s", params.Channel, params.Brief), nil
+		},
+		core.WithRequiresApproval(),
+	)
+
+	return core.NewAgent[releaseBrief](model,
+		core.WithSystemPrompt[releaseBrief](
+			"You are a release coordinator. Gather release facts, prepare a brief, and publish it only after approval.",
+		),
+		core.WithTools[releaseBrief](collectFacts, publishBrief),
+	)
+}
+
+func waitForApprovalState(ctx context.Context, c client.Client, workflowID string, ta *temporal.TemporalAgent[releaseBrief]) (temporal.WorkflowStatus, error) {
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		value, err := c.QueryWorkflow(ctx, workflowID, "", ta.StatusQueryName())
+		if err == nil {
+			var status temporal.WorkflowStatus
+			if err := value.Get(&status); err == nil && status.Waiting {
+				return status, nil
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return temporal.WorkflowStatus{}, fmt.Errorf("workflow %s never entered a waiting state", workflowID)
+}
+
+func getenv(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
 }

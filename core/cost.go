@@ -106,6 +106,25 @@ func (ct *CostTracker) buildRunCost() *RunCost {
 	}
 }
 
+// Pricing returns a copy of the configured per-model pricing table.
+func (ct *CostTracker) Pricing() map[string]ModelPricing {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	pricing := make(map[string]ModelPricing, len(ct.pricing))
+	for modelName, modelPricing := range ct.pricing {
+		pricing[modelName] = modelPricing
+	}
+	return pricing
+}
+
+// EstimateRunCost calculates the run cost for a single model usage snapshot
+// without mutating any external tracker state.
+func EstimateRunCost(modelName string, usage RunUsage, pricing map[string]ModelPricing) *RunCost {
+	tracker := NewCostTracker(pricing)
+	tracker.Record(modelName, usage)
+	return tracker.buildRunCost()
+}
+
 // WithCostTracker attaches a cost tracker to the agent.
 // Run costs are available on RunResult.Cost after the run.
 func WithCostTracker[T any](tracker *CostTracker) AgentOption[T] {

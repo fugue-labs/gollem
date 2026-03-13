@@ -2,8 +2,8 @@ package temporal
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/fugue-labs/gollem/core"
 )
@@ -26,7 +26,7 @@ func TestTemporalizeTool_Wrapping(t *testing.T) {
 	}
 
 	// Execute the activity function.
-	result, err := tt.ActivityFn(context.Background(), toolParams{
+	result, err := tt.ActivityFn(context.Background(), ToolActivityInput{
 		ArgsJSON:   `{"query": "test"}`,
 		ToolCallID: "tc1",
 	})
@@ -37,12 +37,8 @@ func TestTemporalizeTool_Wrapping(t *testing.T) {
 		t.Errorf("expected kind 'return', got %q", result.Kind)
 	}
 
-	var value string
-	if err := json.Unmarshal(result.Value, &value); err != nil {
-		t.Fatalf("unmarshal result value: %v", err)
-	}
-	if value != "found: test" {
-		t.Errorf("unexpected result: %q", value)
+	if result.Content != "found: test" {
+		t.Errorf("unexpected result: %q", result.Content)
 	}
 }
 
@@ -57,7 +53,7 @@ func TestTemporalizeTool_RetryError(t *testing.T) {
 
 	tt := TemporalizeTool("agent1", tool, DefaultActivityConfig())
 
-	result, err := tt.ActivityFn(context.Background(), toolParams{
+	result, err := tt.ActivityFn(context.Background(), ToolActivityInput{
 		ArgsJSON:   `{}`,
 		ToolCallID: "tc1",
 	})
@@ -83,7 +79,7 @@ func TestTemporalizeTool_Error(t *testing.T) {
 
 	tt := TemporalizeTool("agent1", tool, DefaultActivityConfig())
 
-	result, err := tt.ActivityFn(context.Background(), toolParams{
+	result, err := tt.ActivityFn(context.Background(), ToolActivityInput{
 		ArgsJSON:   `{}`,
 		ToolCallID: "tc1",
 	})
@@ -114,5 +110,85 @@ func TestTemporalizeTools_Multiple(t *testing.T) {
 	}
 	if tts[1].ActivityName != "agent__agent1__tool__tool2" {
 		t.Errorf("unexpected name: %s", tts[1].ActivityName)
+	}
+}
+
+func TestTemporalizeTool_RunStateSnapshotParity(t *testing.T) {
+	type Params struct{}
+
+	start := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	messages := []core.ModelMessage{
+		core.ModelRequest{
+			Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: "snapshot prompt", Timestamp: start}},
+			Timestamp: start,
+		},
+	}
+	serialized, err := core.EncodeMessages(messages)
+	if err != nil {
+		t.Fatalf("encode messages: %v", err)
+	}
+
+	tool := core.FuncTool[Params]("snapshot_tool", "Inspect snapshot",
+		func(_ context.Context, rc *core.RunContext, _ Params) (string, error) {
+			snap := rc.RunStateSnapshot()
+			if snap == nil {
+				t.Fatal("expected run state snapshot in temporal tool context")
+			}
+			if snap.Prompt != "snapshot prompt" {
+				t.Fatalf("unexpected prompt %q", snap.Prompt)
+			}
+			if snap.RunID != "run-123" {
+				t.Fatalf("unexpected run id %q", snap.RunID)
+			}
+			if snap.RunStep != 4 {
+				t.Fatalf("unexpected run step %d", snap.RunStep)
+			}
+			if snap.LastInputTokens != 11 {
+				t.Fatalf("unexpected last input tokens %d", snap.LastInputTokens)
+			}
+			if snap.Retries != 2 {
+				t.Fatalf("unexpected retries %d", snap.Retries)
+			}
+			if snap.ToolRetries["snapshot_tool"] != 1 {
+				t.Fatalf("unexpected tool retry map %+v", snap.ToolRetries)
+			}
+			if !snap.RunStartTime.Equal(start) {
+				t.Fatalf("unexpected run start %v", snap.RunStartTime)
+			}
+			if got := snap.ToolState["snapshot_tool"].(map[string]any)["count"].(int); got != 9 {
+				t.Fatalf("unexpected tool state %+v", snap.ToolState)
+			}
+			if len(snap.Messages) != 1 {
+				t.Fatalf("unexpected snapshot messages %+v", snap.Messages)
+			}
+			if snap.Timestamp.IsZero() {
+				t.Fatal("expected snapshot timestamp to be set")
+			}
+			return "ok", nil
+		},
+	)
+
+	tt := TemporalizeTool("snapshot-agent", tool, DefaultActivityConfig())
+	result, err := tt.ActivityFn(context.Background(), ToolActivityInput{
+		ArgsJSON:        `{}`,
+		ToolCallID:      "tc1",
+		Prompt:          "snapshot prompt",
+		RunStep:         4,
+		RunID:           "run-123",
+		RunStartTime:    start,
+		Usage:           core.RunUsage{Requests: 3, ToolCalls: 1},
+		LastInputTokens: 11,
+		Retries:         2,
+		ToolRetries:     map[string]int{"snapshot_tool": 1},
+		Retry:           1,
+		MaxRetries:      3,
+		Messages:        serialized,
+		ToolState:       map[string]any{"snapshot_tool": map[string]any{"count": 9}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Kind != "return" {
+		t.Fatalf("expected return result, got %q", result.Kind)
 	}
 }

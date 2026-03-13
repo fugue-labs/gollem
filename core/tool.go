@@ -50,7 +50,17 @@ type RunContext struct {
 	// their blocking operation. Nil means detach is not supported.
 	Detach <-chan struct{}
 
-	toolStateGetter func() map[string]any
+	toolStateGetter        func() map[string]any
+	runStateSnapshotGetter func() *RunStateSnapshot
+}
+
+// NewRunContext constructs a RunContext with optional tool-state and snapshot getters.
+// It is primarily intended for extension packages that need to execute tools
+// outside the core agent loop while preserving read-only access to run state.
+func NewRunContext(base RunContext, toolStateGetter func() map[string]any, snapshotGetter func() *RunStateSnapshot) *RunContext {
+	base.toolStateGetter = toolStateGetter
+	base.runStateSnapshotGetter = snapshotGetter
+	return &base
 }
 
 // ToolState returns a snapshot of all exported stateful-tool state currently
@@ -73,6 +83,15 @@ func (rc *RunContext) ToolStateByName(name string) (any, bool) {
 	}
 	v, ok := state[name]
 	return v, ok
+}
+
+// RunStateSnapshot returns a snapshot of the current run state when available.
+// Nil is returned when the run context was not created by an active agent run.
+func (rc *RunContext) RunStateSnapshot() *RunStateSnapshot {
+	if rc == nil || rc.runStateSnapshotGetter == nil {
+		return nil
+	}
+	return rc.runStateSnapshotGetter()
 }
 
 // ToolHandler is the function that executes a tool.

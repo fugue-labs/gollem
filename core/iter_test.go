@@ -110,7 +110,9 @@ func TestIterWithToolCall(t *testing.T) {
 // TestIterContextCancellation verifies that Iter respects context cancellation.
 func TestIterContextCancellation(t *testing.T) {
 	// Model returns tool call first, then we cancel during second Next.
-	type Params struct{ N int `json:"n"` }
+	type Params struct {
+		N int `json:"n"`
+	}
 	slowTool := FuncTool[Params]("slow", "slow", func(ctx context.Context, p Params) (string, error) {
 		return "done", nil
 	})
@@ -144,7 +146,9 @@ func TestIterContextCancellation(t *testing.T) {
 
 // TestIterMessagesGrow verifies that message history grows with each step.
 func TestIterMessagesGrow(t *testing.T) {
-	type Params struct{ N int `json:"n"` }
+	type Params struct {
+		N int `json:"n"`
+	}
 	echoTool := FuncTool[Params]("echo", "echo", func(ctx context.Context, p Params) (string, error) {
 		return fmt.Sprintf("echo_%d", p.N), nil
 	})
@@ -199,7 +203,9 @@ func TestIterResultBeforeDone(t *testing.T) {
 
 // TestIterMultipleToolCalls verifies Iter with concurrent tool calls.
 func TestIterMultipleToolCalls(t *testing.T) {
-	type Params struct{ N int `json:"n"` }
+	type Params struct {
+		N int `json:"n"`
+	}
 	addTool := FuncTool[Params]("add", "adds 10", func(ctx context.Context, p Params) (string, error) {
 		return fmt.Sprintf("%d", p.N+10), nil
 	})
@@ -250,7 +256,9 @@ func TestIterMaxRunDuration(t *testing.T) {
 		ToolCallResponse("echo", `{"n":1}`),
 		TextResponse("done"),
 	)
-	type Params struct{ N int `json:"n"` }
+	type Params struct {
+		N int `json:"n"`
+	}
 	echoTool := FuncTool[Params]("echo", "echo", func(ctx context.Context, p Params) (string, error) {
 		return fmt.Sprintf("echo_%d", p.N), nil
 	})
@@ -327,9 +335,9 @@ func TestIterGlobalRetryResetsOnToolSuccess(t *testing.T) {
 
 	model := NewTestModel(
 		&ModelResponse{Parts: []ModelResponsePart{}, FinishReason: FinishReasonStop}, // empty → retry
-		ToolCallResponse("search", `{"q":"first"}`),                                   // success → reset
+		ToolCallResponse("search", `{"q":"first"}`),                                  // success → reset
 		&ModelResponse{Parts: []ModelResponsePart{}, FinishReason: FinishReasonStop}, // empty → retry (should be 1, not 2)
-		ToolCallResponse("search", `{"q":"second"}`),                                  // success → reset
+		ToolCallResponse("search", `{"q":"second"}`),                                 // success → reset
 		TextResponse("done"),
 	)
 
@@ -542,5 +550,88 @@ func TestIterWithDeferredResultsResume(t *testing.T) {
 	}
 	if !foundDeferred {
 		t.Error("deferred result (call_1) not found in model messages — Iter ignores WithDeferredResults")
+	}
+}
+
+func TestIterHooksAndToolStateParity(t *testing.T) {
+	stateful := &testSnapshotStatefulTool{}
+	type Params struct{}
+	counter := FuncTool[Params]("counter", "counter", func(_ context.Context, _ Params) (string, error) {
+		stateful.count++
+		return fmt.Sprintf("%d", stateful.count), nil
+	})
+	counter.Stateful = stateful
+
+	var turnEnds int
+	agent := NewAgent[string](
+		NewTestModel(
+			ToolCallResponse("counter", `{}`),
+			TextResponse("done"),
+		),
+		WithTools[string](counter),
+		WithHooks[string](Hook{
+			OnTurnEnd: func(_ context.Context, _ *RunContext, _ int, _ *ModelResponse) {
+				turnEnds++
+			},
+		}),
+	)
+
+	iter := agent.Iter(context.Background(), "increment")
+	if _, err := iter.Next(); err != nil {
+		t.Fatalf("step 1 error: %v", err)
+	}
+	if _, err := iter.Next(); err != nil {
+		t.Fatalf("step 2 error: %v", err)
+	}
+
+	result, err := iter.Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if turnEnds != 2 {
+		t.Errorf("expected 2 OnTurnEnd hooks, got %d", turnEnds)
+	}
+	if got := snapshotCountFromAny(result.ToolState["counter"].(map[string]any)["count"]); got != 1 {
+		t.Errorf("expected ToolState counter=1, got %d", got)
+	}
+}
+
+func TestIterRunConditionHookParity(t *testing.T) {
+	var condStopped bool
+	var condReason string
+
+	agent := NewAgent[string](
+		NewTestModel(TextResponse("hello")),
+		WithRunCondition[string](TextContains("hello")),
+		WithHooks[string](Hook{
+			OnRunConditionChecked: func(_ context.Context, _ *RunContext, stopped bool, reason string) {
+				condStopped = stopped
+				condReason = reason
+			},
+		}),
+	)
+
+	iter := agent.Iter(context.Background(), "say hello")
+	resp, err := iter.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.TextContent() != "hello" {
+		t.Fatalf("expected hello response, got %q", resp.TextContent())
+	}
+
+	result, err := iter.Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "hello" {
+		t.Errorf("expected output hello, got %q", result.Output)
+	}
+	if !condStopped {
+		t.Error("expected OnRunConditionChecked to report stop=true")
+	}
+	if condReason == "" {
+		t.Error("expected non-empty run condition reason")
 	}
 }
