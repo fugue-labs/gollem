@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 )
@@ -336,6 +337,113 @@ func TestHook_OnGuardrailEvaluated_Failed(t *testing.T) {
 	}
 	if guardrailErr == nil {
 		t.Error("expected guardrail error")
+	}
+}
+
+func TestHook_OnApprovalAndDeferredLifecycle(t *testing.T) {
+	var requestedName, requestedArgs string
+	var resolvedName, resolvedArgs string
+	var resolvedApproved bool
+	var resolvedErr error
+	var deferredName, deferredArgs, deferredMessage string
+
+	hook := Hook{
+		OnApprovalRequested: func(_ context.Context, _ *RunContext, _ string, toolName string, argsJSON string) {
+			requestedName = toolName
+			requestedArgs = argsJSON
+		},
+		OnApprovalResolved: func(_ context.Context, _ *RunContext, _ string, toolName string, argsJSON string, approved bool, err error) {
+			resolvedName = toolName
+			resolvedArgs = argsJSON
+			resolvedApproved = approved
+			resolvedErr = err
+		},
+		OnDeferredWait: func(_ context.Context, _ *RunContext, _ string, toolName string, argsJSON string, message string) {
+			deferredName = toolName
+			deferredArgs = argsJSON
+			deferredMessage = message
+		},
+	}
+
+	type Params struct {
+		Target string `json:"target"`
+	}
+	tool := FuncTool[Params]("dangerous", "dangerous action", func(_ context.Context, p Params) (string, error) {
+		return "", &CallDeferred{Message: "awaiting operator"}
+	}, WithRequiresApproval())
+
+	argsJSON := `{"target":"prod"}`
+	model := NewTestModel(ToolCallResponse("dangerous", argsJSON))
+	agent := NewAgent[string](model,
+		WithTools[string](tool),
+		WithToolApproval[string](func(_ context.Context, _ string, _ string) (bool, error) { return true, nil }),
+		WithHooks[string](hook),
+	)
+
+	_, err := agent.Run(context.Background(), "do the dangerous thing")
+	var deferredErr *ErrDeferred[string]
+	if !errors.As(err, &deferredErr) {
+		t.Fatalf("expected ErrDeferred, got %v", err)
+	}
+
+	if requestedName != "dangerous" || requestedArgs != argsJSON {
+		t.Fatalf("unexpected approval requested hook payload: %q %q", requestedName, requestedArgs)
+	}
+	if resolvedName != "dangerous" || resolvedArgs != argsJSON {
+		t.Fatalf("unexpected approval resolved hook payload: %q %q", resolvedName, resolvedArgs)
+	}
+	if !resolvedApproved {
+		t.Fatal("expected approval to resolve as approved")
+	}
+	if resolvedErr != nil {
+		t.Fatalf("expected nil approval error, got %v", resolvedErr)
+	}
+	if deferredName != "dangerous" || deferredArgs != argsJSON || deferredMessage != "awaiting operator" {
+		t.Fatalf("unexpected deferred wait hook payload: %q %q %q", deferredName, deferredArgs, deferredMessage)
+	}
+}
+
+func TestHook_OnApprovalResolved_NoApprovalFunc(t *testing.T) {
+	var requested, resolved bool
+	var resolvedApproved bool
+	var resolvedErr error
+
+	hook := Hook{
+		OnApprovalRequested: func(_ context.Context, _ *RunContext, _ string, _ string, _ string) {
+			requested = true
+		},
+		OnApprovalResolved: func(_ context.Context, _ *RunContext, _ string, _ string, _ string, approved bool, err error) {
+			resolved = true
+			resolvedApproved = approved
+			resolvedErr = err
+		},
+	}
+
+	tool := FuncTool[struct{}]("dangerous", "dangerous action", func(_ context.Context, _ struct{}) (string, error) {
+		return "done", nil
+	}, WithRequiresApproval())
+
+	model := NewTestModel(
+		ToolCallResponse("dangerous", `{}`),
+		TextResponse("fallback"),
+	)
+	agent := NewAgent[string](model,
+		WithTools[string](tool),
+		WithHooks[string](hook),
+	)
+
+	_, err := agent.Run(context.Background(), "do it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !requested || !resolved {
+		t.Fatalf("expected approval hooks to fire, requested=%v resolved=%v", requested, resolved)
+	}
+	if resolvedApproved {
+		t.Fatal("expected approval to resolve as denied when no callback is configured")
+	}
+	if resolvedErr == nil || resolvedErr.Error() != "tool approval callback is not configured" {
+		t.Fatalf("unexpected approval resolution error: %v", resolvedErr)
 	}
 }
 

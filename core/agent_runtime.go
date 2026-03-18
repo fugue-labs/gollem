@@ -41,6 +41,9 @@ type AgentRuntimeConfig[T any] struct {
 	ToolChoice                 *ToolChoice
 	ToolChoiceAutoReset        bool
 	ToolApprovalFunc           ToolApprovalFunc
+	ApprovalRequestedCallback  ToolApprovalRequestedFunc
+	ApprovalResolvedCallback   ToolApprovalResolvedFunc
+	DeferredWaitCallback       DeferredWaitFunc
 	GlobalToolResultValidators []ToolResultValidatorFunc
 	RequestMiddleware          []RequestMiddlewareFunc
 	StreamMiddleware           []AgentStreamMiddleware
@@ -92,6 +95,9 @@ func (a *Agent[T]) RuntimeConfig() AgentRuntimeConfig[T] {
 		ToolChoice:                 cloneToolChoice(a.toolChoice),
 		ToolChoiceAutoReset:        a.toolChoiceAutoReset,
 		ToolApprovalFunc:           a.toolApprovalFunc,
+		ApprovalRequestedCallback:  a.approvalRequestedCallback,
+		ApprovalResolvedCallback:   a.approvalResolvedCallback,
+		DeferredWaitCallback:       a.deferredWaitCallback,
 		GlobalToolResultValidators: append([]ToolResultValidatorFunc(nil), a.globalToolResultValidators...),
 		RequestMiddleware:          append([]RequestMiddlewareFunc(nil), a.middleware...),
 		StreamMiddleware:           append([]AgentStreamMiddleware(nil), a.streamMiddleware...),

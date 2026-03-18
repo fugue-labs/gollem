@@ -13,10 +13,16 @@ type Hook struct {
 	OnModelRequest func(ctx context.Context, rc *RunContext, messages []ModelMessage)
 	// OnModelResponse fires after each model response.
 	OnModelResponse func(ctx context.Context, rc *RunContext, response *ModelResponse)
+	// OnApprovalRequested fires when a tool requiring approval reaches the approval gate.
+	OnApprovalRequested func(ctx context.Context, rc *RunContext, toolCallID string, toolName string, argsJSON string)
+	// OnApprovalResolved fires after an approval request is resolved.
+	OnApprovalResolved func(ctx context.Context, rc *RunContext, toolCallID string, toolName string, argsJSON string, approved bool, err error)
 	// OnToolStart fires before a tool executes.
 	OnToolStart func(ctx context.Context, rc *RunContext, toolCallID string, toolName string, argsJSON string)
 	// OnToolEnd fires after a tool completes.
 	OnToolEnd func(ctx context.Context, rc *RunContext, toolCallID string, toolName string, result string, err error)
+	// OnDeferredWait fires when a tool defers completion and the run waits for external resolution.
+	OnDeferredWait func(ctx context.Context, rc *RunContext, toolCallID string, toolName string, argsJSON string, message string)
 	// OnTurnStart fires at the beginning of each agent loop iteration (turn).
 	OnTurnStart func(ctx context.Context, rc *RunContext, turnNumber int)
 	// OnTurnEnd fires at the end of each agent loop iteration (turn).

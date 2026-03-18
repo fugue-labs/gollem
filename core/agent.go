@@ -33,6 +33,16 @@ type HistoryProcessor func(ctx context.Context, messages []ModelMessage) ([]Mode
 // Return true to approve, false to deny (sends denial message back to model).
 type ToolApprovalFunc func(ctx context.Context, toolName string, argsJSON string) (bool, error)
 
+// ToolApprovalRequestedFunc fires when a tool reaches the approval gate.
+type ToolApprovalRequestedFunc func(ctx context.Context, rc *RunContext, toolCallID string, toolName string, argsJSON string)
+
+// ToolApprovalResolvedFunc fires after an approval request is resolved.
+type ToolApprovalResolvedFunc func(ctx context.Context, rc *RunContext, toolCallID string, toolName string, argsJSON string, approved bool, err error)
+
+// DeferredWaitFunc fires when a tool defers completion and the runtime waits
+// for an external result to resume the run.
+type DeferredWaitFunc func(ctx context.Context, rc *RunContext, toolCallID string, toolName string, argsJSON string, message string)
+
 // Agent is the central type for running LLM interactions with structured output.
 type Agent[T any] struct {
 	model                      Model
@@ -64,6 +74,9 @@ type Agent[T any] struct {
 	runConditions              []RunCondition
 	traceExporters             []TraceExporter
 	eventBus                   *EventBus
+	approvalRequestedCallback  ToolApprovalRequestedFunc
+	approvalResolvedCallback   ToolApprovalResolvedFunc
+	deferredWaitCallback       DeferredWaitFunc
 	deps                       any
 	usageQuota                 *UsageQuota
 	messageInterceptors        []MessageInterceptor
@@ -236,6 +249,30 @@ func WithToolApproval[T any](fn ToolApprovalFunc) AgentOption[T] {
 	}
 }
 
+// WithApprovalRequestedCallback sets a callback for tool approval requests so
+// alternate runtimes can mirror local observability before approval resolves.
+func WithApprovalRequestedCallback[T any](fn ToolApprovalRequestedFunc) AgentOption[T] {
+	return func(a *Agent[T]) {
+		a.approvalRequestedCallback = fn
+	}
+}
+
+// WithApprovalResolvedCallback sets a callback for tool approval resolution so
+// alternate runtimes can mirror local observability after approval resolves.
+func WithApprovalResolvedCallback[T any](fn ToolApprovalResolvedFunc) AgentOption[T] {
+	return func(a *Agent[T]) {
+		a.approvalResolvedCallback = fn
+	}
+}
+
+// WithDeferredWaitCallback sets a callback that fires when a tool defers and
+// the runtime transitions into an external wait state.
+func WithDeferredWaitCallback[T any](fn DeferredWaitFunc) AgentOption[T] {
+	return func(a *Agent[T]) {
+		a.deferredWaitCallback = fn
+	}
+}
+
 // WithMaxConcurrency limits the number of tools that can execute concurrently.
 func WithMaxConcurrency[T any](n int) AgentOption[T] {
 	return func(a *Agent[T]) {
@@ -388,6 +425,91 @@ func (a *Agent[T]) endRun(ctx context.Context, state *agentRunState, deps any, p
 			h.OnRunEnd(ctx, endRC, state.messages, runErr)
 		}
 	})
+}
+
+func (a *Agent[T]) emitApprovalRequested(ctx context.Context, rc *RunContext, toolCallID string, toolName string, argsJSON string) {
+	if a.eventBus != nil {
+		Publish(a.eventBus, NewApprovalRequestedEvent(
+			rc.RunID,
+			rc.ParentRunID,
+			toolCallID,
+			toolName,
+			argsJSON,
+			time.Now(),
+		))
+	}
+	a.fireHook(func(h Hook) {
+		if h.OnApprovalRequested != nil {
+			h.OnApprovalRequested(ctx, rc, toolCallID, toolName, argsJSON)
+		}
+	})
+	if a.approvalRequestedCallback != nil {
+		a.approvalRequestedCallback(ctx, rc, toolCallID, toolName, argsJSON)
+	}
+}
+
+func (a *Agent[T]) emitApprovalResolved(ctx context.Context, rc *RunContext, toolCallID string, toolName string, argsJSON string, approved bool, approvalErr error) {
+	if a.eventBus != nil {
+		Publish(a.eventBus, NewApprovalResolvedEvent(
+			rc.RunID,
+			rc.ParentRunID,
+			toolCallID,
+			toolName,
+			argsJSON,
+			approved,
+			time.Now(),
+			approvalErr,
+		))
+	}
+	a.fireHook(func(h Hook) {
+		if h.OnApprovalResolved != nil {
+			h.OnApprovalResolved(ctx, rc, toolCallID, toolName, argsJSON, approved, approvalErr)
+		}
+	})
+	if a.approvalResolvedCallback != nil {
+		a.approvalResolvedCallback(ctx, rc, toolCallID, toolName, argsJSON, approved, approvalErr)
+	}
+}
+
+func (a *Agent[T]) emitToolCompleted(ctx context.Context, rc *RunContext, toolCallID string, toolName string, result string, toolErr error) {
+	if a.eventBus != nil {
+		Publish(a.eventBus, NewToolCompletedEvent(
+			rc.RunID,
+			rc.ParentRunID,
+			toolCallID,
+			toolName,
+			result,
+			time.Now(),
+			toolErr,
+		))
+	}
+	a.fireHook(func(h Hook) {
+		if h.OnToolEnd != nil {
+			h.OnToolEnd(ctx, rc, toolCallID, toolName, result, toolErr)
+		}
+	})
+}
+
+func (a *Agent[T]) emitDeferredWait(ctx context.Context, rc *RunContext, toolCallID string, toolName string, argsJSON string, message string) {
+	if a.eventBus != nil {
+		Publish(a.eventBus, NewDeferredWaitEvent(
+			rc.RunID,
+			rc.ParentRunID,
+			toolCallID,
+			toolName,
+			argsJSON,
+			message,
+			time.Now(),
+		))
+	}
+	a.fireHook(func(h Hook) {
+		if h.OnDeferredWait != nil {
+			h.OnDeferredWait(ctx, rc, toolCallID, toolName, argsJSON, message)
+		}
+	})
+	if a.deferredWaitCallback != nil {
+		a.deferredWaitCallback(ctx, rc, toolCallID, toolName, argsJSON, message)
+	}
 }
 
 // restoreToolState restores state to stateful tools from a previous export.
@@ -1112,7 +1234,10 @@ func (a *Agent[T]) executeSingleTool(
 
 	// Check tool approval if required.
 	if tool.RequiresApproval {
+		a.emitApprovalRequested(ctx, rc, call.ToolCallID, call.ToolName, call.ArgsJSON)
 		if a.toolApprovalFunc == nil {
+			err := errors.New("tool approval callback is not configured")
+			a.emitApprovalResolved(ctx, rc, call.ToolCallID, call.ToolName, call.ArgsJSON, false, err)
 			return RetryPromptPart{
 				Content:    fmt.Sprintf("tool %q requires approval but no approval function is configured", call.ToolName),
 				ToolName:   call.ToolName,
@@ -1121,6 +1246,7 @@ func (a *Agent[T]) executeSingleTool(
 			}
 		}
 		approved, approvalErr := a.toolApprovalFunc(ctx, call.ToolName, call.ArgsJSON)
+		a.emitApprovalResolved(ctx, rc, call.ToolCallID, call.ToolName, call.ArgsJSON, approved, approvalErr)
 		if approvalErr != nil {
 			return ToolReturnPart{
 				ToolName:   call.ToolName,
@@ -1182,11 +1308,7 @@ func (a *Agent[T]) executeSingleTool(
 				resultStr = fmt.Sprintf("(serialization error: %v)", serErr)
 			}
 		}
-		a.fireHook(func(h Hook) {
-			if h.OnToolEnd != nil {
-				h.OnToolEnd(ctx, rc, call.ToolCallID, call.ToolName, resultStr, err)
-			}
-		})
+		a.emitToolCompleted(ctx, rc, call.ToolCallID, call.ToolName, resultStr, err)
 
 		// Add trace step for tool result.
 		if a.tracingEnabled {
@@ -1209,6 +1331,7 @@ func (a *Agent[T]) executeSingleTool(
 		// Check for CallDeferred.
 		var deferredErr *CallDeferred
 		if errors.As(err, &deferredErr) {
+			a.emitDeferredWait(ctx, rc, call.ToolCallID, call.ToolName, call.ArgsJSON, deferredErr.Message)
 			return deferredToolPart{
 				ToolName:   call.ToolName,
 				ToolCallID: call.ToolCallID,

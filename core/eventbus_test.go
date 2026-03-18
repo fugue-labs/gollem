@@ -272,10 +272,12 @@ func TestEventBus_AgentIntegration(t *testing.T) {
 
 	var startEvent RunStartedEvent
 	var toolEvent ToolCalledEvent
+	var toolCompletedEvent ToolCompletedEvent
 	var completeEvent RunCompletedEvent
 
 	Subscribe(bus, func(e RunStartedEvent) { startEvent = e })
 	Subscribe(bus, func(e ToolCalledEvent) { toolEvent = e })
+	Subscribe(bus, func(e ToolCompletedEvent) { toolCompletedEvent = e })
 	Subscribe(bus, func(e RunCompletedEvent) { completeEvent = e })
 
 	type Params struct {
@@ -324,6 +326,24 @@ func TestEventBus_AgentIntegration(t *testing.T) {
 	}
 	if toolEvent.CalledAt.IsZero() {
 		t.Error("expected ToolCalledEvent to include CalledAt")
+	}
+	if toolCompletedEvent.ToolName != "echo" {
+		t.Errorf("expected ToolCompletedEvent with tool 'echo', got %q", toolCompletedEvent.ToolName)
+	}
+	if toolCompletedEvent.ToolCallID == "" {
+		t.Error("expected ToolCompletedEvent to include ToolCallID")
+	}
+	if toolCompletedEvent.RunID != startEvent.RunID {
+		t.Error("expected ToolCompletedEvent to share run ID with RunStartedEvent")
+	}
+	if toolCompletedEvent.CompletedAt.IsZero() {
+		t.Error("expected ToolCompletedEvent to include CompletedAt")
+	}
+	if toolCompletedEvent.Result != "echoed" {
+		t.Errorf("expected ToolCompletedEvent result %q, got %q", "echoed", toolCompletedEvent.Result)
+	}
+	if toolCompletedEvent.Error != "" {
+		t.Errorf("expected ToolCompletedEvent error to be empty, got %q", toolCompletedEvent.Error)
 	}
 	if !completeEvent.Success {
 		t.Error("expected RunCompletedEvent with Success=true")

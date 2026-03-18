@@ -121,6 +121,9 @@ func TestAgentRuntimeConfig_ClonesAndExports(t *testing.T) {
 	agent.toolChoice = ToolChoiceRequired()
 	agent.toolChoiceAutoReset = true
 	agent.toolApprovalFunc = func(_ context.Context, _ string, _ string) (bool, error) { return true, nil }
+	agent.approvalRequestedCallback = func(_ context.Context, _ *RunContext, _ string, _ string, _ string) {}
+	agent.approvalResolvedCallback = func(_ context.Context, _ *RunContext, _ string, _ string, _ string, _ bool, _ error) {}
+	agent.deferredWaitCallback = func(_ context.Context, _ *RunContext, _ string, _ string, _ string, _ string) {}
 	agent.globalToolResultValidators = []ToolResultValidatorFunc{
 		func(_ context.Context, _ *RunContext, _ string, _ string) error { return nil },
 	}
@@ -229,6 +232,15 @@ func TestAgentRuntimeConfig_ClonesAndExports(t *testing.T) {
 	if cfg.ToolApprovalFunc == nil {
 		t.Fatal("expected tool approval func")
 	}
+	if cfg.ApprovalRequestedCallback == nil {
+		t.Fatal("expected approval requested callback")
+	}
+	if cfg.ApprovalResolvedCallback == nil {
+		t.Fatal("expected approval resolved callback")
+	}
+	if cfg.DeferredWaitCallback == nil {
+		t.Fatal("expected deferred wait callback")
+	}
 	if len(cfg.GlobalToolResultValidators) != 1 || cfg.GlobalToolResultValidators[0] == nil {
 		t.Fatalf("expected global tool validators, got %+v", cfg.GlobalToolResultValidators)
 	}
@@ -297,6 +309,9 @@ func TestAgentRuntimeConfig_ClonesAndExports(t *testing.T) {
 	}
 	if cfg.Hooks[0].OnRunStart == nil {
 		t.Fatal("expected cloned hooks to remain populated")
+	}
+	if cfg.ApprovalRequestedCallback == nil || cfg.ApprovalResolvedCallback == nil || cfg.DeferredWaitCallback == nil {
+		t.Fatal("expected cloned observability callbacks to remain populated")
 	}
 	if cfg.InputGuardrails[0].Name != "input_guardrail" || cfg.TurnGuardrails[0].Name != "turn_guardrail" {
 		t.Fatalf("expected cloned guardrail names to remain stable, got %+v / %+v", cfg.InputGuardrails, cfg.TurnGuardrails)
