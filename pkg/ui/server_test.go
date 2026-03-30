@@ -154,7 +154,11 @@ func TestServerServeRoutesAssetsSSEAndApproveFlow(t *testing.T) {
 		">1<",
 	)
 
-	assetResp, err := client.Get(ts.URL + "/static/style.css")
+	assetReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/static/style.css", nil)
+	if err != nil {
+		t.Fatalf("new static asset request: %v", err)
+	}
+	assetResp, err := client.Do(assetReq)
 	if err != nil {
 		t.Fatalf("GET static asset: %v", err)
 	}
@@ -416,7 +420,12 @@ func TestRunStateStoreCreateRejectsDuplicateIDs(t *testing.T) {
 
 func mustPOSTForm(t *testing.T, client *http.Client, target string, form url.Values) *http.Response {
 	t.Helper()
-	resp, err := client.Post(target, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, target, strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("new POST form request %s: %v", target, err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("POST form %s: %v", target, err)
 	}
@@ -425,7 +434,12 @@ func mustPOSTForm(t *testing.T, client *http.Client, target string, form url.Val
 
 func mustPOSTJSON(t *testing.T, client *http.Client, target, body string) *http.Response {
 	t.Helper()
-	resp, err := client.Post(target, "application/json", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, target, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new POST json request %s: %v", target, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("POST json %s: %v", target, err)
 	}
@@ -434,7 +448,11 @@ func mustPOSTJSON(t *testing.T, client *http.Client, target, body string) *http.
 
 func mustGETBody(t *testing.T, client *http.Client, target string) string {
 	t.Helper()
-	resp, err := client.Get(target)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatalf("new GET request %s: %v", target, err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", target, err)
 	}
@@ -547,7 +565,7 @@ func (r *uiSSEStreamReader) Next() uiSSEFrame {
 
 func mustOpenUISSE(t *testing.T, client *http.Client, target string) *http.Response {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, target, nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
 	if err != nil {
 		t.Fatalf("new SSE request: %v", err)
 	}
@@ -566,7 +584,7 @@ func mustOpenUISSE(t *testing.T, client *http.Client, target string) *http.Respo
 func readUISSEFrames(t *testing.T, reader *uiSSEStreamReader, count int) []map[string]any {
 	t.Helper()
 	frames := make([]map[string]any, 0, count)
-	for i := 0; i < count; i++ {
+	for range count {
 		frame := reader.Next()
 		var payload map[string]any
 		if err := json.Unmarshal([]byte(frame.data), &payload); err != nil {

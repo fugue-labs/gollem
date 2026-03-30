@@ -335,7 +335,12 @@ func (s *serveStream) Close() error                  { return nil }
 
 func mustServePOSTJSON(t *testing.T, client *http.Client, target, body string) *http.Response {
 	t.Helper()
-	resp, err := client.Post(target, "application/json", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, target, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new POST request %s: %v", target, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", target, err)
 	}
@@ -344,7 +349,11 @@ func mustServePOSTJSON(t *testing.T, client *http.Client, target, body string) *
 
 func mustServeGETBody(t *testing.T, client *http.Client, target string) string {
 	t.Helper()
-	resp, err := client.Get(target)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatalf("new GET request %s: %v", target, err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", target, err)
 	}
@@ -438,7 +447,7 @@ func (r *serveSSEStreamReader) Next() map[string]any {
 
 func mustServeOpenSSE(t *testing.T, client *http.Client, target string) *http.Response {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, target, nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
 	if err != nil {
 		t.Fatalf("new SSE request: %v", err)
 	}
