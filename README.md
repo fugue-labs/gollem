@@ -118,6 +118,7 @@ Gollem ships **50+ composable primitives** in a single framework. Here's what yo
 - **MCP integration** — Stdio and SSE transports with multi-server management and namespaced tools
 - **Evaluation framework** — Datasets, built-in evaluators (`ExactMatch`, `Contains`, `JSONMatch`, `Custom`), LLM-as-judge scoring
 - **Persistent memory store** — Namespace-scoped CRUD and search with in-memory and SQLite backends
+- **Browser dashboard (`gollem serve`)** — Embedded templates/static assets, serve-time provider/model defaults, live SSE run views, and sidebar approval controls
 - **TUI debugger** — Terminal UI with step-mode execution, tool call formatting, and color-coded messages
 
 ### Testing
@@ -224,6 +225,43 @@ result, err := agent.Run(ctx, "Analyze Q4 earnings report")
 // result.Trace — full execution trace
 // tracker.TotalCost() — cumulative cost across all runs
 ```
+
+### Browser Dashboard (`gollem serve`)
+
+Gollem ships an embedded browser dashboard for operator-facing runs. `gollem serve` starts a local HTTP server, serves HTML templates and static assets directly from the binary, and wires the dashboard to live run state and an SSE event stream.
+
+Start it with the same CLI help shown by `gollem serve --help`:
+
+```bash
+gollem serve --provider anthropic --open
+gollem serve --provider openai --model gpt-5.3 --port 9090
+gollem serve --provider anthropic --tools --workdir /path/to/project
+```
+
+Key flags:
+
+- `--port <n>` listens on a local HTTP port. Default: `8080`.
+- `--provider <name>` selects the provider used by dashboard-launched runs.
+- `--model <name>` selects the model; provider defaults are used when omitted.
+- `--workdir <path>` sets the working directory for tool-enabled runs.
+- `--tools[=bool]` enables coding tools in dashboard runs.
+- `--open[=bool]` opens the dashboard URL in your default browser.
+
+The dashboard home page includes a **Start a run** composer with `Title`, `Summary`, and required `Prompt` fields. In the normal served workflow, provider/model are *not* editable in the browser form: `gollem serve` injects the active serve defaults into every `/runs/start` submission so the browser flow stays aligned with the CLI flags you used to launch the server.
+
+Typical workflow:
+
+1. Run `gollem serve ...`.
+2. Open `http://localhost:<port>/`.
+3. Fill in the run composer and click **Start run**.
+4. The UI redirects to `/runs/<id>` for the live run page.
+5. Watch the embedded run scene, recent activity log, protocol-event log, and prompt panel update as SSE events arrive.
+6. Use the run sidebar as the live control surface:
+   - **Approve** allows a pending tool call to execute and lets the run continue.
+   - **Deny** blocks that pending tool call from executing.
+   - **Abort run** cancels an in-flight run before completion.
+
+While a run is active, the sidebar refreshes live and the run page streams replay-aware SSE updates. Waiting states such as **Waiting for approval** are surfaced on both the main run view and the sidebar, along with pending tool metadata and arguments.
 
 ### Coding Agent Background Processes
 
