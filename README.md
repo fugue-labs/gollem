@@ -118,7 +118,7 @@ Gollem ships **50+ composable primitives** in a single framework. Here's what yo
 - **MCP integration** — Stdio and SSE transports with multi-server management and namespaced tools
 - **Evaluation framework** — Datasets, built-in evaluators (`ExactMatch`, `Contains`, `JSONMatch`, `Custom`), LLM-as-judge scoring
 - **Persistent memory store** — Namespace-scoped CRUD and search with in-memory and SQLite backends
-- **Browser dashboard (`gollem serve`)** — Embedded templates/static assets, serve-time provider/model defaults, live SSE run views, and sidebar approval controls
+- **Embedded browser dashboard (`gollem serve`)** — Binary-served templates/static assets, serve-time provider/model defaults, live SSE run surfaces, and sidebar approval controls
 - **TUI debugger** — Terminal UI with step-mode execution, tool call formatting, and color-coded messages
 
 ### Testing
@@ -228,7 +228,7 @@ result, err := agent.Run(ctx, "Analyze Q4 earnings report")
 
 ### Browser Dashboard (`gollem serve`)
 
-Gollem ships an embedded browser dashboard for operator-facing runs. `gollem serve` starts a local HTTP server, serves HTML templates and static assets directly from the binary, and wires the dashboard to live run state and an SSE event stream.
+Gollem ships an embedded browser dashboard for operator-facing runs. `gollem serve` starts a local HTTP server, serves the HTML templates and static assets from the binary, and connects the run detail page to live runtime state through an SSE event stream plus sidebar fragment refreshes.
 
 Start it with the same CLI help shown by `gollem serve --help`:
 
@@ -247,7 +247,7 @@ Key flags:
 - `--tools[=bool]` enables coding tools in dashboard runs.
 - `--open[=bool]` opens the dashboard URL in your default browser.
 
-The dashboard home page includes a **Start a run** composer with `Title`, `Summary`, and required `Prompt` fields. In the normal served workflow, provider/model are *not* editable in the browser form: `gollem serve` injects the active serve defaults into every `/runs/start` submission so the browser flow stays aligned with the CLI flags you used to launch the server.
+The dashboard home page includes a real **Start a run** composer with `Title`, `Summary`, and required `Prompt` fields. In the normal served workflow, provider/model are *not* editable in the browser form: `gollem serve` injects the active serve defaults into every `/runs/start` submission so the browser flow stays aligned with the CLI flags you used to launch the server.
 
 Typical workflow:
 
@@ -255,13 +255,13 @@ Typical workflow:
 2. Open `http://localhost:<port>/`.
 3. Fill in the run composer and click **Start run**.
 4. The UI redirects to `/runs/<id>` for the live run page.
-5. Watch the embedded run scene, recent activity log, protocol-event log, and prompt panel update as SSE events arrive.
+5. Watch the run scene plus the **Recent activity** and **Protocol events** views update from replay-aware SSE events while the **Prompt** panel continues to show the original submitted prompt.
 6. Use the run sidebar as the live control surface:
-   - **Approve** allows a pending tool call to execute and lets the run continue.
-   - **Deny** blocks that pending tool call from executing.
-   - **Abort run** cancels an in-flight run before completion.
+   - **Approve** appears for each pending tool approval, allows that tool call to execute, and lets the run continue.
+   - **Deny** appears beside Approve for the same pending tool call, prevents that tool from executing, and records the rejection in the run state.
+   - **Abort run** is available while the run is still abortable and cancels the in-flight run before completion.
 
-While a run is active, the sidebar refreshes live and the run page streams replay-aware SSE updates. Waiting states such as **Waiting for approval** are surfaced on both the main run view and the sidebar, along with pending tool metadata and arguments.
+While a run is active, the sidebar refreshes live and the run page streams replay-aware SSE updates. Waiting states such as **Waiting for approval** are surfaced on both the main run view and the sidebar, along with pending tool metadata and arguments. Once the run reaches a terminal state, abort controls disappear and sidebar live refresh stops.
 
 ### Coding Agent Background Processes
 

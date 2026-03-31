@@ -9,7 +9,7 @@ This note tracks the current `gollem serve` browser dashboard behavior so projec
 - Go `embed` packages the HTML templates and static assets into the binary.
 - `pkg/ui.Server` serves the dashboard, run detail page, sidebar fragment, static assets, and the live SSE endpoint.
 - `cmd/gollem/serve.go` wires the browser experience to a real run starter, applies serve-time provider/model defaults, and exposes tool-enabled runs when `--tools` is set.
-- The run page combines a live renderer, readable activity log, protocol event log, and a sidebar that refreshes while the run is active.
+- The run detail page combines a live renderer, SSE-fed activity/protocol views, the original submitted prompt, and a sidebar fragment that refreshes while the run is active.
 
 ## Recommended serve workflow
 
@@ -20,6 +20,8 @@ gollem serve --provider anthropic --open
 gollem serve --provider openai --model gpt-5.3 --port 9090
 gollem serve --provider anthropic --tools --workdir /path/to/project
 ```
+
+These examples intentionally match `gollem serve --help`.
 
 Key behavior:
 
@@ -52,8 +54,10 @@ The run detail page currently ships with:
 - connection, stream-state, waiting-state, step-count, entity-count, and last-event metrics
 - a readable recent-activity narrative for waiting, resume, completion, failure, and tool outcomes
 - a protocol-events log for replay/reconnect debugging
-- the original prompt
+- the original submitted prompt in a dedicated prompt panel
 - a live sidebar fragment that refreshes while the run is non-terminal
+
+Only the live run scene plus the activity/protocol views update from SSE during the run; the prompt panel continues to show the original submitted prompt.
 
 ## Sidebar controls
 
@@ -64,7 +68,7 @@ The sidebar is the main control surface for human intervention.
 - Visible while the run is still abortable.
 - Posts the `abort_session` action to `/runs/<id>/action`.
 - Stops the run before completion.
-- Once the run reaches a terminal state, abort controls disappear.
+- Once the run reaches a terminal state, abort controls disappear and sidebar live refresh stops.
 
 ### Approve
 
@@ -78,7 +82,7 @@ The sidebar is the main control surface for human intervention.
 - Shown beside Approve for each pending tool approval.
 - Posts `deny_tool_call` with the tool call ID.
 - Denying prevents that tool call from executing.
-- The run records the denied approval and moves forward according to runtime behavior, which can mean failure or another terminal/waiting state depending on the run.
+- The run records the denied approval and then proceeds according to runtime behavior, which can mean failure, completion, or another waiting state depending on the run.
 
 ## Waiting and live refresh behavior
 
@@ -88,7 +92,7 @@ When a run is blocked on human approval, the dashboard surfaces that explicitly:
 - the sidebar shows **Pending approvals** with tool metadata and arguments
 - the main run page shows waiting labels such as **Waiting for approval**
 - the sidebar uses periodic HTMX refresh while the run is active
-- the run scene listens to SSE for live events and reconnect/resume-safe updates
+- the run scene plus activity/protocol views listen to replay-safe SSE updates
 
 ## Documentation guardrails
 
@@ -98,4 +102,4 @@ Docs that reference AGUI should describe the shipped browser dashboard as:
 - launched with `gollem serve`
 - started from the dashboard composer using serve-configured provider/model defaults
 - controlled from the sidebar with approve, deny, and abort actions
-- updated live through SSE plus sidebar fragment refreshes
+- updated live through SSE plus sidebar fragment refreshes, while the prompt panel remains the original submitted prompt
