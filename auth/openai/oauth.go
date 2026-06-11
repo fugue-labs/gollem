@@ -18,7 +18,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -149,7 +151,11 @@ func loginBrowser(ctx context.Context, config LoginConfig) (*Credentials, error)
 	}
 	authURL := authEndpoint + "?" + params.Encode()
 
-	fmt.Printf("Open this URL to log in:\n\n  %s\n\nWaiting for authentication...\n", authURL)
+	if err := openBrowser(ctx, authURL); err == nil {
+		fmt.Printf("Opening your browser to log in. If nothing happens, open this URL:\n\n  %s\n\nWaiting for authentication...\n", authURL)
+	} else {
+		fmt.Printf("Open this URL to log in:\n\n  %s\n\nWaiting for authentication...\n", authURL)
+	}
 
 	// Wait for the auth code or context cancellation.
 	var code string
@@ -163,6 +169,22 @@ func loginBrowser(ctx context.Context, config LoginConfig) (*Credentials, error)
 
 	// Exchange authorization code for tokens.
 	return exchangeCode(ctx, code, redirectURI, verifier)
+}
+
+// openBrowser opens url in the default browser. Returns an error if
+// no opener is available (headless machines) so callers can fall
+// back to printing the URL.
+func openBrowser(ctx context.Context, url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.CommandContext(ctx, "open", url)
+	case "windows":
+		cmd = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		cmd = exec.CommandContext(ctx, "xdg-open", url)
+	}
+	return cmd.Start()
 }
 
 // loginDeviceCode performs the device code OAuth flow against the
