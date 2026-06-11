@@ -26,11 +26,21 @@ type ModelSettings struct {
 	TopP           *float64    `json:"top_p,omitempty"`
 	ToolChoice     *ToolChoice `json:"tool_choice,omitempty"`
 	ThinkingBudget *int        `json:"thinking_budget,omitempty"` // Anthropic extended thinking budget tokens (manual mode)
+	// AdaptiveThinking, when true, lets the model decide when and how much
+	// to think before answering. Maps to Anthropic's
+	// {thinking: {type: "adaptive"}} — supported on the Claude 4.6
+	// generation and newer (Opus/Sonnet 4.6, Opus 4.7/4.8, Fable; the
+	// 4.7+ models accept no other thinking mode). Mutually exclusive with
+	// ThinkingBudget: the Anthropic providers reject requests setting
+	// both. Thinking tokens count toward MaxTokens, so size MaxTokens
+	// with headroom. Ignored by providers without an equivalent (OpenAI
+	// reasoning models think implicitly; see ReasoningEffort).
+	AdaptiveThinking *bool `json:"adaptive_thinking,omitempty"`
 	// ReasoningEffort controls thinking depth. Values: "low", "medium", "high",
 	// "xhigh", "max". Supported on OpenAI reasoning models and Anthropic effort-
-	// capable models (Claude 4.5 Opus+, 4.6 Opus/Sonnet, 4.7 Opus). Per-provider
-	// gating rejects values a given model doesn't accept (e.g., "xhigh" is
-	// Opus 4.7-only; "max" requires 4.6+).
+	// capable models (Claude 4.5 Opus+, 4.6 Opus/Sonnet, 4.7 Opus, 4.8 Opus,
+	// Fable). Per-provider gating rejects values a given model doesn't accept
+	// (e.g., "xhigh" requires Opus 4.7+; "max" requires 4.6+).
 	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
 	// StopSequences causes generation to halt when the model would emit any
 	// listed string. Supported by Anthropic (stop_sequences) and Gemini

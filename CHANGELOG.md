@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Adaptive thinking for Anthropic providers.** New
+  `ModelSettings.AdaptiveThinking *bool` emits
+  `{thinking: {type: "adaptive"}}` from both the `anthropic` and
+  `vertexai_anthropic` providers — the model decides when and how much
+  to think. Gated per model (Claude 4.6 generation and newer; clear
+  build-time error on older models), mutually exclusive with the
+  legacy `ThinkingBudget` manual mode, and temperature is omitted on
+  the wire as the API requires. Response and stream paths already
+  parsed `thinking` blocks; this closes the request side.
+- **Opus 4.8 and Fable model gating.** `claude-opus-4-8` and
+  `claude-fable-5` (new `ClaudeOpus48` / `ClaudeFable5` constants) are
+  recognized as post-4.7 flagships: adaptive-only thinking (manual
+  budgets rejected with a pointer to `AdaptiveThinking`), and the full
+  effort range including `xhigh` and `max` now passes
+  per-model effort gating.
+
 ### Phase 14: Ten Innovations from Pydantic-AI, LangChain 1.0, OpenAI Agents SDK, AutoGen & CrewAI
 
 #### Innovation 1: Typed Dependency Access

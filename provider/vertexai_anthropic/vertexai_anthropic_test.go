@@ -1249,6 +1249,100 @@ func TestOpus47RejectsThinkingBudget(t *testing.T) {
 	}
 }
 
+// --- Adaptive thinking unit tests ---
+
+// TestBuildRequestAdaptiveThinking verifies {thinking: {type: "adaptive"}}
+// is emitted on every model generation that accepts it, with no
+// budget_tokens on the wire.
+func TestBuildRequestAdaptiveThinking(t *testing.T) {
+	on := true
+	for _, model := range []string{
+		ClaudeSonnet46, ClaudeOpus46, ClaudeOpus47, "claude-opus-4-8", "claude-fable-5",
+	} {
+		t.Run(model, func(t *testing.T) {
+			settings := &core.ModelSettings{AdaptiveThinking: &on}
+			req, err := buildRequest(nil, settings, nil, model, 4096, false)
+			if err != nil {
+				t.Fatalf("buildRequest: %v", err)
+			}
+			if req.Thinking == nil || req.Thinking.Type != "adaptive" {
+				t.Fatalf("expected adaptive thinking, got %+v", req.Thinking)
+			}
+			wire, err := json.Marshal(req)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if !strings.Contains(string(wire), `"thinking":{"type":"adaptive"}`) {
+				t.Errorf("wire thinking shape wrong: %s", wire)
+			}
+			if strings.Contains(string(wire), "budget_tokens") {
+				t.Errorf("budget_tokens must be absent for adaptive thinking: %s", wire)
+			}
+		})
+	}
+}
+
+func TestBuildRequestAdaptiveThinkingStripsTemperature(t *testing.T) {
+	on := true
+	temp := 0.7
+	settings := &core.ModelSettings{AdaptiveThinking: &on, Temperature: &temp}
+	req, err := buildRequest(nil, settings, nil, ClaudeSonnet46, 4096, false)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if req.Temperature != nil {
+		t.Errorf("expected temperature to be nil when adaptive thinking enabled, got %v", *req.Temperature)
+	}
+}
+
+// TestAdaptiveThinkingUnsupportedModels verifies pre-4.6 models reject
+// adaptive thinking at build time with a clear error.
+func TestAdaptiveThinkingUnsupportedModels(t *testing.T) {
+	on := true
+	for _, model := range []string{"claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5"} {
+		t.Run(model, func(t *testing.T) {
+			settings := &core.ModelSettings{AdaptiveThinking: &on}
+			_, err := buildRequest(nil, settings, nil, model, 4096, false)
+			if err == nil {
+				t.Fatalf("expected error for adaptive thinking on %q", model)
+			}
+			if !strings.Contains(err.Error(), "adaptive thinking") {
+				t.Errorf("error should mention adaptive thinking, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestAdaptiveAndManualThinkingConflict verifies the two thinking modes are
+// mutually exclusive regardless of model.
+func TestAdaptiveAndManualThinkingConflict(t *testing.T) {
+	on := true
+	budget := 2048
+	settings := &core.ModelSettings{AdaptiveThinking: &on, ThinkingBudget: &budget}
+	_, err := buildRequest(nil, settings, nil, ClaudeSonnet46, 4096, false)
+	if err == nil {
+		t.Fatal("expected error when both AdaptiveThinking and ThinkingBudget are set")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error should say mutually exclusive, got: %v", err)
+	}
+}
+
+// TestOpus48RejectsThinkingBudget verifies post-4.7 flagships reject manual
+// thinking the same way Opus 4.7 does.
+func TestOpus48RejectsThinkingBudget(t *testing.T) {
+	budget := 2048
+	for _, model := range []string{"claude-opus-4-8", "claude-fable-5"} {
+		t.Run(model, func(t *testing.T) {
+			settings := &core.ModelSettings{ThinkingBudget: &budget}
+			_, err := buildRequest(nil, settings, nil, model, 4096, false)
+			if err == nil {
+				t.Fatalf("expected error when ThinkingBudget is set on %q", model)
+			}
+		})
+	}
+}
+
 // TestBuildRequestWithEffort verifies output_config.effort is emitted for each
 // valid value on models that accept it.
 func TestBuildRequestWithEffort(t *testing.T) {

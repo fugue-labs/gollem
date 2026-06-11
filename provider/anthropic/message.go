@@ -34,17 +34,17 @@ type apiToolChoice struct {
 
 // apiThinking controls extended thinking. Two modes:
 //   - {type: "enabled", budget_tokens: N} — manual extended thinking. Rejected
-//     by Opus 4.7+; deprecated on Opus 4.6 / Sonnet 4.6.
-//   - {type: "adaptive"} — adaptive thinking. Required on Opus 4.7; recommended
-//     on 4.6 models. BudgetTokens is omitted on the wire.
+//     by Opus 4.7+ (4.7, 4.8, Fable); deprecated on Opus 4.6 / Sonnet 4.6.
+//   - {type: "adaptive"} — adaptive thinking. The only mode on Opus 4.7+;
+//     recommended on 4.6 models. BudgetTokens is omitted on the wire.
 type apiThinking struct {
 	Type         string `json:"type"`
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 // apiOutputConfig is the nested object carrying the `effort` parameter.
-// Effort values: "low", "medium", "high", "xhigh" (Opus 4.7 only),
-// "max" (Opus 4.6+/Sonnet 4.6+/Opus 4.7).
+// Effort values: "low", "medium", "high", "xhigh" (Opus 4.7+ only),
+// "max" (Opus 4.6+/Sonnet 4.6+).
 type apiOutputConfig struct {
 	Effort string `json:"effort,omitempty"`
 }
@@ -182,13 +182,35 @@ func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, pa
 		req.TopP = settings.TopP
 		req.StopSequences = settings.StopSequences
 
-		// Extended thinking. Opus 4.7 (and Mythos) rejects manual thinking;
-		// adaptive is the only mode. Fail fast with a pointer to the correct
-		// option rather than letting the API return a generic 400.
-		if settings.ThinkingBudget != nil && *settings.ThinkingBudget > 0 {
+		// Extended thinking. Two modes, mutually exclusive:
+		//   - adaptive: the model decides when/how much to think. The only
+		//     mode on Opus 4.7+; recommended on 4.6.
+		//   - manual budget: legacy {type: "enabled", budget_tokens}.
+		//     Rejected by Opus 4.7+; deprecated on 4.6.
+		// Fail fast with a pointer to the correct option rather than
+		// letting the API return a generic 400.
+		adaptive := settings.AdaptiveThinking != nil && *settings.AdaptiveThinking
+		manual := settings.ThinkingBudget != nil && *settings.ThinkingBudget > 0
+		if adaptive && manual {
+			return nil, errors.New(
+				"anthropic: AdaptiveThinking and ThinkingBudget are mutually exclusive; pick one thinking mode",
+			)
+		}
+		if adaptive {
+			if !supportsAdaptiveThinking(model) {
+				return nil, fmt.Errorf(
+					"anthropic: model %q does not support adaptive thinking; use a Claude 4.6+ model, or ThinkingBudget for manual thinking on older models",
+					model,
+				)
+			}
+			req.Thinking = &apiThinking{Type: "adaptive"}
+			// Anthropic requires temperature to be omitted when thinking is enabled.
+			req.Temperature = nil
+		}
+		if manual {
 			if !supportsManualThinking(model) {
 				return nil, fmt.Errorf(
-					"anthropic: model %q does not support manual thinking; use WithReasoningEffort(\"high\"|\"xhigh\"|\"max\") instead",
+					"anthropic: model %q does not support manual thinking; set AdaptiveThinking or use WithReasoningEffort(\"high\"|\"xhigh\"|\"max\") instead",
 					model,
 				)
 			}

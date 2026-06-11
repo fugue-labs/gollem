@@ -41,8 +41,8 @@ type apiToolChoice struct {
 }
 
 // apiThinking controls extended thinking. Two modes:
-//   - {type: "enabled", budget_tokens: N} — manual. Rejected by Opus 4.7.
-//   - {type: "adaptive"} — adaptive thinking. Required on Opus 4.7.
+//   - {type: "enabled", budget_tokens: N} — manual. Rejected by Opus 4.7+.
+//   - {type: "adaptive"} — adaptive thinking. The only mode on Opus 4.7+.
 type apiThinking struct {
 	Type         string `json:"type"`
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
@@ -154,12 +154,32 @@ func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, pa
 		req.TopP = settings.TopP
 		req.StopSequences = settings.StopSequences
 
-		// Extended thinking. Opus 4.7 / Mythos rejects manual thinking — fail
-		// fast with a pointer to WithReasoningEffort rather than a generic 400.
-		if settings.ThinkingBudget != nil && *settings.ThinkingBudget > 0 {
+		// Extended thinking. Two modes, mutually exclusive: adaptive (the
+		// model decides; the only mode on Opus 4.7+) and the legacy manual
+		// budget (rejected by Opus 4.7+). Fail fast with a pointer to the
+		// correct option rather than a generic 400.
+		adaptive := settings.AdaptiveThinking != nil && *settings.AdaptiveThinking
+		manual := settings.ThinkingBudget != nil && *settings.ThinkingBudget > 0
+		if adaptive && manual {
+			return nil, errors.New(
+				"vertexai_anthropic: AdaptiveThinking and ThinkingBudget are mutually exclusive; pick one thinking mode",
+			)
+		}
+		if adaptive {
+			if !supportsAdaptiveThinking(model) {
+				return nil, fmt.Errorf(
+					"vertexai_anthropic: model %q does not support adaptive thinking; use a Claude 4.6+ model, or ThinkingBudget for manual thinking on older models",
+					model,
+				)
+			}
+			req.Thinking = &apiThinking{Type: "adaptive"}
+			// Anthropic requires temperature to be omitted when thinking is enabled.
+			req.Temperature = nil
+		}
+		if manual {
 			if !supportsManualThinking(model) {
 				return nil, fmt.Errorf(
-					"vertexai_anthropic: model %q does not support manual thinking; use WithReasoningEffort(\"high\"|\"xhigh\"|\"max\") instead",
+					"vertexai_anthropic: model %q does not support manual thinking; set AdaptiveThinking or use WithReasoningEffort(\"high\"|\"xhigh\"|\"max\") instead",
 					model,
 				)
 			}

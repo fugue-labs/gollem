@@ -938,6 +938,138 @@ func TestOpus47RejectsThinkingBudget(t *testing.T) {
 	}
 }
 
+// --- Adaptive thinking unit tests ---
+
+// TestBuildRequestAdaptiveThinking verifies {thinking: {type: "adaptive"}}
+// is emitted on every model generation that accepts it, with no
+// budget_tokens on the wire.
+func TestBuildRequestAdaptiveThinking(t *testing.T) {
+	on := true
+	for _, model := range []string{
+		ClaudeSonnet46, ClaudeOpus46, ClaudeOpus47, ClaudeOpus48, ClaudeFable5,
+	} {
+		t.Run(model, func(t *testing.T) {
+			settings := &core.ModelSettings{AdaptiveThinking: &on}
+			req, err := buildRequest(nil, settings, nil, model, 4096, false, false, false)
+			if err != nil {
+				t.Fatalf("buildRequest: %v", err)
+			}
+			if req.Thinking == nil {
+				t.Fatal("expected Thinking to be set")
+			}
+			if req.Thinking.Type != "adaptive" {
+				t.Errorf("thinking type = %q, want 'adaptive'", req.Thinking.Type)
+			}
+			wire, err := json.Marshal(req)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if !strings.Contains(string(wire), `"thinking":{"type":"adaptive"}`) {
+				t.Errorf("wire thinking shape wrong: %s", wire)
+			}
+			if strings.Contains(string(wire), "budget_tokens") {
+				t.Errorf("budget_tokens must be absent for adaptive thinking: %s", wire)
+			}
+		})
+	}
+}
+
+func TestBuildRequestAdaptiveThinkingStripsTemperature(t *testing.T) {
+	on := true
+	temp := 0.7
+	settings := &core.ModelSettings{AdaptiveThinking: &on, Temperature: &temp}
+	req, err := buildRequest(nil, settings, nil, ClaudeSonnet46, 4096, false, false, false)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if req.Temperature != nil {
+		t.Errorf("expected temperature to be nil when adaptive thinking enabled, got %v", *req.Temperature)
+	}
+}
+
+// TestBuildRequestAdaptiveThinkingKeepsMaxTokens verifies the adaptive path
+// never silently rewrites the caller's MaxTokens — there is no budget to
+// auto-adjust against (thinking tokens just count toward max_tokens).
+func TestBuildRequestAdaptiveThinkingKeepsMaxTokens(t *testing.T) {
+	on := true
+	maxTokens := 8192
+	settings := &core.ModelSettings{AdaptiveThinking: &on, MaxTokens: &maxTokens}
+	req, err := buildRequest(nil, settings, nil, ClaudeOpus47, 4096, false, false, false)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if req.MaxTokens != 8192 {
+		t.Errorf("max_tokens = %d, want 8192 (untouched)", req.MaxTokens)
+	}
+}
+
+// TestBuildRequestAdaptiveThinkingFalseIsNoop verifies an explicit false
+// behaves exactly like an unset field.
+func TestBuildRequestAdaptiveThinkingFalseIsNoop(t *testing.T) {
+	off := false
+	settings := &core.ModelSettings{AdaptiveThinking: &off}
+	req, err := buildRequest(nil, settings, nil, ClaudeSonnet46, 4096, false, false, false)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if req.Thinking != nil {
+		t.Errorf("expected no thinking for AdaptiveThinking=false, got %+v", req.Thinking)
+	}
+}
+
+// TestAdaptiveThinkingUnsupportedModels verifies pre-4.6 models reject
+// adaptive thinking at build time with a clear error.
+func TestAdaptiveThinkingUnsupportedModels(t *testing.T) {
+	on := true
+	for _, model := range []string{
+		"claude-sonnet-4-5", "claude-opus-4-5", ClaudeHaiku45, "claude-3-5-sonnet-20241022",
+	} {
+		t.Run(model, func(t *testing.T) {
+			settings := &core.ModelSettings{AdaptiveThinking: &on}
+			_, err := buildRequest(nil, settings, nil, model, 4096, false, false, false)
+			if err == nil {
+				t.Fatalf("expected error for adaptive thinking on %q", model)
+			}
+			if !strings.Contains(err.Error(), "adaptive thinking") {
+				t.Errorf("error should mention adaptive thinking, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestAdaptiveAndManualThinkingConflict verifies the two thinking modes are
+// mutually exclusive regardless of model.
+func TestAdaptiveAndManualThinkingConflict(t *testing.T) {
+	on := true
+	budget := 2048
+	settings := &core.ModelSettings{AdaptiveThinking: &on, ThinkingBudget: &budget}
+	_, err := buildRequest(nil, settings, nil, ClaudeSonnet46, 4096, false, false, false)
+	if err == nil {
+		t.Fatal("expected error when both AdaptiveThinking and ThinkingBudget are set")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error should say mutually exclusive, got: %v", err)
+	}
+}
+
+// TestOpus48AndFableRejectThinkingBudget verifies the post-4.7 flagships
+// reject manual thinking the same way Opus 4.7 does.
+func TestOpus48AndFableRejectThinkingBudget(t *testing.T) {
+	budget := 2048
+	for _, model := range []string{ClaudeOpus48, ClaudeFable5} {
+		t.Run(model, func(t *testing.T) {
+			settings := &core.ModelSettings{ThinkingBudget: &budget}
+			_, err := buildRequest(nil, settings, nil, model, 4096, false, false, false)
+			if err == nil {
+				t.Fatalf("expected error when ThinkingBudget is set on %q", model)
+			}
+			if !strings.Contains(err.Error(), "AdaptiveThinking") {
+				t.Errorf("error should point to AdaptiveThinking, got: %v", err)
+			}
+		})
+	}
+}
+
 // TestBuildRequestWithEffort verifies output_config.effort is emitted for each
 // valid value on models that accept it.
 func TestBuildRequestWithEffort(t *testing.T) {
@@ -950,6 +1082,12 @@ func TestBuildRequestWithEffort(t *testing.T) {
 		{ClaudeOpus47, "high"},
 		{ClaudeOpus47, "xhigh"},
 		{ClaudeOpus47, "max"},
+		{ClaudeOpus48, "medium"},
+		{ClaudeOpus48, "xhigh"},
+		{ClaudeOpus48, "max"},
+		{ClaudeFable5, "medium"},
+		{ClaudeFable5, "xhigh"},
+		{ClaudeFable5, "max"},
 		{ClaudeOpus46, "low"},
 		{ClaudeOpus46, "max"},
 		{ClaudeSonnet46, "medium"},

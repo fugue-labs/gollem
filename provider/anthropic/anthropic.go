@@ -25,6 +25,8 @@ import (
 // WithModel; the provider falls back to the legacy manual-thinking path for
 // those, but does not expose them as symbolic constants.
 const (
+	ClaudeFable5   = "claude-fable-5"
+	ClaudeOpus48   = "claude-opus-4-8"
 	ClaudeOpus47   = "claude-opus-4-7"
 	ClaudeOpus46   = "claude-opus-4-6"
 	ClaudeSonnet46 = "claude-sonnet-4-6"
@@ -74,6 +76,15 @@ func isOpus47(model string) bool {
 	return strings.Contains(m, "opus-4-7")
 }
 
+// isOpus48OrFable reports whether the model string identifies a post-4.7
+// flagship — Claude Opus 4.8 or the Fable tier. Same thinking/effort
+// surface as Opus 4.7: adaptive-only thinking, full effort range
+// including "xhigh" and "max".
+func isOpus48OrFable(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(m, "opus-4-8") || strings.Contains(m, "fable")
+}
+
 // isOpus46OrSonnet46 reports whether the model string identifies Opus 4.6 or
 // Sonnet 4.6. These models accept both manual and adaptive thinking, and
 // support the "max" effort level.
@@ -83,38 +94,44 @@ func isOpus46OrSonnet46(model string) bool {
 }
 
 // supportsEffort reports whether the given model accepts the output_config.effort
-// parameter. Per Anthropic docs, supported on Mythos, Opus 4.7, Opus 4.6,
-// Sonnet 4.6, and Opus 4.5. Notably NOT supported on Haiku 4.5 or any 3.x model.
+// parameter. Per Anthropic docs, supported on Fable, Opus 4.8, Opus 4.7
+// (and Mythos), Opus 4.6, Sonnet 4.6, and Opus 4.5. Notably NOT supported
+// on Haiku 4.5 or any 3.x model.
 func supportsEffort(model string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
-	if strings.Contains(m, "mythos") {
-		return true
-	}
-	if isOpus47(m) || isOpus46OrSonnet46(m) {
+	if isOpus47(m) || isOpus48OrFable(m) || isOpus46OrSonnet46(m) {
 		return true
 	}
 	return strings.Contains(m, "opus-4-5")
 }
 
 // supportsManualThinking reports whether {thinking: {type: "enabled",
-// budget_tokens: N}} is accepted by the model. Opus 4.7 and Mythos reject it
-// (adaptive thinking is the only mode). Opus 4.6 / Sonnet 4.6 accept it but
-// deprecate it. Older models continue to accept it.
+// budget_tokens: N}} is accepted by the model. Opus 4.7+ (4.7, 4.8, Fable,
+// Mythos) rejects it — adaptive thinking is the only mode there. Opus 4.6 /
+// Sonnet 4.6 accept it but deprecate it. Older models continue to accept it.
 func supportsManualThinking(model string) bool {
-	return !isOpus47(model)
+	return !isOpus47(model) && !isOpus48OrFable(model)
+}
+
+// supportsAdaptiveThinking reports whether {thinking: {type: "adaptive"}}
+// is accepted by the model: the Claude 4.6 generation and newer (Opus 4.6,
+// Sonnet 4.6, Opus 4.7, Opus 4.8, Fable, Mythos). Models 4.5 and older,
+// and Haiku, only have manual thinking.
+func supportsAdaptiveThinking(model string) bool {
+	return isOpus47(model) || isOpus48OrFable(model) || isOpus46OrSonnet46(model)
 }
 
 // supportsEffortValue reports whether a given effort value is accepted by the
-// model. "xhigh" is Opus-4.7/Mythos-only. "max" requires Opus 4.6+, Sonnet 4.6+,
-// or Opus 4.7/Mythos.
+// model. "xhigh" requires Opus 4.7+ (4.7, 4.8, Fable, Mythos). "max" requires
+// Opus 4.6+, Sonnet 4.6+, or Opus 4.7+.
 func supportsEffortValue(model, effort string) bool {
 	switch effort {
 	case "low", "medium", "high":
 		return supportsEffort(model)
 	case "xhigh":
-		return isOpus47(model)
+		return isOpus47(model) || isOpus48OrFable(model)
 	case "max":
-		return isOpus47(model) || isOpus46OrSonnet46(model)
+		return isOpus47(model) || isOpus48OrFable(model) || isOpus46OrSonnet46(model)
 	default:
 		return false
 	}

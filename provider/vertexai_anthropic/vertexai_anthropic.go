@@ -53,6 +53,14 @@ func isOpus47(model string) bool {
 	return strings.Contains(m, "opus-4-7")
 }
 
+// isOpus48OrFable reports whether the model string identifies a post-4.7
+// flagship — Opus 4.8 or the Fable tier. Same thinking/effort surface as
+// Opus 4.7: adaptive-only thinking, full effort range.
+func isOpus48OrFable(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(m, "opus-4-8") || strings.Contains(m, "fable")
+}
+
 // isOpus46OrSonnet46 reports whether the model is Opus 4.6 or Sonnet 4.6.
 func isOpus46OrSonnet46(model string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
@@ -60,23 +68,28 @@ func isOpus46OrSonnet46(model string) bool {
 }
 
 // supportsEffort reports whether the model accepts the output_config.effort
-// parameter. Per Anthropic docs: Mythos, Opus 4.7/4.6/4.5, Sonnet 4.6.
-// Haiku 4.5 and Claude 3.x do NOT support it.
+// parameter. Per Anthropic docs: Fable, Opus 4.8/4.7/4.6/4.5 (and Mythos),
+// Sonnet 4.6. Haiku 4.5 and Claude 3.x do NOT support it.
 func supportsEffort(model string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
-	if strings.Contains(m, "mythos") {
-		return true
-	}
-	if isOpus47(m) || isOpus46OrSonnet46(m) {
+	if isOpus47(m) || isOpus48OrFable(m) || isOpus46OrSonnet46(m) {
 		return true
 	}
 	return strings.Contains(m, "opus-4-5")
 }
 
 // supportsManualThinking reports whether {thinking: {type: "enabled",
-// budget_tokens: N}} is accepted. Opus 4.7 and Mythos reject it.
+// budget_tokens: N}} is accepted. Opus 4.7+ (4.7, 4.8, Fable, Mythos)
+// rejects it.
 func supportsManualThinking(model string) bool {
-	return !isOpus47(model)
+	return !isOpus47(model) && !isOpus48OrFable(model)
+}
+
+// supportsAdaptiveThinking reports whether {thinking: {type: "adaptive"}}
+// is accepted: the Claude 4.6 generation and newer (Opus 4.6, Sonnet 4.6,
+// Opus 4.7, Opus 4.8, Fable, Mythos).
+func supportsAdaptiveThinking(model string) bool {
+	return isOpus47(model) || isOpus48OrFable(model) || isOpus46OrSonnet46(model)
 }
 
 // supportsEffortValue reports whether a given effort value is accepted.
@@ -85,9 +98,9 @@ func supportsEffortValue(model, effort string) bool {
 	case "low", "medium", "high":
 		return supportsEffort(model)
 	case "xhigh":
-		return isOpus47(model)
+		return isOpus47(model) || isOpus48OrFable(model)
 	case "max":
-		return isOpus47(model) || isOpus46OrSonnet46(model)
+		return isOpus47(model) || isOpus48OrFable(model) || isOpus46OrSonnet46(model)
 	default:
 		return false
 	}
