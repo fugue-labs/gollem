@@ -1,10 +1,14 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,7 +98,10 @@ func TestHTTPServerTransportSamplingRoundTrip(t *testing.T) {
 
 func TestHTTPServerTransportRunClosesSessionsOnCancel(t *testing.T) {
 	transport := NewHTTPServerTransport(NewServer())
-	session := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil))
+	session, err := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -132,6 +139,152 @@ func TestHTTPServerTransportRunClosesSessionsOnCancel(t *testing.T) {
 	if !closed {
 		t.Fatal("expected session to be marked closed")
 	}
+}
+
+func TestHTTPServerTransportSessionIDsAreOpaque(t *testing.T) {
+	seen := make(map[string]struct{}, 256)
+	for range 256 {
+		id, err := generateHTTPSessionID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := seen[id]; exists {
+			t.Fatalf("duplicate HTTP session ID: %q", id)
+		}
+		seen[id] = struct{}{}
+
+		encoded := strings.TrimPrefix(id, "mcp-")
+		if encoded == id {
+			t.Fatalf("session ID missing mcp- prefix: %q", id)
+		}
+		random, err := base64.RawURLEncoding.DecodeString(encoded)
+		if err != nil {
+			t.Fatalf("session ID is not raw URL-safe base64: %q: %v", id, err)
+		}
+		if len(random) != httpSessionIDBytes {
+			t.Fatalf("session ID contains %d random bytes, want %d", len(random), httpSessionIDBytes)
+		}
+	}
+}
+
+func TestHTTPServerTransportAuthorizesEveryFollowUpRequest(t *testing.T) {
+	type principalKey struct{}
+
+	transport := NewHTTPServerTransport(NewServer())
+	transport.SetSessionContextFunc(func(r *http.Request) context.Context {
+		return context.WithValue(context.Background(), principalKey{}, r.Header.Get("X-Test-Principal"))
+	})
+	transport.SetSessionAuthorizer(func(sessionCtx context.Context, r *http.Request) (bool, error) {
+		owner, _ := sessionCtx.Value(principalKey{}).(string)
+		return owner != "" && owner == r.Header.Get("X-Test-Principal"), nil
+	})
+	srv := httptest.NewServer(transport)
+	defer srv.Close()
+
+	sessionID := initializeRawHTTPSession(t, srv.URL, "tenant-a")
+	toolList := []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
+
+	for _, tc := range []struct {
+		name      string
+		method    string
+		principal string
+		body      []byte
+	}{
+		{name: "tenant-b post", method: http.MethodPost, principal: "tenant-b", body: toolList},
+		{name: "anonymous post", method: http.MethodPost, body: toolList},
+		{name: "tenant-b get", method: http.MethodGet, principal: "tenant-b"},
+		{name: "anonymous get", method: http.MethodGet},
+		{name: "tenant-b delete", method: http.MethodDelete, principal: "tenant-b"},
+		{name: "anonymous delete", method: http.MethodDelete},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := rawHTTPSessionRequest(t, srv.URL, tc.method, sessionID, tc.principal, tc.body)
+			defer resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+			}
+		})
+	}
+
+	// Unauthorized DELETE requests did not remove the session, and the
+	// rightful principal can still dispatch work through it.
+	resp := rawHTTPSessionRequest(t, srv.URL, http.MethodPost, sessionID, "tenant-a", toolList)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("owner POST status = %d, want %d", resp.StatusCode, http.StatusAccepted)
+	}
+	if session, ok := transport.getSession(sessionID); ok {
+		session.server.WaitIdle()
+	} else {
+		t.Fatal("session disappeared after unauthorized follow-up")
+	}
+
+	resp = rawHTTPSessionRequest(t, srv.URL, http.MethodDelete, sessionID, "tenant-a", nil)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("owner DELETE status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	if _, ok := transport.getSession(sessionID); ok {
+		t.Fatal("owner DELETE did not remove session")
+	}
+}
+
+func TestHTTPServerTransportSessionAuthorizerErrorsFailClosed(t *testing.T) {
+	transport := NewHTTPServerTransport(NewServer())
+	transport.SetSessionAuthorizer(func(context.Context, *http.Request) (bool, error) {
+		return false, errors.New("identity backend unavailable")
+	})
+	srv := httptest.NewServer(transport)
+	defer srv.Close()
+
+	sessionID := initializeRawHTTPSession(t, srv.URL, "tenant-a")
+	resp := rawHTTPSessionRequest(t, srv.URL, http.MethodPost, sessionID, "tenant-a", []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+}
+
+func initializeRawHTTPSession(t *testing.T, endpoint, principal string) string {
+	t.Helper()
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	resp := rawHTTPSessionRequest(t, endpoint, http.MethodPost, "", principal, body)
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("initialize status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	id := resp.Header.Get("Mcp-Session-Id")
+	if id == "" {
+		t.Fatal("initialize response missing Mcp-Session-Id")
+	}
+	return id
+}
+
+func rawHTTPSessionRequest(t *testing.T, endpoint, method, sessionID, principal string, body []byte) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(method, endpoint, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", sessionID)
+	}
+	if principal != "" {
+		req.Header.Set("X-Test-Principal", principal)
+	}
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
 }
 
 // TestHTTPServerTransportSessionContextFunc verifies the per-session

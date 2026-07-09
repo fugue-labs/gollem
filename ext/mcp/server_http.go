@@ -2,20 +2,36 @@ package mcp
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
-	"sync/atomic"
 )
+
+const httpSessionIDBytes = 32
+
+// HTTPSessionAuthorizer authorizes a follow-up HTTP request against the
+// identity captured in a session's context when it was initialized. Hosts
+// should derive the request identity afresh (for example, from a bearer token
+// validated by middleware) and compare it with the session owner carried by
+// sessionCtx. Returning false rejects the request with HTTP 403. Returning an
+// error rejects it with HTTP 500 without exposing the error to the caller.
+//
+// The authorizer runs before a follow-up GET can drain the session outbox,
+// before a POST body is decoded or dispatched, and before DELETE removes the
+// session.
+type HTTPSessionAuthorizer func(sessionCtx context.Context, r *http.Request) (bool, error)
 
 // HTTPServerTransport serves MCP over the streamable HTTP transport.
 // Each MCP session gets its own cloned Server instance.
 type HTTPServerTransport struct {
-	mu         sync.Mutex
-	template   *Server
-	sessions   map[string]*httpServerSession
-	sessionCtx func(*http.Request) context.Context
+	mu          sync.Mutex
+	template    *Server
+	sessions    map[string]*httpServerSession
+	sessionCtx  func(*http.Request) context.Context
+	sessionAuth HTTPSessionAuthorizer
 }
 
 // SetSessionContextFunc installs a hook that derives each new MCP
@@ -39,6 +55,16 @@ func (t *HTTPServerTransport) SetSessionContextFunc(f func(*http.Request) contex
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.sessionCtx = f
+}
+
+// SetSessionAuthorizer installs the authorization hook applied to every
+// follow-up GET, POST, and DELETE request. The hook is optional so transports
+// protected by a single shared HTTP credential remain backward compatible;
+// multi-principal hosts should always install one.
+func (t *HTTPServerTransport) SetSessionAuthorizer(f HTTPSessionAuthorizer) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.sessionAuth = f
 }
 
 type httpServerSession struct {
@@ -101,21 +127,20 @@ func (t *HTTPServerTransport) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 }
 
 func (t *HTTPServerTransport) handleStream(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
-	}
-
 	sessionID := r.Header.Get("Mcp-Session-Id")
 	if sessionID == "" {
 		http.Error(w, "missing Mcp-Session-Id", http.StatusBadRequest)
 		return
 	}
 
-	session, ok := t.getSession(sessionID)
+	session, ok := t.authorizedSession(w, r, sessionID)
 	if !ok {
-		http.Error(w, "unknown session", http.StatusNotFound)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
 
@@ -146,17 +171,32 @@ func (t *HTTPServerTransport) handleStream(w http.ResponseWriter, r *http.Reques
 }
 
 func (t *HTTPServerTransport) handlePost(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.Header.Get("Mcp-Session-Id")
+	var session *httpServerSession
+	if sessionID != "" {
+		var ok bool
+		session, ok = t.authorizedSession(w, r, sessionID)
+		if !ok {
+			return
+		}
+	}
+
 	var msg jsonRPCMessage
 	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	sessionID := r.Header.Get("Mcp-Session-Id")
 	if msg.Method == "initialize" && sessionID == "" {
-		session := t.newSession(r)
+		var err error
+		session, err = t.newSession(r)
+		if err != nil {
+			http.Error(w, "failed to create session", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Mcp-Session-Id", session.id)
+		w.Header().Set("Cache-Control", "no-store")
 
 		result, rpcErr := session.server.handleInitialize(msg.Params)
 		payload, err := json.Marshal(jsonRPCMessage{
@@ -178,11 +218,6 @@ func (t *HTTPServerTransport) handlePost(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	session, ok := t.getSession(sessionID)
-	if !ok {
-		http.Error(w, "unknown session", http.StatusNotFound)
-		return
-	}
 	w.Header().Set("Mcp-Session-Id", sessionID)
 
 	go session.server.HandleMessage(session.ctx, &msg)
@@ -196,7 +231,11 @@ func (t *HTTPServerTransport) handleDelete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	session, ok := t.deleteSession(sessionID)
+	session, ok := t.authorizedSession(w, r, sessionID)
+	if !ok {
+		return
+	}
+	session, ok = t.deleteSession(sessionID, session)
 	if !ok {
 		http.Error(w, "unknown session", http.StatusNotFound)
 		return
@@ -205,8 +244,7 @@ func (t *HTTPServerTransport) handleDelete(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (t *HTTPServerTransport) newSession(r *http.Request) *httpServerSession {
-	sessionID := generateHTTPSessionID()
+func (t *HTTPServerTransport) newSession(r *http.Request) (*httpServerSession, error) {
 	base := context.Background()
 	t.mu.Lock()
 	hook := t.sessionCtx
@@ -216,24 +254,40 @@ func (t *HTTPServerTransport) newSession(r *http.Request) *httpServerSession {
 			base = derived
 		}
 	}
-	ctx, cancel := context.WithCancel(base)
-	server := cloneServerTemplate(t.template)
-	session := &httpServerSession{
-		id:     sessionID,
-		server: server,
-		ctx:    ctx,
-		cancel: cancel,
-		outbox: make(chan []byte, 256),
-	}
-	server.attachWriter(func(data []byte) error {
-		session.enqueue(data)
-		return nil
-	})
+	for {
+		sessionID, err := generateHTTPSessionID()
+		if err != nil {
+			return nil, err
+		}
+		ctx, cancel := context.WithCancel(base)
+		server := cloneServerTemplate(t.template)
+		session := &httpServerSession{
+			id:     sessionID,
+			server: server,
+			ctx:    ctx,
+			cancel: cancel,
+			outbox: make(chan []byte, 256),
+		}
+		server.attachWriter(func(data []byte) error {
+			session.enqueue(data)
+			return nil
+		})
 
-	t.mu.Lock()
-	t.sessions[sessionID] = session
-	t.mu.Unlock()
-	return session
+		t.mu.Lock()
+		_, exists := t.sessions[sessionID]
+		if !exists {
+			t.sessions[sessionID] = session
+		}
+		t.mu.Unlock()
+		if !exists {
+			return session, nil
+		}
+
+		// A collision is cryptographically negligible, but never replace a
+		// live session if it does occur.
+		cancel()
+		_ = server.Close()
+	}
 }
 
 func (t *HTTPServerTransport) getSession(id string) (*httpServerSession, bool) {
@@ -243,14 +297,41 @@ func (t *HTTPServerTransport) getSession(id string) (*httpServerSession, bool) {
 	return session, ok
 }
 
-func (t *HTTPServerTransport) deleteSession(id string) (*httpServerSession, bool) {
+// authorizedSession retrieves a session and authorizes the current request
+// before the caller can observe or mutate any session-owned state.
+func (t *HTTPServerTransport) authorizedSession(w http.ResponseWriter, r *http.Request, id string) (*httpServerSession, bool) {
+	t.mu.Lock()
+	session, ok := t.sessions[id]
+	authorize := t.sessionAuth
+	t.mu.Unlock()
+	if !ok {
+		http.Error(w, "unknown session", http.StatusNotFound)
+		return nil, false
+	}
+	if authorize == nil {
+		return session, true
+	}
+	authorized, err := authorize(session.ctx, r)
+	if err != nil {
+		http.Error(w, "session authorization failed", http.StatusInternalServerError)
+		return nil, false
+	}
+	if !authorized {
+		http.Error(w, "session not authorized", http.StatusForbidden)
+		return nil, false
+	}
+	return session, true
+}
+
+func (t *HTTPServerTransport) deleteSession(id string, expected *httpServerSession) (*httpServerSession, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	session, ok := t.sessions[id]
-	if ok {
+	if ok && session == expected {
 		delete(t.sessions, id)
+		return session, true
 	}
-	return session, ok
+	return nil, false
 }
 
 func (s *httpServerSession) enqueue(data []byte) {
@@ -309,8 +390,12 @@ func cloneServerTemplate(template *Server) *Server {
 	return cloned
 }
 
-func generateHTTPSessionID() string {
-	return fmt.Sprintf("mcp-%d", httpSessionCounter.Add(1))
+func generateHTTPSessionID() (string, error) {
+	random := make([]byte, httpSessionIDBytes)
+	if _, err := rand.Read(random); err != nil {
+		return "", fmt.Errorf("mcp: generating HTTP session ID: %w", err)
+	}
+	return "mcp-" + base64.RawURLEncoding.EncodeToString(random), nil
 }
 
 func mustRawResult(result any, ok bool) json.RawMessage {
@@ -323,5 +408,3 @@ func mustRawResult(result any, ok bool) json.RawMessage {
 	}
 	return data
 }
-
-var httpSessionCounter atomic.Int64
