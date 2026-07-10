@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -55,6 +56,9 @@ func TestDefaultHTTPServerTransportConfigIsBounded(t *testing.T) {
 	if config.MaxRequestBodyBytes != 8<<20 {
 		t.Fatalf("MaxRequestBodyBytes = %d, want %d", config.MaxRequestBodyBytes, 8<<20)
 	}
+	if config.MaxJSONDepth != 64 || config.MaxJSONStructuralTokens != 65_536 {
+		t.Fatalf("JSON complexity defaults = %d/%d, want 64/65536", config.MaxJSONDepth, config.MaxJSONStructuralTokens)
+	}
 	if config.RequestBodyTimeout != 30*time.Second {
 		t.Fatalf("RequestBodyTimeout = %v, want 30s", config.RequestBodyTimeout)
 	}
@@ -79,6 +83,10 @@ func TestHTTPServerTransportConfigRejectsEveryUnboundedOrIncoherentLimit(t *test
 		"absolute":              func(c *HTTPServerTransportConfig) { c.AbsoluteLifetime = 0 },
 		"idle over absolute":    func(c *HTTPServerTransportConfig) { c.IdleTimeout = c.AbsoluteLifetime + 1 },
 		"body":                  func(c *HTTPServerTransportConfig) { c.MaxRequestBodyBytes = 0 },
+		"JSON depth":            func(c *HTTPServerTransportConfig) { c.MaxJSONDepth = 0 },
+		"JSON structural tokens": func(c *HTTPServerTransportConfig) {
+			c.MaxJSONStructuralTokens = 0
+		},
 		"negative body timeout": func(c *HTTPServerTransportConfig) { c.RequestBodyTimeout = -1 },
 		"messages":              func(c *HTTPServerTransportConfig) { c.MaxConcurrentMessages = 0 },
 		"session messages":      func(c *HTTPServerTransportConfig) { c.MaxConcurrentMessagesPerSession = 0 },
@@ -105,6 +113,103 @@ func TestHTTPServerTransportZeroBodyTimeoutNormalizesToSafeDefault(t *testing.T)
 	transport := newContainmentTransport(t, NewServer(), config)
 	if transport.config.RequestBodyTimeout != defaultHTTPRequestBodyTimeout {
 		t.Fatalf("effective RequestBodyTimeout = %v, want %v", transport.config.RequestBodyTimeout, defaultHTTPRequestBodyTimeout)
+	}
+}
+
+func TestJSONComplexityReaderCountsStructureAcrossChunkBoundaries(t *testing.T) {
+	// Brackets and an escaped quote inside the first string are data, not
+	// structure. The actual token count is: root, two keys, two values, array,
+	// object, and three primitive values = 9. Maximum depth is 3.
+	body := `{"literal":"[\"{not-structure}\"]","values":[{},null,true,1]}`
+	read := func(maxDepth, maxTokens int) error {
+		reader := newJSONComplexityReader(iotest.OneByteReader(strings.NewReader(body)), maxDepth, maxTokens)
+		_, err := io.ReadAll(reader)
+		return err
+	}
+	if err := read(3, 9); err != nil {
+		t.Fatalf("exact limits rejected valid JSON: %v", err)
+	}
+	if err := read(2, 9); !errors.Is(err, errHTTPJSONDepthLimit) {
+		t.Fatalf("depth error = %v, want %v", err, errHTTPJSONDepthLimit)
+	}
+	if err := read(3, 8); !errors.Is(err, errHTTPJSONTokenLimit) {
+		t.Fatalf("token error = %v, want %v", err, errHTTPJSONTokenLimit)
+	}
+}
+
+func TestHTTPServerTransportRejectsJSONStructuralAmplificationBeforeDispatch(t *testing.T) {
+	var calls atomic.Int64
+	server := NewServer()
+	server.AddTool(Tool{Name: "bounded", InputSchema: mustRawJSON([]byte(`{"type":"object"}`))}, func(context.Context, *RequestContext, map[string]any) (*ToolResult, error) {
+		calls.Add(1)
+		return textToolResult("ok"), nil
+	})
+	config := containmentHTTPConfig()
+	config.MaxRequestBodyBytes = 64 << 10
+	config.MaxJSONDepth = 16
+	config.MaxJSONStructuralTokens = 32
+	transport := newContainmentTransport(t, server, config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	sessionID := initializeContainmentSession(t, srv.Client(), srv.URL, nil)
+
+	wide := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bounded","arguments":{"items":[` +
+		strings.Repeat(`{},`, 100) + `{}` + `]}}}`
+	response := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, wide)
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("wide status = %d, want %d", response.StatusCode, http.StatusRequestEntityTooLarge)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("handler calls after structural rejection = %d, want 0", got)
+	}
+	stats := transport.Stats()
+	if stats.RejectedJSONComplexity != 1 || stats.RejectedMessages == 0 || stats.InFlightDecodes != 0 || stats.InFlightProtectedDecodes != 0 {
+		t.Fatalf("structural rejection accounting = %+v", stats)
+	}
+
+	// Complexity rejection is request-scoped, not a session poison. A normal
+	// retry remains usable and proves the rejected request retained no lease.
+	valid := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"bounded","arguments":{}}}`
+	response = doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, valid)
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("valid retry status = %d, want %d", response.StatusCode, http.StatusAccepted)
+	}
+	eventuallyContainment(t, time.Second, func() bool { return calls.Load() == 1 })
+}
+
+func TestHTTPServerTransportRejectsExcessJSONDepthBeforeDispatch(t *testing.T) {
+	var calls atomic.Int64
+	server := NewServer()
+	server.AddTool(Tool{Name: "bounded", InputSchema: mustRawJSON([]byte(`{"type":"object"}`))}, func(context.Context, *RequestContext, map[string]any) (*ToolResult, error) {
+		calls.Add(1)
+		return textToolResult("ok"), nil
+	})
+	config := containmentHTTPConfig()
+	config.MaxRequestBodyBytes = 64 << 10
+	config.MaxJSONDepth = 8
+	config.MaxJSONStructuralTokens = 1024
+	transport := newContainmentTransport(t, server, config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	sessionID := initializeContainmentSession(t, srv.Client(), srv.URL, nil)
+
+	deepValue := strings.Repeat("[", 16) + "0" + strings.Repeat("]", 16)
+	body := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bounded","arguments":{"value":` + deepValue + `}}}`
+	response := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, body)
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("deep status = %d, want %d", response.StatusCode, http.StatusRequestEntityTooLarge)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("handler calls after depth rejection = %d, want 0", got)
+	}
+	if stats := transport.Stats(); stats.RejectedJSONComplexity != 1 || stats.InFlightDecodes != 0 {
+		t.Fatalf("depth rejection accounting = %+v", stats)
 	}
 }
 

@@ -9,6 +9,14 @@ const (
 	defaultHTTPMaxSessions                   = 1024
 	defaultHTTPMaxSessionsPerPrincipal       = 64
 	defaultHTTPMaxRequestBodyBytes     int64 = 8 << 20
+	// A byte limit alone does not bound encoding/json's heap use: a compact
+	// array of empty objects can expand into hundreds of thousands of Go maps.
+	// These limits cap that structural multiplier before nested MCP params are
+	// unmarshaled into map[string]any. They are deliberately generous enough
+	// for large batched tool arguments while keeping per-decode object counts
+	// finite and measurable.
+	defaultHTTPMaxJSONDepth                  = 64
+	defaultHTTPMaxJSONStructuralTokens       = 65_536
 	defaultHTTPMaxConcurrentMessages         = 256
 	defaultHTTPMaxConcurrentPerSession       = 4
 	defaultHTTPOutboxMaxMessages             = 256
@@ -18,14 +26,18 @@ const (
 
 // HTTPServerTransportConfig contains the hard resource limits for a
 // streamable HTTP MCP transport. Capacity/size limits are mandatory and
-// positive. RequestBodyTimeout zero normalizes to the safe 30-second default;
-// it never means unlimited.
+// positive. MaxJSONDepth and MaxJSONStructuralTokens bound the decoded object
+// graph independently of request bytes; structural tokens include containers,
+// object keys, and scalar values. RequestBodyTimeout zero normalizes to the
+// safe 30-second default; it never means unlimited.
 type HTTPServerTransportConfig struct {
 	MaxSessions                     int
 	MaxSessionsPerPrincipal         int
 	IdleTimeout                     time.Duration
 	AbsoluteLifetime                time.Duration
 	MaxRequestBodyBytes             int64
+	MaxJSONDepth                    int
+	MaxJSONStructuralTokens         int
 	RequestBodyTimeout              time.Duration
 	MaxConcurrentMessages           int
 	MaxConcurrentMessagesPerSession int
@@ -42,6 +54,8 @@ func DefaultHTTPServerTransportConfig() HTTPServerTransportConfig {
 		IdleTimeout:                     30 * time.Minute,
 		AbsoluteLifetime:                24 * time.Hour,
 		MaxRequestBodyBytes:             defaultHTTPMaxRequestBodyBytes,
+		MaxJSONDepth:                    defaultHTTPMaxJSONDepth,
+		MaxJSONStructuralTokens:         defaultHTTPMaxJSONStructuralTokens,
 		RequestBodyTimeout:              defaultHTTPRequestBodyTimeout,
 		MaxConcurrentMessages:           defaultHTTPMaxConcurrentMessages,
 		MaxConcurrentMessagesPerSession: defaultHTTPMaxConcurrentPerSession,
@@ -67,6 +81,10 @@ func (c HTTPServerTransportConfig) validate() error {
 		return fmt.Errorf("mcp: HTTP transport IdleTimeout cannot exceed AbsoluteLifetime")
 	case c.MaxRequestBodyBytes <= 0:
 		return fmt.Errorf("mcp: HTTP transport MaxRequestBodyBytes must be positive")
+	case c.MaxJSONDepth <= 0:
+		return fmt.Errorf("mcp: HTTP transport MaxJSONDepth must be positive")
+	case c.MaxJSONStructuralTokens <= 0:
+		return fmt.Errorf("mcp: HTTP transport MaxJSONStructuralTokens must be positive")
 	case c.RequestBodyTimeout < 0:
 		return fmt.Errorf("mcp: HTTP transport RequestBodyTimeout cannot be negative")
 	case c.MaxConcurrentMessages <= 0:
@@ -129,5 +147,6 @@ type HTTPServerTransportStats struct {
 	InFlightControlResponses int
 	InFlightSSEStreams       int
 	RejectedMessages         uint64
+	RejectedJSONComplexity   uint64
 	OutboxOverflowClosures   uint64
 }

@@ -677,7 +677,8 @@ func (t *HTTPServerTransport) handleDelete(w http.ResponseWriter, r *http.Reques
 
 func (t *HTTPServerTransport) decodeOneMessage(w http.ResponseWriter, r *http.Request, decodeCtx context.Context) (*jsonRPCMessage, bool) {
 	reader := http.MaxBytesReader(w, r.Body, t.config.MaxRequestBodyBytes)
-	decoder := json.NewDecoder(reader)
+	boundedJSON := newJSONComplexityReader(reader, t.config.MaxJSONDepth, t.config.MaxJSONStructuralTokens)
+	decoder := json.NewDecoder(boundedJSON)
 	var msg jsonRPCMessage
 	if err := decoder.Decode(&msg); err != nil {
 		t.writeDecodeError(w, err, decodeCtx)
@@ -703,6 +704,14 @@ func (t *HTTPServerTransport) writeDecodeError(w http.ResponseWriter, err error,
 	var tooLarge *http.MaxBytesError
 	if errors.As(err, &tooLarge) {
 		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if errors.Is(err, errHTTPJSONDepthLimit) || errors.Is(err, errHTTPJSONTokenLimit) {
+		t.mu.Lock()
+		t.stats.RejectedJSONComplexity++
+		t.stats.RejectedMessages++
+		t.mu.Unlock()
+		http.Error(w, "request JSON structure too complex", http.StatusRequestEntityTooLarge)
 		return
 	}
 	var timeout interface{ Timeout() bool }
