@@ -74,7 +74,14 @@ func (rc *RequestContext) CreateElicitation(ctx context.Context, params *Elicita
 // and support for nested client requests such as sampling and roots/list.
 type Server struct {
 	mu sync.Mutex
-	wg sync.WaitGroup
+
+	// activeHandlers and idleCh replace sync.WaitGroup for request-handler
+	// lifecycle accounting. A WaitGroup cannot safely race Add with Wait when
+	// the count may be zero; HTTP shutdown and session deletion do exactly that.
+	// Both fields are protected by mu. idleCh is closed whenever the count is
+	// zero and replaced with an open channel on the zero-to-one transition.
+	activeHandlers int
+	idleCh         chan struct{}
 
 	nextID  atomic.Int64
 	pending map[int64]chan *jsonRPCMessage
@@ -118,8 +125,11 @@ func WithServerInstructions(instructions string) ServerOption {
 
 // NewServer constructs a reusable single-session MCP server.
 func NewServer(opts ...ServerOption) *Server {
+	idleCh := make(chan struct{})
+	close(idleCh)
 	s := &Server{
 		pending: make(map[int64]chan *jsonRPCMessage),
+		idleCh:  idleCh,
 		serverInfo: ServerInfo{
 			Name:    "gollem-mcp-server",
 			Version: "1.0.0",
@@ -210,26 +220,47 @@ func (s *Server) NotifyPromptsListChanged(ctx context.Context) error {
 // HandleMessage handles a single JSON-RPC message. Request dispatch is asynchronous
 // so nested client requests can complete while the read loop continues.
 func (s *Server) HandleMessage(ctx context.Context, msg *jsonRPCMessage) {
+	s.handleMessageWithCompletion(ctx, msg, nil)
+}
+
+// handleMessageWithCompletion is the transport-facing form of HandleMessage.
+// complete is invoked exactly once after the message has been fully handled,
+// including asynchronous request handlers. This lets bounded transports hold
+// an admission lease for the real handler lifetime instead of merely for
+// dispatch.
+func (s *Server) handleMessageWithCompletion(ctx context.Context, msg *jsonRPCMessage, complete func()) {
+	finish := complete
+	if finish == nil {
+		finish = func() {}
+	}
 	if msg == nil {
+		finish()
 		return
 	}
 	if msg.Method != "" {
 		if hasJSONRPCID(msg.ID) {
-			s.wg.Add(1)
+			if !s.beginHandler() {
+				finish()
+				return
+			}
 			go func() {
-				defer s.wg.Done()
+				defer finish()
+				defer s.endHandler()
 				s.handleRequest(ctx, msg)
 			}()
 			return
 		}
 		s.handleNotification(msg)
+		finish()
 		return
 	}
 	if !hasJSONRPCID(msg.ID) {
+		finish()
 		return
 	}
 	id, err := parsePendingID(msg.ID)
 	if err != nil {
+		finish()
 		return
 	}
 	s.mu.Lock()
@@ -240,6 +271,69 @@ func (s *Server) HandleMessage(ctx context.Context, msg *jsonRPCMessage) {
 	s.mu.Unlock()
 	if ok {
 		ch <- msg
+	}
+	finish()
+}
+
+// hasPendingResponse reports whether raw identifies a nested request currently
+// outstanding on this single-session server. HTTP transports use it to admit
+// only genuine response continuations to their bounded control lane.
+func (s *Server) hasPendingResponse(raw *json.RawMessage) bool {
+	id, err := parsePendingID(raw)
+	if err != nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.pending[id]
+	return ok
+}
+
+// deliverPendingResponse atomically claims and delivers a nested response. It
+// returns false for malformed, canceled, duplicate, or cross-session IDs.
+func (s *Server) deliverPendingResponse(msg *jsonRPCMessage) bool {
+	if msg == nil || msg.Method != "" || !hasJSONRPCID(msg.ID) {
+		return false
+	}
+	id, err := parsePendingID(msg.ID)
+	if err != nil {
+		return false
+	}
+	s.mu.Lock()
+	ch, ok := s.pending[id]
+	if ok {
+		delete(s.pending, id)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return false
+	}
+	ch <- msg
+	return true
+}
+
+func (s *Server) beginHandler() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	if s.activeHandlers == 0 {
+		s.idleCh = make(chan struct{})
+	}
+	s.activeHandlers++
+	return true
+}
+
+func (s *Server) endHandler() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeHandlers <= 0 {
+		panic("mcp: server handler accounting underflow")
+	}
+	s.activeHandlers--
+	if s.activeHandlers == 0 {
+		close(s.idleCh)
 	}
 }
 
@@ -634,7 +728,34 @@ func (s *Server) Close() error {
 
 // WaitIdle waits for all in-flight request handlers to finish.
 func (s *Server) WaitIdle() {
-	s.wg.Wait()
+	_ = s.WaitIdleContext(context.Background())
+}
+
+// WaitIdleContext waits for all request handlers that are currently in flight
+// to finish, or returns ctx.Err(). Call Close before waiting when shutdown must
+// prevent later handler admission.
+func (s *Server) WaitIdleContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		s.mu.Lock()
+		if s.activeHandlers == 0 {
+			s.mu.Unlock()
+			return nil
+		}
+		idle := s.idleCh
+		s.mu.Unlock()
+
+		select {
+		case <-idle:
+			// Re-check under the mutex. This also makes the method correct when
+			// used before Close and a new handler arrives at the transition.
+			continue
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 func (s *Server) attachWriter(writeFn func([]byte) error) {
