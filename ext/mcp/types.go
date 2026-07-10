@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -343,11 +344,11 @@ func (r *PromptResult) TextContent() string {
 // ParseSamplingContent parses a sampling content field that may contain either
 // a single block or an array of blocks.
 func ParseSamplingContent(raw json.RawMessage) ([]Content, error) {
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
 		return nil, nil
 	}
-	if strings.HasPrefix(trimmed, "[") {
+	if trimmed[0] == '[' {
 		var blocks []Content
 		if err := json.Unmarshal(raw, &blocks); err != nil {
 			return nil, err

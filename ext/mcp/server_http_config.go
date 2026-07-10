@@ -17,6 +17,7 @@ const (
 	// finite and measurable.
 	defaultHTTPMaxJSONDepth                  = 64
 	defaultHTTPMaxJSONStructuralTokens       = 65_536
+	defaultHTTPMaxNestedResponseBytes  int64 = 4 << 20
 	defaultHTTPMaxConcurrentMessages         = 256
 	defaultHTTPMaxConcurrentPerSession       = 4
 	defaultHTTPOutboxMaxMessages             = 256
@@ -28,8 +29,10 @@ const (
 // streamable HTTP MCP transport. Capacity/size limits are mandatory and
 // positive. MaxJSONDepth and MaxJSONStructuralTokens bound the decoded object
 // graph independently of request bytes; structural tokens include containers,
-// object keys, and scalar values. RequestBodyTimeout zero normalizes to the
-// safe 30-second default; it never means unlimited.
+// object keys, and scalar values. MaxNestedResponseBytes separately bounds the
+// result/error payload of sampling, elicitation, and other server-initiated
+// requests before a second typed decode. RequestBodyTimeout zero normalizes to
+// the safe 30-second default; it never means unlimited.
 type HTTPServerTransportConfig struct {
 	MaxSessions                     int
 	MaxSessionsPerPrincipal         int
@@ -38,6 +41,7 @@ type HTTPServerTransportConfig struct {
 	MaxRequestBodyBytes             int64
 	MaxJSONDepth                    int
 	MaxJSONStructuralTokens         int
+	MaxNestedResponseBytes          int64
 	RequestBodyTimeout              time.Duration
 	MaxConcurrentMessages           int
 	MaxConcurrentMessagesPerSession int
@@ -56,6 +60,7 @@ func DefaultHTTPServerTransportConfig() HTTPServerTransportConfig {
 		MaxRequestBodyBytes:             defaultHTTPMaxRequestBodyBytes,
 		MaxJSONDepth:                    defaultHTTPMaxJSONDepth,
 		MaxJSONStructuralTokens:         defaultHTTPMaxJSONStructuralTokens,
+		MaxNestedResponseBytes:          defaultHTTPMaxNestedResponseBytes,
 		RequestBodyTimeout:              defaultHTTPRequestBodyTimeout,
 		MaxConcurrentMessages:           defaultHTTPMaxConcurrentMessages,
 		MaxConcurrentMessagesPerSession: defaultHTTPMaxConcurrentPerSession,
@@ -85,6 +90,8 @@ func (c HTTPServerTransportConfig) validate() error {
 		return fmt.Errorf("mcp: HTTP transport MaxJSONDepth must be positive")
 	case c.MaxJSONStructuralTokens <= 0:
 		return fmt.Errorf("mcp: HTTP transport MaxJSONStructuralTokens must be positive")
+	case c.MaxNestedResponseBytes <= 0:
+		return fmt.Errorf("mcp: HTTP transport MaxNestedResponseBytes must be positive")
 	case c.RequestBodyTimeout < 0:
 		return fmt.Errorf("mcp: HTTP transport RequestBodyTimeout cannot be negative")
 	case c.MaxConcurrentMessages <= 0:
@@ -148,5 +155,7 @@ type HTTPServerTransportStats struct {
 	InFlightSSEStreams       int
 	RejectedMessages         uint64
 	RejectedJSONComplexity   uint64
+	RejectedInvalidUTF8      uint64
+	RejectedNestedResponses  uint64
 	OutboxOverflowClosures   uint64
 }

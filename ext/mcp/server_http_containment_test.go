@@ -59,6 +59,9 @@ func TestDefaultHTTPServerTransportConfigIsBounded(t *testing.T) {
 	if config.MaxJSONDepth != 64 || config.MaxJSONStructuralTokens != 65_536 {
 		t.Fatalf("JSON complexity defaults = %d/%d, want 64/65536", config.MaxJSONDepth, config.MaxJSONStructuralTokens)
 	}
+	if config.MaxNestedResponseBytes != 4<<20 {
+		t.Fatalf("MaxNestedResponseBytes = %d, want %d", config.MaxNestedResponseBytes, 4<<20)
+	}
 	if config.RequestBodyTimeout != 30*time.Second {
 		t.Fatalf("RequestBodyTimeout = %v, want 30s", config.RequestBodyTimeout)
 	}
@@ -87,6 +90,7 @@ func TestHTTPServerTransportConfigRejectsEveryUnboundedOrIncoherentLimit(t *test
 		"JSON structural tokens": func(c *HTTPServerTransportConfig) {
 			c.MaxJSONStructuralTokens = 0
 		},
+		"nested response":       func(c *HTTPServerTransportConfig) { c.MaxNestedResponseBytes = 0 },
 		"negative body timeout": func(c *HTTPServerTransportConfig) { c.RequestBodyTimeout = -1 },
 		"messages":              func(c *HTTPServerTransportConfig) { c.MaxConcurrentMessages = 0 },
 		"session messages":      func(c *HTTPServerTransportConfig) { c.MaxConcurrentMessagesPerSession = 0 },
@@ -135,6 +139,101 @@ func TestJSONComplexityReaderCountsStructureAcrossChunkBoundaries(t *testing.T) 
 	if err := read(3, 8); !errors.Is(err, errHTTPJSONTokenLimit) {
 		t.Fatalf("token error = %v, want %v", err, errHTTPJSONTokenLimit)
 	}
+}
+
+func TestJSONComplexityReaderAcceptsUTF8AcrossEveryByteBoundary(t *testing.T) {
+	body := []byte("{\"value\":\"\\u263a raw: \u0080 \u07ff \u0800 \ud7ff \ue000 \uffff \U00010000 \U0010ffff\"}")
+	reader := newJSONComplexityReader(iotest.OneByteReader(bytes.NewReader(body)), 8, 16)
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("valid split UTF-8 rejected: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("valid split UTF-8 changed: got %q want %q", got, body)
+	}
+	var decoded map[string]string
+	if err := json.Unmarshal(got, &decoded); err != nil {
+		t.Fatalf("accepted UTF-8 did not remain valid JSON: %v", err)
+	}
+}
+
+func TestJSONComplexityReaderRejectsEveryInvalidUTF8Class(t *testing.T) {
+	tests := map[string][]byte{
+		"stray continuation":   {0x80},
+		"invalid lead":         {0xff},
+		"overlong two byte":    {0xc0, 0xaf},
+		"overlong three byte":  {0xe0, 0x80, 0x80},
+		"surrogate":            {0xed, 0xa0, 0x80},
+		"overlong four byte":   {0xf0, 0x80, 0x80, 0x80},
+		"above unicode max":    {0xf4, 0x90, 0x80, 0x80},
+		"bad continuation":     {0xe2, 0x28, 0xa1},
+		"truncated two byte":   {0xc2},
+		"truncated three byte": {0xe2, 0x82},
+		"truncated four byte":  {0xf0, 0x90, 0x80},
+	}
+	for name, invalid := range tests {
+		t.Run(name, func(t *testing.T) {
+			body := append([]byte(`{"value":"`), invalid...)
+			// Leave truncated cases at EOF. For every other case, the suffix
+			// proves a later valid quote cannot make the sequence acceptable.
+			if !strings.HasPrefix(name, "truncated") {
+				body = append(body, []byte(`"}`)...)
+			}
+			reader := newJSONComplexityReader(iotest.OneByteReader(bytes.NewReader(body)), 8, 16)
+			if _, err := io.ReadAll(reader); !errors.Is(err, errHTTPJSONInvalidUTF8) {
+				t.Fatalf("invalid UTF-8 error = %v, want %v", err, errHTTPJSONInvalidUTF8)
+			}
+		})
+	}
+}
+
+func TestHTTPServerTransportRejectsInvalidUTF8BeforeDispatch(t *testing.T) {
+	var calls atomic.Int64
+	server := NewServer()
+	server.AddTool(Tool{Name: "bounded", InputSchema: mustRawJSON([]byte(`{"type":"object"}`))}, func(context.Context, *RequestContext, map[string]any) (*ToolResult, error) {
+		calls.Add(1)
+		return textToolResult("ok"), nil
+	})
+	config := containmentHTTPConfig()
+	config.MaxRequestBodyBytes = 64 << 10
+	transport := newContainmentTransport(t, server, config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	sessionID := initializeContainmentSession(t, srv.Client(), srv.URL, nil)
+
+	body := append([]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bounded","arguments":{"seed_content":"`), 0xff)
+	body = append(body, []byte(`"}}}`)...)
+	request, err := http.NewRequest(http.MethodPost, srv.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Mcp-Session-Id", sessionID)
+	response, err := srv.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid UTF-8 status = %d, want %d", response.StatusCode, http.StatusBadRequest)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("handler calls after invalid UTF-8 = %d, want 0", got)
+	}
+	stats := transport.Stats()
+	if stats.RejectedInvalidUTF8 != 1 || stats.RejectedMessages == 0 || stats.InFlightDecodes != 0 || stats.InFlightProtectedDecodes != 0 {
+		t.Fatalf("invalid UTF-8 rejection accounting = %+v", stats)
+	}
+
+	valid := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"bounded","arguments":{"seed_content":"valid \u2603"}}}`
+	response = doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, valid)
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("valid retry status = %d, want %d", response.StatusCode, http.StatusAccepted)
+	}
+	eventuallyContainment(t, time.Second, func() bool { return calls.Load() == 1 })
 }
 
 func TestHTTPServerTransportRejectsJSONStructuralAmplificationBeforeDispatch(t *testing.T) {
@@ -859,6 +958,90 @@ func TestHTTPServerTransportNestedResponsesUseBoundedControlLaneWithoutDeadlock(
 		defer transport.mu.Unlock()
 		return transport.stats.InFlightMessages == 0 && transport.decodeInFlight == 0 && transport.controlInFlight == 0
 	})
+}
+
+func TestHTTPServerTransportRejectsOversizedNestedResponseAndReleasesCaller(t *testing.T) {
+	finished := make(chan error, 1)
+	server := NewServer()
+	server.AddTool(Tool{Name: "sample", InputSchema: mustRawJSON([]byte(`{"type":"object"}`))}, func(ctx context.Context, rc *RequestContext, _ map[string]any) (*ToolResult, error) {
+		_, err := rc.CreateMessage(ctx, &CreateMessageParams{
+			Messages:  []SamplingMessage{{Role: "user", Content: MarshalSamplingContent(Content{Type: "text", Text: "hello"})}},
+			MaxTokens: 1,
+		})
+		finished <- err
+		return nil, err
+	})
+	config := containmentHTTPConfig()
+	config.MaxNestedResponseBytes = 128
+	transport := newContainmentTransport(t, server, config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+
+	initializeBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{"sampling":{}},"clientInfo":{"name":"test-client","version":"1"}}}`
+	initializeResponse := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, "", nil, initializeBody)
+	io.Copy(io.Discard, initializeResponse.Body)
+	initializeResponse.Body.Close()
+	if initializeResponse.StatusCode != http.StatusOK {
+		t.Fatalf("initialize status = %d", initializeResponse.StatusCode)
+	}
+	sessionID := initializeResponse.Header.Get("Mcp-Session-Id")
+	session, ok := transport.getSession(sessionID)
+	if !ok {
+		t.Fatal("initialized session missing")
+	}
+
+	toolResponse := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"sample","arguments":{}}}`)
+	toolResponse.Body.Close()
+	if toolResponse.StatusCode != http.StatusAccepted {
+		t.Fatalf("tool status = %d", toolResponse.StatusCode)
+	}
+	eventuallyContainment(t, time.Second, func() bool {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		return len(session.outbox) > 0
+	})
+	payload, ok := session.dequeue()
+	if !ok {
+		t.Fatal("nested sampling request missing")
+	}
+	var nested jsonRPCMessage
+	if err := json.Unmarshal(payload, &nested); err != nil {
+		t.Fatal(err)
+	}
+	pendingID, err := parsePendingID(nested.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oversized := `{"jsonrpc":"2.0","id":` + strconv.FormatInt(pendingID, 10) + `,"result":{"role":"assistant","content":{"type":"text","text":"` + strings.Repeat("x", 256) + `"},"model":"test","stopReason":"endTurn"}}`
+	response := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, oversized)
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized nested response status = %d, want %d", response.StatusCode, http.StatusRequestEntityTooLarge)
+	}
+	select {
+	case err := <-finished:
+		if err == nil || !strings.Contains(err.Error(), "nested response exceeds configured byte limit") {
+			t.Fatalf("nested caller error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("oversized nested response stranded its server-side caller")
+	}
+	eventuallyContainment(t, time.Second, func() bool {
+		stats := transport.Stats()
+		return stats.RejectedNestedResponses == 1 && stats.InFlightMessages == 0 && stats.InFlightControlResponses == 0
+	})
+
+	// The malformed response consumes only its matched pending call, not the
+	// session. Ordinary traffic remains usable.
+	response = doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`)
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("valid retry status = %d, want %d", response.StatusCode, http.StatusAccepted)
+	}
 }
 
 func TestHTTPServerTransportHostileUnmatchedResponsesCannotEscapeDecodeBound(t *testing.T) {

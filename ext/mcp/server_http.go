@@ -583,6 +583,29 @@ func (t *HTTPServerTransport) handlePost(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		defer controlLease.release()
+		if nestedResponsePayloadBytes(msg) > t.config.MaxNestedResponseBytes {
+			t.mu.Lock()
+			t.stats.RejectedNestedResponses++
+			t.stats.RejectedMessages++
+			t.mu.Unlock()
+			// Consume the pending call with a small synthetic error. Merely
+			// rejecting this POST would strand the server-side sampling or
+			// elicitation caller until its context timed out.
+			oversize := &jsonRPCMessage{
+				JSONRPC: "2.0",
+				ID:      msg.ID,
+				Error: &jsonRPCError{
+					Code:    -32001,
+					Message: "nested response exceeds configured byte limit",
+				},
+			}
+			if !session.server.deliverPendingResponse(oversize) {
+				http.Error(w, "unmatched JSON-RPC response", http.StatusBadRequest)
+				return
+			}
+			http.Error(w, "nested response too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		if !session.server.deliverPendingResponse(msg) {
 			http.Error(w, "unmatched JSON-RPC response", http.StatusBadRequest)
 			return
@@ -610,6 +633,17 @@ func (t *HTTPServerTransport) handlePost(w http.ResponseWriter, r *http.Request)
 	// really finishes. Notifications and nested responses release synchronously.
 	session.server.handleMessageWithCompletion(lease.ctx, msg, lease.release)
 	releaseHere = false
+}
+
+func nestedResponsePayloadBytes(msg *jsonRPCMessage) int64 {
+	if msg == nil {
+		return 0
+	}
+	total := int64(len(msg.Result))
+	if msg.Error != nil {
+		total += int64(len(msg.Error.Message)) + int64(len(msg.Error.Data))
+	}
+	return total
 }
 
 func (t *HTTPServerTransport) handleInitialize(w http.ResponseWriter, r *http.Request, msg *jsonRPCMessage, principal string, principalSet bool) {
@@ -712,6 +746,14 @@ func (t *HTTPServerTransport) writeDecodeError(w http.ResponseWriter, err error,
 		t.stats.RejectedMessages++
 		t.mu.Unlock()
 		http.Error(w, "request JSON structure too complex", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if errors.Is(err, errHTTPJSONInvalidUTF8) {
+		t.mu.Lock()
+		t.stats.RejectedInvalidUTF8++
+		t.stats.RejectedMessages++
+		t.mu.Unlock()
+		http.Error(w, "request JSON must be valid UTF-8", http.StatusBadRequest)
 		return
 	}
 	var timeout interface{ Timeout() bool }
