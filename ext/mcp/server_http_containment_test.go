@@ -230,9 +230,9 @@ func TestHTTPServerTransportFreshContextPreservesImmutableSessionValues(t *testi
 	transport.SetSessionContextFunc(func(r *http.Request) context.Context {
 		return context.WithValue(r.Context(), ownerKey{}, r.Header.Get("X-Owner"))
 	})
-	transport.SetSessionRequestContextFunc(func(_ context.Context, r *http.Request) context.Context {
+	transport.SetSessionRequestContextFunc(func(_ context.Context, r *http.Request) (context.Context, error) {
 		ctx := context.WithValue(r.Context(), ownerKey{}, "attempted-rewrite")
-		return context.WithValue(ctx, freshKey{}, r.Header.Get("X-Fresh"))
+		return context.WithValue(ctx, freshKey{}, r.Header.Get("X-Fresh")), nil
 	})
 
 	srv := httptest.NewServer(transport)
@@ -255,6 +255,203 @@ func TestHTTPServerTransportFreshContextPreservesImmutableSessionValues(t *testi
 		t.Fatal("tool handler did not run")
 	}
 	eventuallyContainment(t, time.Second, func() bool { return transport.Stats().InFlightMessages == 0 })
+}
+
+func TestHTTPServerTransportRequestContextHookErrorsReleaseEveryLeaseKind(t *testing.T) {
+	var hookCalls atomic.Int64
+	var handlerCalls atomic.Int64
+	server := NewServer()
+	server.AddTool(Tool{Name: "never", InputSchema: mustRawJSON([]byte(`{"type":"object"}`))}, func(context.Context, *RequestContext, map[string]any) (*ToolResult, error) {
+		handlerCalls.Add(1)
+		return textToolResult("unexpected"), nil
+	})
+	transport := newContainmentTransport(t, server, containmentHTTPConfig())
+	transport.SetSessionRequestContextFunc(func(context.Context, *http.Request) (context.Context, error) {
+		hookCalls.Add(1)
+		return nil, errors.New("current policy unavailable")
+	})
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	sessionID := initializeContainmentSession(t, srv.Client(), srv.URL, nil)
+	session, ok := transport.getSession(sessionID)
+	if !ok {
+		t.Fatal("initialized session missing")
+	}
+	session.mu.Lock()
+	lastActivity := session.lastActivity
+	session.mu.Unlock()
+
+	messageResponse := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"never","arguments":{}}}`)
+	io.Copy(io.Discard, messageResponse.Body)
+	messageResponse.Body.Close()
+	if messageResponse.StatusCode != http.StatusServiceUnavailable || messageResponse.Header.Get("Retry-After") != "2" {
+		t.Fatalf("message hook failure = %d retry=%q", messageResponse.StatusCode, messageResponse.Header.Get("Retry-After"))
+	}
+
+	pendingID, _, err := session.server.prepareCall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlResponse := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil,
+		`{"jsonrpc":"2.0","id":`+strconv.FormatInt(pendingID, 10)+`,"result":{}}`)
+	io.Copy(io.Discard, controlResponse.Body)
+	controlResponse.Body.Close()
+	if controlResponse.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("control hook failure status = %d", controlResponse.StatusCode)
+	}
+	if !session.server.hasPendingResponse(rawJSONID(pendingID)) {
+		t.Fatal("hook failure consumed pending nested response")
+	}
+	session.server.removePending(pendingID)
+
+	streamResponse := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodGet, sessionID, nil, "")
+	io.Copy(io.Discard, streamResponse.Body)
+	streamResponse.Body.Close()
+	if streamResponse.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("SSE hook failure status = %d", streamResponse.StatusCode)
+	}
+
+	if hookCalls.Load() != 3 || handlerCalls.Load() != 0 {
+		t.Fatalf("hook/handler calls = %d/%d, want 3/0", hookCalls.Load(), handlerCalls.Load())
+	}
+	transport.mu.Lock()
+	stats := transport.stats
+	decodeInFlight := transport.decodeInFlight
+	controlInFlight := transport.controlInFlight
+	transport.mu.Unlock()
+	session.mu.Lock()
+	operations := session.operations
+	messages := session.inFlightMessages
+	controls := session.controlInFlight
+	sseOpen := session.sseOpen
+	activityAfter := session.lastActivity
+	session.mu.Unlock()
+	if stats.InFlightMessages != 0 || decodeInFlight != 0 || controlInFlight != 0 || operations != 0 || messages != 0 || controls != 0 || sseOpen {
+		t.Fatalf("hook failures leaked counters: stats=%+v decode=%d control=%d ops=%d messages=%d controls=%d sse=%v",
+			stats, decodeInFlight, controlInFlight, operations, messages, controls, sseOpen)
+	}
+	if !activityAfter.Equal(lastActivity) {
+		t.Fatalf("rejected hook extended idle activity: before=%v after=%v", lastActivity, activityAfter)
+	}
+}
+
+func TestHTTPServerTransportSaturatedMessageDoesNotCallRequestContextHook(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	server := NewServer()
+	server.AddTool(Tool{Name: "block", InputSchema: mustRawJSON([]byte(`{"type":"object"}`))}, func(ctx context.Context, _ *RequestContext, _ map[string]any) (*ToolResult, error) {
+		started <- struct{}{}
+		select {
+		case <-release:
+			return textToolResult("done"), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	})
+	config := containmentHTTPConfig()
+	config.MaxConcurrentMessages = 1
+	config.MaxConcurrentMessagesPerSession = 1
+	transport := newContainmentTransport(t, server, config)
+	var hookCalls atomic.Int64
+	transport.SetSessionRequestContextFunc(func(sessionCtx context.Context, _ *http.Request) (context.Context, error) {
+		hookCalls.Add(1)
+		return sessionCtx, nil
+	})
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	sessionID := initializeContainmentSession(t, srv.Client(), srv.URL, nil)
+	call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"block","arguments":{}}}`
+	response := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, call)
+	response.Body.Close()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first handler did not start")
+	}
+	if hookCalls.Load() != 1 {
+		t.Fatalf("first hook calls = %d, want 1", hookCalls.Load())
+	}
+
+	response = doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, call)
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("saturated message status = %d, want 429", response.StatusCode)
+	}
+	if hookCalls.Load() != 1 {
+		t.Fatalf("saturated message called policy hook; calls=%d", hookCalls.Load())
+	}
+	close(release)
+	eventuallyContainment(t, time.Second, func() bool { return transport.Stats().InFlightMessages == 0 })
+}
+
+func TestHTTPServerTransportRevokedBetweenAuthorizationAndPolicyHookNeverDispatches(t *testing.T) {
+	authorizerEntered := make(chan struct{}, 1)
+	continueAuthorization := make(chan struct{})
+	var revoked atomic.Bool
+	var hookCalls atomic.Int64
+	var handlerCalls atomic.Int64
+	server := NewServer()
+	server.AddTool(Tool{Name: "never", InputSchema: mustRawJSON([]byte(`{"type":"object"}`))}, func(context.Context, *RequestContext, map[string]any) (*ToolResult, error) {
+		handlerCalls.Add(1)
+		return textToolResult("unexpected"), nil
+	})
+	transport := newContainmentTransport(t, server, containmentHTTPConfig())
+	transport.SetSessionAuthorizer(func(context.Context, *http.Request) (bool, error) {
+		authorizerEntered <- struct{}{}
+		<-continueAuthorization
+		return true, nil
+	})
+	transport.SetSessionRequestContextFunc(func(sessionCtx context.Context, _ *http.Request) (context.Context, error) {
+		hookCalls.Add(1)
+		if revoked.Load() {
+			return nil, errors.New("token revoked after authorization")
+		}
+		return sessionCtx, nil
+	})
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	sessionID := initializeContainmentSession(t, srv.Client(), srv.URL, nil)
+
+	responseCh := make(chan *http.Response, 1)
+	errorCh := make(chan error, 1)
+	go func() {
+		request, _ := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(
+			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"never","arguments":{}}}`))
+		request.Header.Set("Mcp-Session-Id", sessionID)
+		response, err := srv.Client().Do(request)
+		if err != nil {
+			errorCh <- err
+			return
+		}
+		responseCh <- response
+	}()
+	select {
+	case <-authorizerEntered:
+	case <-time.After(time.Second):
+		t.Fatal("authorizer did not start")
+	}
+	revoked.Store(true)
+	close(continueAuthorization)
+	select {
+	case err := <-errorCh:
+		t.Fatal(err)
+	case response := <-responseCh:
+		io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("revoked policy status = %d, want 503", response.StatusCode)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("revoked request did not finish")
+	}
+	if hookCalls.Load() != 1 || handlerCalls.Load() != 0 {
+		t.Fatalf("hook/handler calls = %d/%d, want 1/0", hookCalls.Load(), handlerCalls.Load())
+	}
+	if stats := transport.Stats(); stats.InFlightMessages != 0 {
+		t.Fatalf("revoked hook leaked handler lease: %+v", stats)
+	}
 }
 
 func TestHTTPServerTransportClosePrincipalRevokesActiveAndProvisionalOperations(t *testing.T) {

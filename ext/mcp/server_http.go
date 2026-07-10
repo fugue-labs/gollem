@@ -27,6 +27,7 @@ var (
 	errHTTPMessageLimit    = errors.New("mcp: HTTP message concurrency exhausted")
 	errHTTPSSEAlreadyOpen  = errors.New("mcp: HTTP session already has an SSE stream")
 	errHTTPOutboxOverflow  = errors.New("mcp: HTTP session outbox capacity exhausted")
+	errHTTPRequestContext  = errors.New("mcp: HTTP request context refresh failed")
 )
 
 // HTTPSessionAuthorizer authorizes a follow-up HTTP request against the
@@ -57,10 +58,11 @@ type HTTPSessionPrincipalFunc func(r *http.Request) (string, error)
 type HTTPSessionPrincipalValidator func(ctx context.Context, principal string) (bool, error)
 
 // HTTPSessionRequestContextFunc derives fresh request-scoped values for a
-// follow-up operation. The transport always preserves the initializing
-// session context with value precedence and independently binds cancellation
-// to the current HTTP request and session lifetime.
-type HTTPSessionRequestContextFunc func(sessionCtx context.Context, r *http.Request) context.Context
+// follow-up operation. The transport calls it only after bounded admission,
+// propagates errors fail-closed before dispatch, and always preserves the
+// initializing session context with value precedence. Cancellation remains
+// independently bound to the current HTTP request and session lifetime.
+type HTTPSessionRequestContextFunc func(sessionCtx context.Context, r *http.Request) (context.Context, error)
 
 // HTTPServerTransport serves MCP over the streamable HTTP transport. Each MCP
 // session gets its own cloned Server instance and bounded resource accounting.
@@ -140,7 +142,8 @@ func (t *HTTPServerTransport) SetSessionPrincipalValidator(f HTTPSessionPrincipa
 
 // SetSessionRequestContextFunc installs the fresh per-request context hook.
 // The returned context may carry current policy/model/request values; session
-// values captured at initialize remain immutable and take precedence.
+// values captured at initialize remain immutable and take precedence. An error
+// rejects the admitted operation with no dispatch and releases every lease.
 func (t *HTTPServerTransport) SetSessionRequestContextFunc(f HTTPSessionRequestContextFunc) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -568,6 +571,9 @@ func (t *HTTPServerTransport) writeSessionCreationError(w http.ResponseWriter, e
 
 func (t *HTTPServerTransport) writeLeaseError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, errHTTPRequestContext):
+		t.setRetryAfter(w)
+		http.Error(w, "request policy unavailable", http.StatusServiceUnavailable)
 	case errors.Is(err, errHTTPMessageLimit):
 		t.setRetryAfter(w)
 		http.Error(w, "message capacity exhausted", http.StatusTooManyRequests)
@@ -802,24 +808,18 @@ const (
 )
 
 type httpSessionLease struct {
-	once      sync.Once
-	transport *HTTPServerTransport
-	session   *httpServerSession
-	kind      leaseKind
-	ctx       context.Context
-	cancel    context.CancelFunc
-	stopFresh func() bool
-	stopHTTP  func() bool
+	once          sync.Once
+	transport     *HTTPServerTransport
+	session       *httpServerSession
+	kind          leaseKind
+	ctx           context.Context
+	cancel        context.CancelFunc
+	stopFresh     func() bool
+	stopHTTP      func() bool
+	touchActivity bool
 }
 
 func (t *HTTPServerTransport) acquireSessionLease(session *httpServerSession, r *http.Request, hook HTTPSessionRequestContextFunc, kind leaseKind) (*httpSessionLease, error) {
-	fresh := r.Context()
-	if hook != nil {
-		if derived := hook(session.ctx, r); derived != nil {
-			fresh = derived
-		}
-	}
-
 	var expired bool
 	t.mu.Lock()
 	session.mu.Lock()
@@ -866,7 +866,6 @@ func (t *HTTPServerTransport) acquireSessionLease(session *httpServerSession, r 
 			session.controlInFlight++
 		}
 		session.operations++
-		session.lastActivity = time.Now()
 	}
 	session.mu.Unlock()
 	t.mu.Unlock()
@@ -874,6 +873,31 @@ func (t *HTTPServerTransport) acquireSessionLease(session *httpServerSession, r 
 		session.shutdown()
 		return nil, errHTTPSessionInactive
 	}
+
+	// Admission is deliberately complete before current-policy work. A
+	// saturated/revoked/closing session never reaches a host database hook.
+	lease := &httpSessionLease{
+		transport: t,
+		session:   session,
+		kind:      kind,
+	}
+	fresh := r.Context()
+	if hook != nil {
+		derived, err := hook(session.ctx, r)
+		if err != nil {
+			lease.release()
+			return nil, fmt.Errorf("%w: %w", errHTTPRequestContext, err)
+		}
+		if derived != nil {
+			fresh = derived
+		}
+	}
+	// Only an admitted request whose fresh-policy hook succeeded counts as
+	// activity. Repeated revoked/backend-error attempts cannot extend idle TTL.
+	session.mu.Lock()
+	session.lastActivity = time.Now()
+	session.mu.Unlock()
+	lease.touchActivity = true
 
 	// POST handlers are asynchronous by protocol: the HTTP request returns 202
 	// before the result is delivered over SSE. Preserve fresh values but detach
@@ -891,13 +915,8 @@ func (t *HTTPServerTransport) acquireSessionLease(session *httpServerSession, r 
 		http:    httpValues,
 	}
 	operationCtx, cancel := context.WithCancel(base)
-	lease := &httpSessionLease{
-		transport: t,
-		session:   session,
-		kind:      kind,
-		ctx:       operationCtx,
-		cancel:    cancel,
-	}
+	lease.ctx = operationCtx
+	lease.cancel = cancel
 	if kind == leaseSSE || kind == leaseControl {
 		lease.stopFresh = context.AfterFunc(fresh, cancel)
 		lease.stopHTTP = context.AfterFunc(r.Context(), cancel)
@@ -910,7 +929,9 @@ func (l *httpSessionLease) release() {
 		return
 	}
 	l.once.Do(func() {
-		l.cancel()
+		if l.cancel != nil {
+			l.cancel()
+		}
 		if l.stopFresh != nil {
 			l.stopFresh()
 		}
@@ -948,7 +969,9 @@ func (l *httpSessionLease) release() {
 			session.controlInFlight--
 			t.controlInFlight--
 		}
-		session.lastActivity = time.Now()
+		if l.touchActivity {
+			session.lastActivity = time.Now()
+		}
 		session.mu.Unlock()
 		t.mu.Unlock()
 	})
