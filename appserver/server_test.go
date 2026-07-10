@@ -2,6 +2,7 @@ package appserver
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -159,6 +160,47 @@ func TestServerThreadStoreHandlers(t *testing.T) {
 	}
 	threadEvents = server.DrainNotifications()
 	assertNotificationMethods(t, threadEvents, "thread/status/changed", "thread/archived")
+}
+
+func TestServerThreadApproveGuardianDeniedActionDeferredStub(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "threads.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	thread, err := st.CreateThread(ctx, store.CreateThreadRequest{Title: "Guardian"})
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	server := readyServer(WithStore(st))
+
+	resp := server.HandleRequest(ctx, request("thread/approveGuardianDeniedAction", map[string]any{
+		"threadId": thread.ID,
+		"event": map[string]any{
+			"type": "guardian_assessment",
+			"id":   "guardian-1",
+		},
+	}))
+	if resp.Error == nil || resp.Error.Code != protocol.CodeMethodUnavailable {
+		t.Fatalf("guardian approval error = %#v, want method unavailable", resp.Error)
+	}
+	var data protocol.UnavailableData
+	if err := json.Unmarshal(resp.Error.Data, &data); err != nil {
+		t.Fatalf("decode unavailable data: %v", err)
+	}
+	if data.Method != "thread/approveGuardianDeniedAction" || data.Surface != protocol.SurfaceClientRequest || data.Status != protocol.MethodDeferredStub {
+		t.Fatalf("unavailable data = %+v", data)
+	}
+	if !strings.Contains(data.Reason, "Guardian denied-action replay is not implemented") {
+		t.Fatalf("unavailable reason = %q", data.Reason)
+	}
+
+	missingEvent := server.HandleRequest(ctx, request("thread/approveGuardianDeniedAction", map[string]any{"threadId": thread.ID}))
+	if missingEvent.Error == nil || missingEvent.Error.Code != protocol.CodeInvalidParams {
+		t.Fatalf("missing event error = %#v, want invalid params", missingEvent.Error)
+	}
 }
 
 func TestServerThreadInjectItemsHandler(t *testing.T) {
@@ -354,6 +396,501 @@ func TestServerThreadDiscoveryHandlers(t *testing.T) {
 	emptySearchResp := server.HandleRequest(ctx, request("thread/search", map[string]any{"searchTerm": "  "}))
 	if emptySearchResp.Error == nil || emptySearchResp.Error.Code != protocol.CodeInvalidParams {
 		t.Fatalf("empty search error = %#v", emptySearchResp.Error)
+	}
+}
+
+func TestServerThreadUnsubscribeHandler(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "threads.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	thread, err := st.CreateThread(ctx, store.CreateThreadRequest{Title: "Subscribed"})
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	neverLoaded, err := st.CreateThread(ctx, store.CreateThreadRequest{Title: "Never loaded"})
+	if err != nil {
+		t.Fatalf("CreateThread never loaded: %v", err)
+	}
+	deleted, err := st.CreateThread(ctx, store.CreateThreadRequest{Title: "Deleted"})
+	if err != nil {
+		t.Fatalf("CreateThread deleted: %v", err)
+	}
+	if _, err := st.DeleteThread(ctx, deleted.ID); err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+
+	server := readyServer(WithStore(st), WithThreadIdleUnloadAfter(500*time.Millisecond))
+	readResp := server.HandleRequest(ctx, request("thread/read", map[string]any{"threadId": thread.ID, "includeTurns": false, "includeItems": false}))
+	if readResp.Error != nil {
+		t.Fatalf("thread/read error: %v", readResp.Error)
+	}
+
+	firstResp := server.HandleRequest(ctx, request("thread/unsubscribe", map[string]any{"threadId": thread.ID}))
+	if firstResp.Error != nil {
+		t.Fatalf("thread/unsubscribe error: %v", firstResp.Error)
+	}
+	var first threadUnsubscribeResponse
+	decodeResult(t, firstResp, &first)
+	if first.Status != "unsubscribed" {
+		t.Fatalf("first unsubscribe = %#v", first)
+	}
+	loadedResp := server.HandleRequest(ctx, request("thread/loaded/list", nil))
+	if loadedResp.Error != nil {
+		t.Fatalf("thread/loaded/list error: %v", loadedResp.Error)
+	}
+	var loaded threadLoadedListResult
+	decodeResult(t, loadedResp, &loaded)
+	if !sameStringSet(loaded.Data, []string{thread.ID}) {
+		t.Fatalf("loaded after unsubscribe = %#v", loaded.Data)
+	}
+	if events := server.DrainNotifications(); len(events) != 0 {
+		t.Fatalf("unsubscribe emitted immediate notifications: %#v", events)
+	}
+
+	secondResp := server.HandleRequest(ctx, request("thread/unsubscribe", map[string]any{"threadId": thread.ID}))
+	if secondResp.Error != nil {
+		t.Fatalf("second thread/unsubscribe error: %v", secondResp.Error)
+	}
+	var second threadUnsubscribeResponse
+	decodeResult(t, secondResp, &second)
+	if second.Status != "notSubscribed" {
+		t.Fatalf("second unsubscribe = %#v", second)
+	}
+
+	readResp = server.HandleRequest(ctx, request("thread/read", map[string]any{"threadId": thread.ID, "includeTurns": false, "includeItems": false}))
+	if readResp.Error != nil {
+		t.Fatalf("thread/read resubscribe error: %v", readResp.Error)
+	}
+	time.Sleep(600 * time.Millisecond)
+	if events := server.DrainNotifications(); len(events) != 0 {
+		t.Fatalf("resubscribed thread emitted idle close: %#v", events)
+	}
+
+	finalResp := server.HandleRequest(ctx, request("thread/unsubscribe", map[string]any{"threadId": thread.ID}))
+	if finalResp.Error != nil {
+		t.Fatalf("final thread/unsubscribe error: %v", finalResp.Error)
+	}
+	var final threadUnsubscribeResponse
+	decodeResult(t, finalResp, &final)
+	if final.Status != "unsubscribed" {
+		t.Fatalf("final unsubscribe = %#v", final)
+	}
+	events := waitForNotificationMethods(t, server, "thread/closed", "thread/status/changed")
+	var closed threadClosedNotificationParams
+	if err := json.Unmarshal(events[0].Params, &closed); err != nil {
+		t.Fatalf("decode closed notice: %v", err)
+	}
+	if closed.ThreadID != thread.ID {
+		t.Fatalf("closed notice = %#v", closed)
+	}
+	var notLoaded threadNotLoadedStatusNotificationParams
+	if err := json.Unmarshal(events[1].Params, &notLoaded); err != nil {
+		t.Fatalf("decode status notice: %v", err)
+	}
+	if notLoaded.ThreadID != thread.ID || notLoaded.Status["type"] != "notLoaded" {
+		t.Fatalf("notLoaded status notice = %#v", notLoaded)
+	}
+
+	loadedResp = server.HandleRequest(ctx, request("thread/loaded/list", nil))
+	if loadedResp.Error != nil {
+		t.Fatalf("thread/loaded/list after close error: %v", loadedResp.Error)
+	}
+	loaded = threadLoadedListResult{}
+	decodeResult(t, loadedResp, &loaded)
+	if len(loaded.Data) != 0 {
+		t.Fatalf("loaded after idle close = %#v", loaded.Data)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		threadID string
+	}{
+		{name: "closed", threadID: thread.ID},
+		{name: "never-loaded", threadID: neverLoaded.ID},
+		{name: "deleted", threadID: deleted.ID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := server.HandleRequest(ctx, request("thread/unsubscribe", map[string]any{"threadId": tc.threadID}))
+			if resp.Error != nil {
+				t.Fatalf("thread/unsubscribe error: %v", resp.Error)
+			}
+			var result threadUnsubscribeResponse
+			decodeResult(t, resp, &result)
+			if result.Status != "notLoaded" {
+				t.Fatalf("unsubscribe %s = %#v, want notLoaded", tc.name, result)
+			}
+		})
+	}
+
+	missingIDResp := server.HandleRequest(ctx, request("thread/unsubscribe", map[string]any{"threadId": ""}))
+	if missingIDResp.Error == nil || missingIDResp.Error.Code != protocol.CodeInvalidParams {
+		t.Fatalf("missing threadId error = %#v", missingIDResp.Error)
+	}
+}
+
+func TestServerThreadRollbackHandler(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "threads.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	thread, err := st.CreateThread(ctx, store.CreateThreadRequest{Title: "Rollback Title"})
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	firstTurn, err := st.CreateTurn(ctx, store.CreateTurnRequest{ThreadID: thread.ID, Input: json.RawMessage(`{"prompt":"first"}`)})
+	if err != nil {
+		t.Fatalf("CreateTurn first: %v", err)
+	}
+	if _, err := st.AppendItem(ctx, store.AppendItemRequest{ThreadID: thread.ID, TurnID: firstTurn.ID, Kind: "message", Payload: json.RawMessage(`{"role":"user","text":"first"}`)}); err != nil {
+		t.Fatalf("AppendItem first: %v", err)
+	}
+	secondTurn, err := st.CreateTurn(ctx, store.CreateTurnRequest{ThreadID: thread.ID, Input: json.RawMessage(`{"prompt":"second"}`)})
+	if err != nil {
+		t.Fatalf("CreateTurn second: %v", err)
+	}
+	if _, err := st.AppendItem(ctx, store.AppendItemRequest{ThreadID: thread.ID, TurnID: secondTurn.ID, Kind: "message", Payload: json.RawMessage(`{"role":"user","text":"second"}`)}); err != nil {
+		t.Fatalf("AppendItem second: %v", err)
+	}
+
+	server := readyServer(WithStore(st))
+	rollbackResp := server.HandleRequest(ctx, request("thread/rollback", map[string]any{
+		"threadId": thread.ID,
+		"numTurns": 1,
+	}))
+	if rollbackResp.Error != nil {
+		t.Fatalf("thread/rollback error: %v", rollbackResp.Error)
+	}
+	events := server.DrainNotifications()
+	assertNotificationMethods(t, events, "deprecationNotice")
+	var notice deprecationNoticeNotificationParams
+	if err := json.Unmarshal(events[0].Params, &notice); err != nil {
+		t.Fatalf("decode deprecation notice: %v", err)
+	}
+	if notice.Summary != threadRollbackDeprecationSummary || notice.Details != nil {
+		t.Fatalf("deprecation notice = %#v", notice)
+	}
+	var rollback struct {
+		Thread struct {
+			ID    string        `json:"id"`
+			Name  *string       `json:"name"`
+			Turns []*store.Turn `json:"turns"`
+		} `json:"thread"`
+	}
+	decodeResult(t, rollbackResp, &rollback)
+	if rollback.Thread.ID != thread.ID || rollback.Thread.Name == nil || *rollback.Thread.Name != "Rollback Title" {
+		t.Fatalf("rollback thread identity = %#v", rollback.Thread)
+	}
+	if len(rollback.Thread.Turns) != 1 || rollback.Thread.Turns[0].ID != firstTurn.ID {
+		t.Fatalf("rollback turns = %#v", rollback.Thread.Turns)
+	}
+	remainingTurns, err := st.ListTurns(ctx, store.TurnFilter{ThreadID: thread.ID})
+	if err != nil {
+		t.Fatalf("ListTurns: %v", err)
+	}
+	if len(remainingTurns) != 1 || remainingTurns[0].ID != firstTurn.ID {
+		t.Fatalf("remaining turns = %#v", remainingTurns)
+	}
+	remainingItems, err := st.ListItems(ctx, store.ItemFilter{ThreadID: thread.ID})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if len(remainingItems) != 2 || remainingItems[0].TurnID != firstTurn.ID || remainingItems[1].Kind != "thread_rollback" {
+		t.Fatalf("remaining items = %#v", remainingItems)
+	}
+	loadedResp := server.HandleRequest(ctx, request("thread/loaded/list", nil))
+	if loadedResp.Error != nil {
+		t.Fatalf("thread/loaded/list error: %v", loadedResp.Error)
+	}
+	var loaded threadLoadedListResult
+	decodeResult(t, loadedResp, &loaded)
+	if !sameStringSet(loaded.Data, []string{thread.ID}) {
+		t.Fatalf("loaded after rollback = %#v", loaded.Data)
+	}
+
+	invalidResp := server.HandleRequest(ctx, request("thread/rollback", map[string]any{
+		"threadId": thread.ID,
+		"numTurns": 0,
+	}))
+	if invalidResp.Error == nil || invalidResp.Error.Code != protocol.CodeInvalidParams {
+		t.Fatalf("invalid rollback error = %#v", invalidResp.Error)
+	}
+
+	tuiThread, err := st.CreateThread(ctx, store.CreateThreadRequest{Title: "TUI"})
+	if err != nil {
+		t.Fatalf("CreateThread tui: %v", err)
+	}
+	if _, err := st.CreateTurn(ctx, store.CreateTurnRequest{ThreadID: tuiThread.ID, Input: json.RawMessage(`{"prompt":"tui"}`)}); err != nil {
+		t.Fatalf("CreateTurn tui: %v", err)
+	}
+	tuiServer := NewServer(WithStore(st))
+	_ = tuiServer.HandleRequest(ctx, request("initialize", protocol.InitializeParams{ClientInfo: protocol.ImplementationInfo{Name: "codex-tui"}}))
+	if err := tuiServer.HandleNotification(ctx, protocol.Notification{Method: "initialized"}); err != nil {
+		t.Fatalf("initialized tui: %v", err)
+	}
+	tuiResp := tuiServer.HandleRequest(ctx, request("thread/rollback", map[string]any{
+		"threadId": tuiThread.ID,
+		"numTurns": 1,
+	}))
+	if tuiResp.Error != nil {
+		t.Fatalf("thread/rollback tui error: %v", tuiResp.Error)
+	}
+	if events := tuiServer.DrainNotifications(); len(events) != 0 {
+		t.Fatalf("codex-tui rollback emitted deprecation notice: %#v", events)
+	}
+}
+
+func TestServerThreadCompactStartHandler(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "threads.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	thread, err := st.CreateThread(ctx, store.CreateThreadRequest{Title: "Compact"})
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	turn, err := st.CreateTurn(ctx, store.CreateTurnRequest{ThreadID: thread.ID, Input: json.RawMessage(`{"prompt":"old"}`)})
+	if err != nil {
+		t.Fatalf("CreateTurn: %v", err)
+	}
+	if _, err := st.AppendItem(ctx, store.AppendItemRequest{ThreadID: thread.ID, TurnID: turn.ID, Kind: "message", Payload: json.RawMessage(`{"role":"user","text":"old prompt"}`)}); err != nil {
+		t.Fatalf("AppendItem user: %v", err)
+	}
+	if _, err := st.AppendItem(ctx, store.AppendItemRequest{ThreadID: thread.ID, TurnID: turn.ID, Kind: "message", Payload: json.RawMessage(`{"role":"assistant","text":"old answer"}`)}); err != nil {
+		t.Fatalf("AppendItem assistant: %v", err)
+	}
+
+	server := readyServer(WithStore(st))
+	resp := server.HandleRequest(ctx, request("thread/compact/start", map[string]any{"threadId": thread.ID}))
+	if resp.Error != nil {
+		t.Fatalf("thread/compact/start error: %v", resp.Error)
+	}
+	var result map[string]any
+	decodeResult(t, resp, &result)
+	if len(result) != 0 {
+		t.Fatalf("compact result = %#v, want empty object", result)
+	}
+	events := server.DrainNotifications()
+	assertNotificationMethods(t, events, "turn/started", "item/started", "item/completed", "turn/completed", "thread/compacted")
+	var compacted contextCompactedNotificationParams
+	if err := json.Unmarshal(events[4].Params, &compacted); err != nil {
+		t.Fatalf("decode compacted notification: %v", err)
+	}
+	if compacted.ThreadID != thread.ID || compacted.TurnID == "" {
+		t.Fatalf("compacted notification = %#v", compacted)
+	}
+	var startedItem runtimeItemNotificationParams
+	if err := json.Unmarshal(events[1].Params, &startedItem); err != nil {
+		t.Fatalf("decode item/started: %v", err)
+	}
+	if startedItem.ItemID == "" || startedItem.Item == nil || startedItem.Item.Kind != threadCompactionItemKind || startedItem.Item.Status != "running" {
+		t.Fatalf("item/started params = %#v", startedItem)
+	}
+	items, err := st.ListItems(ctx, store.ItemFilter{ThreadID: thread.ID})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if len(items) != 3 || items[2].Kind != threadCompactionItemKind || items[2].Status != "completed" {
+		t.Fatalf("items after compact = %#v", items)
+	}
+	var payload threadCompactionPayload
+	if err := json.Unmarshal(items[2].Payload, &payload); err != nil {
+		t.Fatalf("decode compact payload: %v", err)
+	}
+	if payload.Type != threadCompactionItemKind || !strings.Contains(payload.Summary, "old prompt") || !strings.Contains(payload.Summary, "old answer") {
+		t.Fatalf("compact payload = %#v", payload)
+	}
+	turns, err := st.ListTurns(ctx, store.TurnFilter{ThreadID: thread.ID})
+	if err != nil {
+		t.Fatalf("ListTurns: %v", err)
+	}
+	if len(turns) != 2 || turns[1].ID != compacted.TurnID || turns[1].Status != store.TurnCompleted {
+		t.Fatalf("turns after compact = %#v", turns)
+	}
+	loadedResp := server.HandleRequest(ctx, request("thread/loaded/list", nil))
+	if loadedResp.Error != nil {
+		t.Fatalf("thread/loaded/list error: %v", loadedResp.Error)
+	}
+	var loaded threadLoadedListResult
+	decodeResult(t, loadedResp, &loaded)
+	if !sameStringSet(loaded.Data, []string{thread.ID}) {
+		t.Fatalf("loaded after compact = %#v", loaded.Data)
+	}
+
+	invalidResp := server.HandleRequest(ctx, request("thread/compact/start", map[string]any{"threadId": ""}))
+	if invalidResp.Error == nil || invalidResp.Error.Code != protocol.CodeInvalidParams {
+		t.Fatalf("invalid compact error = %#v", invalidResp.Error)
+	}
+}
+
+func TestServerThreadShellCommandHandler(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	st, err := store.NewSQLiteStore(filepath.Join(root, "threads.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	thread, err := st.CreateThread(ctx, store.CreateThreadRequest{Title: "Shell", Workspace: "."})
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	var server *Server
+	processSvc, err := toolprocess.NewService(root,
+		toolprocess.WithOutputSink(func(ev toolprocess.OutputEvent) {
+			server.PublishProcessOutput(ev)
+		}),
+		toolprocess.WithExitSink(func(ev toolprocess.ExitEvent) {
+			server.PublishProcessExited(ev)
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server = readyServer(WithStore(st), WithProcess(processSvc))
+
+	resp := server.HandleRequest(ctx, request("thread/shellCommand", map[string]any{
+		"threadId": thread.ID,
+		"command":  "sleep 0.05; printf shell-output",
+	}))
+	if resp.Error != nil {
+		t.Fatalf("thread/shellCommand error: %v", resp.Error)
+	}
+	var result map[string]any
+	decodeResult(t, resp, &result)
+	if len(result) != 0 {
+		t.Fatalf("shell command result = %#v, want empty object", result)
+	}
+
+	events := waitForNotificationSet(t, server,
+		"turn/started",
+		"item/started",
+		"process/outputDelta",
+		"item/commandExecution/outputDelta",
+		"process/exited",
+		"item/completed",
+		"turn/completed",
+	)
+	var delta commandExecutionOutputDeltaNotificationParams
+	for _, event := range events {
+		if event.Method != "item/commandExecution/outputDelta" {
+			continue
+		}
+		if err := json.Unmarshal(event.Params, &delta); err != nil {
+			t.Fatalf("decode command delta: %v", err)
+		}
+	}
+	if delta.ThreadID != thread.ID || delta.TurnID == "" || delta.ItemID == "" || delta.Delta != "shell-output" {
+		t.Fatalf("command delta = %#v", delta)
+	}
+	items, err := st.ListItems(ctx, store.ItemFilter{ThreadID: thread.ID})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if len(items) != 1 || items[0].Kind != threadShellCommandItemKind || items[0].Status != commandExecutionStatusCompleted {
+		t.Fatalf("shell command items = %#v", items)
+	}
+	var payload threadShellCommandPayload
+	if err := json.Unmarshal(items[0].Payload, &payload); err != nil {
+		t.Fatalf("decode shell payload: %v", err)
+	}
+	if payload.Command != "sleep 0.05; printf shell-output" || payload.Source != commandExecutionSourceUserShell || payload.AggregatedOutput == nil || *payload.AggregatedOutput != "shell-output" || payload.ExitCode == nil || *payload.ExitCode != 0 || payload.ProcessID == nil {
+		t.Fatalf("shell payload = %#v", payload)
+	}
+	turns, err := st.ListTurns(ctx, store.TurnFilter{ThreadID: thread.ID})
+	if err != nil {
+		t.Fatalf("ListTurns: %v", err)
+	}
+	if len(turns) != 1 || turns[0].Status != store.TurnCompleted {
+		t.Fatalf("shell command turns = %#v", turns)
+	}
+
+	invalidResp := server.HandleRequest(ctx, request("thread/shellCommand", map[string]any{"threadId": thread.ID, "command": "   "}))
+	if invalidResp.Error == nil || invalidResp.Error.Code != protocol.CodeInvalidParams {
+		t.Fatalf("invalid shell command error = %#v", invalidResp.Error)
+	}
+}
+
+func TestServerThreadShellCommandPublishesTurnDiffUpdated(t *testing.T) {
+	ctx := context.Background()
+	repo := initRepo(t)
+	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "threads.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	thread, err := st.CreateThread(ctx, store.CreateThreadRequest{Title: "Shell diff", Workspace: repo})
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	gitSvc, err := toolgit.NewService(repo, toolgit.WithWorktreeRoot(filepath.Join(t.TempDir(), "worktrees")))
+	if err != nil {
+		t.Fatalf("NewService git: %v", err)
+	}
+	var server *Server
+	processSvc, err := toolprocess.NewService(repo,
+		toolprocess.WithOutputSink(func(ev toolprocess.OutputEvent) {
+			server.PublishProcessOutput(ev)
+		}),
+		toolprocess.WithExitSink(func(ev toolprocess.ExitEvent) {
+			server.PublishProcessExited(ev)
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewService process: %v", err)
+	}
+	server = readyServer(WithStore(st), WithProcess(processSvc), WithGit(gitSvc))
+
+	resp := server.HandleRequest(ctx, request("thread/shellCommand", map[string]any{
+		"threadId": thread.ID,
+		"command":  "printf 'changed\\n' > README.md",
+	}))
+	if resp.Error != nil {
+		t.Fatalf("thread/shellCommand error: %v", resp.Error)
+	}
+	events := waitForNotificationSet(t, server,
+		"process/exited",
+		"turn/diff/updated",
+		"turn/completed",
+	)
+	var diffNotice turnDiffUpdatedNotificationParams
+	for _, event := range events {
+		if event.Method != "turn/diff/updated" {
+			continue
+		}
+		if err := json.Unmarshal(event.Params, &diffNotice); err != nil {
+			t.Fatalf("decode turn/diff/updated: %v", err)
+		}
+	}
+	if diffNotice.ThreadID != thread.ID || diffNotice.TurnID == "" {
+		t.Fatalf("turn diff ids = %#v", diffNotice)
+	}
+	if !strings.Contains(diffNotice.Diff, "README.md") || !strings.Contains(diffNotice.Diff, "-hello") || !strings.Contains(diffNotice.Diff, "+changed") {
+		t.Fatalf("turn diff = %q, want README.md hello->changed patch", diffNotice.Diff)
+	}
+
+	resp = server.HandleRequest(ctx, request("thread/shellCommand", map[string]any{
+		"threadId": thread.ID,
+		"command":  "true",
+	}))
+	if resp.Error != nil {
+		t.Fatalf("thread/shellCommand no-op error: %v", resp.Error)
+	}
+	events = waitForNotificationSet(t, server, "process/exited", "turn/completed")
+	for _, event := range events {
+		if event.Method == "turn/diff/updated" {
+			t.Fatalf("unexpected turn/diff/updated for unchanged git diff: %#v", event)
+		}
 	}
 }
 
@@ -1356,6 +1893,107 @@ func TestServerProcessHandlers(t *testing.T) {
 	}
 }
 
+func TestServerCommandExecPublishesCommandOutputDelta(t *testing.T) {
+	ctx := context.Background()
+	var server *Server
+	processSvc, err := toolprocess.NewService(t.TempDir(),
+		toolprocess.WithOutputSink(func(ev toolprocess.OutputEvent) {
+			server.PublishProcessOutput(ev)
+		}),
+		toolprocess.WithExitSink(func(ev toolprocess.ExitEvent) {
+			server.PublishProcessExited(ev)
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server = readyServer(WithProcess(processSvc))
+
+	startResp := server.HandleRequest(ctx, request("command/exec", map[string]any{
+		"processId": "client-command-1",
+		"command":   "cat",
+	}))
+	if startResp.Error != nil {
+		t.Fatalf("command/exec start error: %v", startResp.Error)
+	}
+	var started struct {
+		Process processSnapshotResult `json:"process"`
+	}
+	decodeResult(t, startResp, &started)
+	if started.Process.ID != "client-command-1" {
+		t.Fatalf("command/exec process id = %q, want client-command-1", started.Process.ID)
+	}
+
+	duplicateResp := server.HandleRequest(ctx, request("command/exec", map[string]any{
+		"processId": "client-command-1",
+		"command":   "printf should-not-run",
+	}))
+	if duplicateResp.Error == nil || duplicateResp.Error.Code != protocol.CodeInvalidParams {
+		t.Fatalf("duplicate command/exec error = %#v, want invalid params", duplicateResp.Error)
+	}
+
+	writeResp := server.HandleRequest(ctx, request("command/exec/write", map[string]any{
+		"processId": "client-command-1",
+		"data":      "cmd-output\n",
+		"close":     true,
+	}))
+	if writeResp.Error != nil {
+		t.Fatalf("command/exec/write error: %v", writeResp.Error)
+	}
+
+	events := waitForNotificationSet(t, server, "process/outputDelta", "command/exec/outputDelta", "process/exited")
+	var delta commandExecOutputDeltaNotificationParams
+	for _, event := range events {
+		if event.Method != "command/exec/outputDelta" {
+			continue
+		}
+		if err := json.Unmarshal(event.Params, &delta); err != nil {
+			t.Fatalf("decode command exec delta: %v", err)
+		}
+	}
+	decoded, err := base64.StdEncoding.DecodeString(delta.DeltaBase64)
+	if err != nil {
+		t.Fatalf("decode delta base64: %v", err)
+	}
+	if delta.ProcessID != "client-command-1" || delta.Stream != string(toolprocess.StreamStdout) || string(decoded) != "cmd-output\n" || delta.CapReached {
+		t.Fatalf("command exec delta = %#v decoded=%q", delta, decoded)
+	}
+}
+
+func TestServerProcessSpawnDoesNotPublishCommandExecDelta(t *testing.T) {
+	ctx := context.Background()
+	var server *Server
+	processSvc, err := toolprocess.NewService(t.TempDir(),
+		toolprocess.WithOutputSink(func(ev toolprocess.OutputEvent) {
+			server.PublishProcessOutput(ev)
+		}),
+		toolprocess.WithExitSink(func(ev toolprocess.ExitEvent) {
+			server.PublishProcessExited(ev)
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server = readyServer(WithProcess(processSvc))
+
+	startResp := server.HandleRequest(ctx, request("process/spawn", map[string]any{
+		"id":      "spawn-client-1",
+		"command": "printf",
+		"args":    []string{"spawn-output"},
+	}))
+	if startResp.Error != nil {
+		t.Fatalf("process/spawn error: %v", startResp.Error)
+	}
+	events := waitForNotificationSet(t, server, "process/outputDelta", "process/exited")
+	events = append(events, server.DrainNotifications()...)
+	for _, event := range events {
+		if event.Method == "command/exec/outputDelta" {
+			t.Fatalf("unexpected command exec delta for process/spawn: %#v", event)
+		}
+	}
+	assertNoNotification(t, server, "command/exec/outputDelta")
+}
+
 func TestServerBackgroundTerminalHandlers(t *testing.T) {
 	ctx := context.Background()
 	processSvc, err := toolprocess.NewService(t.TempDir())
@@ -1547,6 +2185,22 @@ func assertNotificationMethods(t *testing.T, notifications []protocol.Notificati
 			t.Fatalf("notification[%d] method = %q, want %q", i, notifications[i].Method, method)
 		}
 	}
+}
+
+func waitForNotificationMethods(t *testing.T, server *Server, want ...string) []protocol.Notification {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var notifications []protocol.Notification
+	for time.Now().Before(deadline) {
+		notifications = append(notifications, server.DrainNotifications()...)
+		if len(notifications) >= len(want) {
+			assertNotificationMethods(t, notifications, want...)
+			return notifications
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for notifications %v, got %#v", want, notifications)
+	return nil
 }
 
 func sameStringSet(got []string, want []string) bool {

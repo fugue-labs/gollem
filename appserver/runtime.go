@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fugue-labs/gollem/appserver/protocol"
 	"github.com/fugue-labs/gollem/appserver/store"
 	"github.com/fugue-labs/gollem/core"
 )
@@ -18,6 +19,7 @@ var (
 	ErrRuntimeTurnActive    = errors.New("appserver/runtime: turn is already running")
 	ErrRuntimeTurnNotActive = errors.New("appserver/runtime: turn is not running")
 	ErrRuntimePromptEmpty   = errors.New("appserver/runtime: prompt is required")
+	ErrRuntimeShuttingDown  = errors.New("appserver/runtime: runtime is shutting down")
 )
 
 type RuntimeModelSelection struct {
@@ -54,10 +56,23 @@ func WithRuntimeModel(model core.Model, info RuntimeModelInfo) RuntimeOption {
 	})
 }
 
+// WithRuntimeTools registers provider-neutral core tools for app-server turns.
+// Tool handlers are shared across turns and should be safe for concurrent use.
+func WithRuntimeTools(tools ...core.Tool) RuntimeOption {
+	cloned := append([]core.Tool(nil), tools...)
+	return func(s *RuntimeService) {
+		s.tools = append(s.tools, cloned...)
+	}
+}
+
 type RuntimeService struct {
+	startMu      sync.Mutex
 	mu           sync.Mutex
 	modelFactory RuntimeModelFactory
+	tools        []core.Tool
 	active       map[string]*activeRuntimeTurn
+	shuttingDown bool
+	wg           sync.WaitGroup
 }
 
 func NewRuntimeService(opts ...RuntimeOption) *RuntimeService {
@@ -109,6 +124,14 @@ func (s *RuntimeService) Start(ctx context.Context, st store.Store, notifier run
 	if req.Prompt == "" {
 		return nil, ErrRuntimePromptEmpty
 	}
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+	s.mu.Lock()
+	if s.shuttingDown {
+		s.mu.Unlock()
+		return nil, ErrRuntimeShuttingDown
+	}
+	s.mu.Unlock()
 	if len(req.Input) == 0 {
 		input, err := json.Marshal(runtimeTurnInput{
 			Prompt:      req.Prompt,
@@ -153,10 +176,14 @@ func (s *RuntimeService) Start(ctx context.Context, st store.Store, notifier run
 		return nil, ErrRuntimeTurnActive
 	}
 	s.active[started.ID] = &activeRuntimeTurn{cancel: cancel}
+	s.wg.Add(1)
 	s.mu.Unlock()
 
 	publishTurnStarted(notifier, started)
-	go s.run(runCtx, st, notifier, started, req)
+	go func() {
+		defer s.wg.Done()
+		s.run(runCtx, st, notifier, started, req)
+	}()
 	return &RuntimeStartResult{Turn: started}, nil
 }
 
@@ -193,6 +220,37 @@ func (s *RuntimeService) IsActive(turnID string) bool {
 	return ok
 }
 
+func (s *RuntimeService) Shutdown(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+	s.mu.Lock()
+	s.shuttingDown = true
+	for _, active := range s.active {
+		if active != nil && active.cancel != nil {
+			active.cancel()
+		}
+	}
+	s.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (s *RuntimeService) run(ctx context.Context, st store.Store, notifier runtimeNotifier, turn *store.Turn, req RuntimeStartRequest) {
 	defer func() {
 		s.mu.Lock()
@@ -200,6 +258,7 @@ func (s *RuntimeService) run(ctx context.Context, st store.Store, notifier runti
 		s.mu.Unlock()
 	}()
 
+	ctx = withRuntimeTurnContext(ctx, turn.ThreadID, turn.ID)
 	model, info, err := s.modelFactory(ctx, req.Selection)
 	if err != nil {
 		s.complete(st, notifier, turn, store.TurnFailed, nil, err, info)
@@ -220,8 +279,38 @@ func (s *RuntimeService) run(ctx context.Context, st store.Store, notifier runti
 		publishRuntimeError(notifier, turn, event.Error)
 	})
 	defer unsubscribeError()
+	toolItems := newRuntimeToolItemTracker(st, notifier, turn, s.tools)
+	unsubscribeToolCalled := core.Subscribe(bus, toolItems.toolCalled)
+	defer unsubscribeToolCalled()
+	unsubscribeToolCompleted := core.Subscribe(bus, toolItems.toolCompleted)
+	defer unsubscribeToolCompleted()
+	unsubscribeToolFailed := core.Subscribe(bus, toolItems.toolFailed)
+	defer unsubscribeToolFailed()
+	unsubscribeToolItemID := core.Subscribe(bus, toolItems.resolveItemID)
+	defer unsubscribeToolItemID()
+	fileChangeItems := newRuntimeFileChangeTracker(st, notifier, turn, toolItems)
+	unsubscribeArtifactChanged := core.Subscribe(bus, fileChangeItems.artifactChanged)
+	defer unsubscribeArtifactChanged()
+	commandItems := newRuntimeCommandItemTracker(st, notifier, turn, toolItems)
+	unsubscribeCommandStarted := core.Subscribe(bus, commandItems.commandStarted)
+	defer unsubscribeCommandStarted()
+	unsubscribeCommandOutput := core.Subscribe(bus, commandItems.commandOutput)
+	defer unsubscribeCommandOutput()
+	unsubscribeCommandCompleted := core.Subscribe(bus, commandItems.commandCompleted)
+	defer unsubscribeCommandCompleted()
+	mcpItems := newRuntimeMCPItemTracker(st, notifier, turn, toolItems)
+	unsubscribeMCPStarted := core.Subscribe(bus, mcpItems.toolStarted)
+	defer unsubscribeMCPStarted()
+	unsubscribeMCPProgress := core.Subscribe(bus, mcpItems.toolProgress)
+	defer unsubscribeMCPProgress()
+	unsubscribeMCPCompleted := core.Subscribe(bus, mcpItems.toolCompleted)
+	defer unsubscribeMCPCompleted()
 
-	agent := core.NewAgent[string](model, core.WithEventBus[string](bus))
+	agentOptions := []core.AgentOption[string]{core.WithEventBus[string](bus)}
+	if len(s.tools) > 0 {
+		agentOptions = append(agentOptions, core.WithTools[string](s.tools...))
+	}
+	agent := core.NewAgent[string](model, agentOptions...)
 	runOpts := make([]core.RunOption, 0, 2)
 	if len(req.History) > 0 {
 		runOpts = append(runOpts, core.WithMessages(req.History...))
@@ -246,6 +335,18 @@ func (s *RuntimeService) run(ctx context.Context, st store.Store, notifier runti
 	result, err := stream.Result()
 	if err == nil {
 		err = streamErr
+	}
+	if err == nil {
+		err = toolItems.Err()
+	}
+	if err == nil {
+		err = fileChangeItems.Err()
+	}
+	if err == nil {
+		err = commandItems.Err()
+	}
+	if err == nil {
+		err = mcpItems.Err()
 	}
 	s.complete(st, notifier, turn, statusFromRuntimeError(err), result, err, info)
 }
@@ -299,6 +400,9 @@ func (s *RuntimeService) complete(st store.Store, notifier runtimeNotifier, turn
 		Usage:  usage,
 	})
 	if err == nil {
+		if result != nil {
+			publishThreadTokenUsage(notifier, st, completed, result.Usage)
+		}
 		publishTurnCompleted(notifier, completed)
 	}
 }
@@ -349,13 +453,7 @@ type turnNotificationParams struct {
 	At       time.Time        `json:"at"`
 }
 
-type runtimeItemNotificationParams struct {
-	ThreadID string      `json:"threadId"`
-	TurnID   string      `json:"turnId,omitempty"`
-	ItemID   string      `json:"itemId,omitempty"`
-	Item     *store.Item `json:"item,omitempty"`
-	At       time.Time   `json:"at"`
-}
+type runtimeItemNotificationParams = protocol.ItemLifecycleNotificationParams
 
 type runtimeDeltaNotificationParams struct {
 	ThreadID string    `json:"threadId"`
@@ -371,6 +469,10 @@ type runtimeErrorNotificationParams struct {
 	Error    string    `json:"error"`
 	At       time.Time `json:"at"`
 }
+
+type threadTokenUsageUpdatedNotificationParams = protocol.ThreadTokenUsageUpdatedNotificationParams
+type threadTokenUsagePayload = protocol.TokenUsage
+type tokenUsageBreakdown = protocol.TokenUsageBreakdown
 
 func publishTurnStarted(notifier runtimeNotifier, turn *store.Turn) {
 	if notifier == nil || turn == nil {
@@ -406,8 +508,42 @@ func publishItemCompleted(notifier runtimeNotifier, turn *store.Turn, item *stor
 		ThreadID: turn.ThreadID,
 		TurnID:   turn.ID,
 		ItemID:   item.ID,
-		Item:     item,
+		Item:     protocolTimelineItem(item),
 		At:       time.Now().UTC(),
+	})
+}
+
+func protocolTimelineItem(item *store.Item) *protocol.TimelineItem {
+	if item == nil {
+		return nil
+	}
+	return &protocol.TimelineItem{
+		ID:           item.ID,
+		ThreadID:     item.ThreadID,
+		TurnID:       item.TurnID,
+		ParentItemID: item.ParentItemID,
+		Seq:          item.Seq,
+		Kind:         item.Kind,
+		Status:       item.Status,
+		Payload:      append(json.RawMessage(nil), item.Payload...),
+		CreatedAt:    item.CreatedAt,
+		UpdatedAt:    item.UpdatedAt,
+	}
+}
+
+func publishThreadTokenUsage(notifier runtimeNotifier, st store.Store, turn *store.Turn, last core.RunUsage) {
+	if notifier == nil || st == nil || turn == nil {
+		return
+	}
+	total := threadTokenUsageTotal(context.Background(), st, turn.ThreadID, last)
+	notifier.PublishNotification("thread/tokenUsage/updated", threadTokenUsageUpdatedNotificationParams{
+		ThreadID: turn.ThreadID,
+		TurnID:   turn.ID,
+		TokenUsage: threadTokenUsagePayload{
+			Total:              tokenUsageBreakdownFromUsage(total.Usage),
+			Last:               tokenUsageBreakdownFromUsage(last.Usage),
+			ModelContextWindow: nil,
+		},
 	})
 }
 
@@ -441,16 +577,115 @@ func publishRuntimeError(notifier runtimeNotifier, turn *store.Turn, text string
 }
 
 func runtimeUsageMap(usage core.RunUsage) map[string]any {
-	return map[string]any{
-		"requests": usage.Requests,
-		"usage": map[string]any{
-			"inputTokens":      usage.InputTokens,
-			"outputTokens":     usage.OutputTokens,
-			"cacheWriteTokens": usage.CacheWriteTokens,
-			"cacheReadTokens":  usage.CacheReadTokens,
-			"totalTokens":      usage.TotalTokens(),
-		},
+	usageMap := map[string]any{
+		"inputTokens":      usage.InputTokens,
+		"outputTokens":     usage.OutputTokens,
+		"cacheWriteTokens": usage.CacheWriteTokens,
+		"cacheReadTokens":  usage.CacheReadTokens,
+		"totalTokens":      usage.TotalTokens(),
 	}
+	if len(usage.Details) > 0 {
+		details := make(map[string]any, len(usage.Details))
+		for key, value := range usage.Details {
+			details[key] = value
+		}
+		usageMap["details"] = details
+	}
+	return map[string]any{
+		"requests":  usage.Requests,
+		"toolCalls": usage.ToolCalls,
+		"usage":     usageMap,
+	}
+}
+
+func threadTokenUsageTotal(ctx context.Context, st store.Store, threadID string, fallback core.RunUsage) core.RunUsage {
+	turns, err := st.ListTurns(ctx, store.TurnFilter{ThreadID: threadID})
+	if err != nil {
+		return fallback
+	}
+	var total core.RunUsage
+	for _, turn := range turns {
+		if turn == nil || len(turn.Usage) == 0 {
+			continue
+		}
+		total.IncrRun(runtimeUsageFromStoredMap(turn.Usage))
+	}
+	if total.Requests == 0 && total.ToolCalls == 0 && total.TotalTokens() == 0 {
+		return fallback
+	}
+	return total
+}
+
+func runtimeUsageFromStoredMap(values map[string]any) core.RunUsage {
+	var usage core.RunUsage
+	if len(values) == 0 {
+		return usage
+	}
+	usage.Requests = runtimeIntFromAny(values["requests"])
+	usage.ToolCalls = runtimeIntFromAny(values["toolCalls"])
+	tokenValues := runtimeMapFromAny(values["usage"])
+	if tokenValues == nil {
+		tokenValues = values
+	}
+	usage.InputTokens = runtimeIntFromAny(tokenValues["inputTokens"])
+	usage.OutputTokens = runtimeIntFromAny(tokenValues["outputTokens"])
+	usage.CacheWriteTokens = runtimeIntFromAny(tokenValues["cacheWriteTokens"])
+	usage.CacheReadTokens = runtimeIntFromAny(tokenValues["cacheReadTokens"])
+	if details := runtimeMapFromAny(tokenValues["details"]); len(details) > 0 {
+		usage.Details = make(map[string]int, len(details))
+		for key, value := range details {
+			usage.Details[key] = runtimeIntFromAny(value)
+		}
+	}
+	return usage
+}
+
+func tokenUsageBreakdownFromUsage(usage core.Usage) tokenUsageBreakdown {
+	return tokenUsageBreakdown{
+		TotalTokens:           int64(usage.TotalTokens()),
+		InputTokens:           int64(usage.InputTokens),
+		CachedInputTokens:     int64(usage.CacheReadTokens),
+		OutputTokens:          int64(usage.OutputTokens),
+		ReasoningOutputTokens: int64(runtimeReasoningOutputTokens(usage.Details)),
+	}
+}
+
+func runtimeReasoningOutputTokens(details map[string]int) int {
+	for _, key := range []string{"reasoning_tokens", "reasoningTokens", "reasoningOutputTokens"} {
+		if value := details[key]; value != 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func runtimeMapFromAny(value any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	if mapped, ok := value.(map[string]any); ok {
+		return mapped
+	}
+	return nil
+}
+
+func runtimeIntFromAny(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		if i, err := typed.Int64(); err == nil {
+			return int(i)
+		}
+		if f, err := typed.Float64(); err == nil {
+			return int(f)
+		}
+	}
+	return 0
 }
 
 func lastRuntimeAssistantText(messages []core.ModelMessage) string {
@@ -460,43 +695,6 @@ func lastRuntimeAssistantText(messages []core.ModelMessage) string {
 		}
 	}
 	return ""
-}
-
-func runtimeMessagesFromItems(items []*store.Item) []core.ModelMessage {
-	messages := make([]core.ModelMessage, 0, len(items))
-	for _, item := range items {
-		if item == nil || len(item.Payload) == 0 {
-			continue
-		}
-		if item.Kind == threadInjectedResponseItemKind {
-			if message, ok := runtimeMessageFromInjectedResponseItem(item.Payload); ok {
-				messages = append(messages, message)
-			}
-			continue
-		}
-		if item.Kind != "message" {
-			continue
-		}
-		var payload runtimeMessagePayload
-		if err := json.Unmarshal(item.Payload, &payload); err != nil {
-			continue
-		}
-		switch payload.Role {
-		case "user":
-			messages = append(messages, core.ModelRequest{
-				Parts:     []core.ModelRequestPart{core.UserPromptPart{Content: payload.Text, Timestamp: payload.CreatedAt}},
-				Timestamp: payload.CreatedAt,
-			})
-		case "assistant":
-			messages = append(messages, core.ModelResponse{
-				Parts:        []core.ModelResponsePart{core.TextPart{Content: payload.Text}},
-				ModelName:    payload.Model,
-				FinishReason: core.FinishReasonStop,
-				Timestamp:    payload.CreatedAt,
-			})
-		}
-	}
-	return messages
 }
 
 func runtimePromptFromInput(raw json.RawMessage) string {

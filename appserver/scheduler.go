@@ -100,7 +100,7 @@ type RequestSchedule struct {
 func RequestScheduleFor(method string, params json.RawMessage) RequestSchedule {
 	_ = params
 	switch method {
-	case "thread/list", "thread/search", "thread/loaded/list", "thread/read", "thread/fork", "thread/archive", "thread/unarchive", "thread/delete", "thread/settings/update",
+	case "thread/list", "thread/search", "thread/loaded/list", "thread/unsubscribe", "thread/read", "thread/fork", "thread/compact/start", "thread/shellCommand", "thread/approveGuardianDeniedAction", "thread/rollback", "thread/archive", "thread/unarchive", "thread/delete", "thread/settings/update",
 		"thread/goal/get", "thread/goal/set", "thread/goal/clear", "thread/metadata/update", "thread/memoryMode/set",
 		"thread/name/set", "thread/turns/list", "thread/items/list", "thread/inject_items":
 		return RequestSchedule{Scope: "thread", Serial: true}

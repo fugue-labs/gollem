@@ -20,6 +20,7 @@ import (
 const (
 	defaultMaxProcesses = 32
 	defaultOutputBytes  = 1 << 20
+	defaultCancelWait   = 5 * time.Second
 )
 
 var (
@@ -28,6 +29,7 @@ var (
 	ErrApprovalDenied       = errors.New("appserver/process: operation denied by approval policy")
 	ErrProcessNotFound      = errors.New("appserver/process: process not found")
 	ErrProcessNotRunning    = errors.New("appserver/process: process is not running")
+	ErrProcessAlreadyExists = errors.New("appserver/process: process already exists")
 	ErrTooManyProcesses     = errors.New("appserver/process: too many running processes")
 	ErrPTYUnsupported       = errors.New("appserver/process: pty resize is not supported")
 	ErrInvalidOutputBufSize = errors.New("appserver/process: output buffer size must be positive")
@@ -58,6 +60,7 @@ const (
 	OperationCloseStdin OperationKind = "closeStdin"
 	OperationTerminate  OperationKind = "terminate"
 	OperationKill       OperationKind = "kill"
+	OperationCancel     OperationKind = "cancel"
 	OperationResizePTY  OperationKind = "resizePty"
 )
 
@@ -154,57 +157,67 @@ type Service struct {
 }
 
 type StartRequest struct {
-	Command        string
-	Args           []string
-	Shell          bool
-	WorkDir        string
-	Env            map[string]string
-	Timeout        time.Duration
-	MaxOutputBytes int
+	ID                  string
+	Command             string
+	Args                []string
+	Shell               bool
+	WorkDir             string
+	Env                 map[string]string
+	Timeout             time.Duration
+	MaxOutputBytes      int
+	OutputSink          OutputSink
+	ExitSink            ExitSink
+	SuppressGlobalSinks bool
 }
 
 type Snapshot struct {
-	ID        string
-	PID       int
-	Command   string
-	Args      []string
-	Shell     bool
-	WorkDir   string
-	Status    Status
-	ExitCode  int
-	StartedAt time.Time
-	EndedAt   time.Time
-	Error     string
-	Stdout    []byte
-	Stderr    []byte
+	ID              string
+	PID             int
+	Command         string
+	Args            []string
+	Shell           bool
+	WorkDir         string
+	Status          Status
+	ExitCode        int
+	StartedAt       time.Time
+	EndedAt         time.Time
+	Error           string
+	Stdout          []byte
+	Stderr          []byte
+	StdoutTruncated bool
+	StderrTruncated bool
 }
 
 type managedProcess struct {
-	mu         sync.Mutex
-	stdinMu    sync.Mutex
-	id         string
-	pid        int
-	command    string
-	args       []string
-	shell      bool
-	workDir    string
-	startedAt  time.Time
-	endedAt    time.Time
-	status     Status
-	exitCode   int
-	err        string
-	killStatus Status
-	stdout     *outputBuffer
-	stderr     *outputBuffer
-	stdin      io.WriteCloser
-	cmd        *exec.Cmd
-	done       chan struct{}
+	mu                  sync.Mutex
+	stdinMu             sync.Mutex
+	id                  string
+	pid                 int
+	command             string
+	args                []string
+	shell               bool
+	workDir             string
+	startedAt           time.Time
+	endedAt             time.Time
+	status              Status
+	exitCode            int
+	err                 string
+	killStatus          Status
+	stdout              *outputBuffer
+	stderr              *outputBuffer
+	stdin               io.WriteCloser
+	cmd                 *exec.Cmd
+	done                chan struct{}
+	output              OutputSink
+	exit                ExitSink
+	suppressGlobalSinks bool
 }
 
 type outputBuffer struct {
-	mu   sync.Mutex
-	buf  []byte
-	size int
+	mu        sync.Mutex
+	buf       []byte
+	size      int
+	truncated bool
 }
 
 type processWriter struct {
@@ -281,17 +294,20 @@ func (s *Service) Start(ctx context.Context, req StartRequest) (*Snapshot, error
 		return nil, ErrInvalidOutputBufSize
 	}
 	proc := &managedProcess{
-		command:   req.Command,
-		args:      cloneStrings(req.Args),
-		shell:     req.Shell,
-		workDir:   relWorkDir,
-		startedAt: time.Now().UTC(),
-		status:    StatusRunning,
-		stdout:    newOutputBuffer(bufSize),
-		stderr:    newOutputBuffer(bufSize),
-		stdin:     stdin,
-		cmd:       cmd,
-		done:      make(chan struct{}),
+		command:             req.Command,
+		args:                cloneStrings(req.Args),
+		shell:               req.Shell,
+		workDir:             relWorkDir,
+		startedAt:           time.Now().UTC(),
+		status:              StatusRunning,
+		stdout:              newOutputBuffer(bufSize),
+		stderr:              newOutputBuffer(bufSize),
+		stdin:               stdin,
+		cmd:                 cmd,
+		done:                make(chan struct{}),
+		output:              req.OutputSink,
+		exit:                req.ExitSink,
+		suppressGlobalSinks: req.SuppressGlobalSinks,
 	}
 	cmd.Stdout = processWriter{svc: s, proc: proc, stream: StreamStdout}
 	cmd.Stderr = processWriter{svc: s, proc: proc, stream: StreamStderr}
@@ -303,8 +319,15 @@ func (s *Service) Start(ctx context.Context, req StartRequest) (*Snapshot, error
 		s.emit(op, "", 0, false, ErrTooManyProcesses)
 		return nil, ErrTooManyProcesses
 	}
-	s.counter++
-	proc.id = fmt.Sprintf("proc-%d", s.counter)
+	proc.id = strings.TrimSpace(req.ID)
+	if proc.id == "" {
+		s.counter++
+		proc.id = fmt.Sprintf("proc-%d", s.counter)
+	} else if _, exists := s.processes[proc.id]; exists {
+		s.mu.Unlock()
+		s.emit(op, proc.id, 0, false, ErrProcessAlreadyExists)
+		return nil, ErrProcessAlreadyExists
+	}
 	if err := cmd.Start(); err != nil {
 		s.mu.Unlock()
 		s.emit(op, proc.id, 0, false, err)
@@ -327,6 +350,33 @@ func (s *Service) Start(ctx context.Context, req StartRequest) (*Snapshot, error
 	s.emit(op, proc.id, proc.pid, true, nil)
 	snap := proc.snapshot()
 	return &snap, nil
+}
+
+// Run starts one process and waits for it to finish. If ctx is canceled after
+// the approved start, Run kills the process group it owns and waits briefly for
+// cleanup without issuing a second approval request.
+func (s *Service) Run(ctx context.Context, req StartRequest) (*Snapshot, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	started, err := s.Start(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := s.Wait(ctx, started.ID)
+	if err == nil {
+		return snapshot, nil
+	}
+	ctxErr := ctx.Err()
+	if ctxErr == nil {
+		return snapshot, err
+	}
+
+	cancelErr := s.cancelOwnedProcess(started.ID)
+	waitCtx, cancel := context.WithTimeout(context.Background(), defaultCancelWait)
+	defer cancel()
+	finalSnapshot, waitErr := s.Wait(waitCtx, started.ID)
+	return finalSnapshot, errors.Join(ctxErr, cancelErr, waitErr)
 }
 
 func (s *Service) Wait(ctx context.Context, id string) (*Snapshot, error) {
@@ -508,6 +558,28 @@ func (s *Service) signal(ctx context.Context, id string, kind OperationKind, sig
 	return nil
 }
 
+func (s *Service) cancelOwnedProcess(id string) error {
+	op := Operation{Kind: OperationCancel, ID: id, Signal: "SIGKILL", Destructive: true}
+	proc, err := s.get(id)
+	if err != nil {
+		s.emit(op, id, 0, false, err)
+		return err
+	}
+	if err := proc.requestKill(StatusKilled); err != nil {
+		if errors.Is(err, ErrProcessNotRunning) {
+			return nil
+		}
+		s.emit(op, id, proc.pidValue(), false, err)
+		return err
+	}
+	if err := signalProcessGroup(proc.pidValue(), syscall.SIGKILL); err != nil {
+		s.emit(op, id, proc.pidValue(), false, err)
+		return err
+	}
+	s.emit(op, id, proc.pidValue(), true, nil)
+	return nil
+}
+
 func (s *Service) get(id string) (*managedProcess, error) {
 	if s == nil {
 		return nil, errors.New("appserver/process: nil service")
@@ -580,30 +652,38 @@ func (s *Service) emit(op Operation, id string, pid int, allowed bool, err error
 }
 
 func (s *Service) emitExit(proc *managedProcess) {
-	if s == nil || s.exit == nil || proc == nil {
+	if s == nil || proc == nil {
 		return
 	}
 	snap := proc.snapshot()
-	s.exit(ExitEvent{Snapshot: snap, At: snap.EndedAt})
+	event := ExitEvent{Snapshot: snap, At: snap.EndedAt}
+	if s.exit != nil && !proc.suppressGlobalSinks {
+		s.exit(event)
+	}
+	if proc.exit != nil {
+		proc.exit(event)
+	}
 }
 
 func (p *managedProcess) snapshot() Snapshot {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return Snapshot{
-		ID:        p.id,
-		PID:       p.pid,
-		Command:   p.command,
-		Args:      cloneStrings(p.args),
-		Shell:     p.shell,
-		WorkDir:   p.workDir,
-		Status:    p.status,
-		ExitCode:  p.exitCode,
-		StartedAt: p.startedAt,
-		EndedAt:   p.endedAt,
-		Error:     p.err,
-		Stdout:    p.stdout.bytes(),
-		Stderr:    p.stderr.bytes(),
+		ID:              p.id,
+		PID:             p.pid,
+		Command:         p.command,
+		Args:            cloneStrings(p.args),
+		Shell:           p.shell,
+		WorkDir:         p.workDir,
+		Status:          p.status,
+		ExitCode:        p.exitCode,
+		StartedAt:       p.startedAt,
+		EndedAt:         p.endedAt,
+		Error:           p.err,
+		Stdout:          p.stdout.bytes(),
+		Stderr:          p.stderr.bytes(),
+		StdoutTruncated: p.stdout.wasTruncated(),
+		StderrTruncated: p.stderr.wasTruncated(),
 	}
 }
 
@@ -702,14 +782,11 @@ func (p *managedProcess) appendOutput(stream Stream, data []byte) {
 func (w processWriter) Write(data []byte) (int, error) {
 	chunk := append([]byte(nil), data...)
 	w.proc.appendOutput(w.stream, chunk)
-	if w.svc != nil && w.svc.output != nil {
-		w.svc.output(OutputEvent{
-			ID:     w.proc.id,
-			PID:    w.proc.pidValue(),
-			Stream: w.stream,
-			Data:   chunk,
-			At:     time.Now().UTC(),
-		})
+	if w.svc != nil && w.svc.output != nil && !w.proc.suppressGlobalSinks {
+		w.svc.output(OutputEvent{ID: w.proc.id, PID: w.proc.pidValue(), Stream: w.stream, Data: chunk, At: time.Now().UTC()})
+	}
+	if w.proc.output != nil {
+		w.proc.output(OutputEvent{ID: w.proc.id, PID: w.proc.pidValue(), Stream: w.stream, Data: chunk, At: time.Now().UTC()})
 	}
 	return len(data), nil
 }
@@ -723,6 +800,7 @@ func (b *outputBuffer) write(data []byte) {
 	defer b.mu.Unlock()
 	b.buf = append(b.buf, data...)
 	if len(b.buf) > b.size {
+		b.truncated = true
 		b.buf = append([]byte(nil), b.buf[len(b.buf)-b.size:]...)
 	}
 }
@@ -731,6 +809,12 @@ func (b *outputBuffer) bytes() []byte {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return append([]byte(nil), b.buf...)
+}
+
+func (b *outputBuffer) wasTruncated() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.truncated
 }
 
 type commandSpec struct {

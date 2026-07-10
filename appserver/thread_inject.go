@@ -67,7 +67,7 @@ func (s *Server) handleThreadInjectItems(ctx context.Context, raw json.RawMessag
 		s.PublishNotification("item/completed", runtimeItemNotificationParams{
 			ThreadID: thread.ID,
 			ItemID:   item.ID,
-			Item:     item,
+			Item:     protocolTimelineItem(item),
 			At:       time.Now().UTC(),
 		})
 	}

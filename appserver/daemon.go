@@ -24,11 +24,7 @@ type DaemonService struct {
 	shutdown  daemonShutdownState
 }
 
-type daemonShutdownState struct {
-	Requested bool   `json:"requested"`
-	Restart   bool   `json:"restart"`
-	Reason    string `json:"reason,omitempty"`
-}
+type daemonShutdownState = protocol.DaemonShutdownState
 
 type DaemonOption func(*DaemonService)
 
@@ -79,47 +75,11 @@ func NewDaemonService(opts ...DaemonOption) *DaemonService {
 	return d
 }
 
-type DaemonStatus struct {
-	Status            string              `json:"status"`
-	Name              string              `json:"name"`
-	Version           string              `json:"version"`
-	ProtocolVersion   string              `json:"protocolVersion"`
-	PID               int                 `json:"pid"`
-	StartedAt         time.Time           `json:"startedAt"`
-	UptimeMillis      int64               `json:"uptimeMillis"`
-	Transport         string              `json:"transport,omitempty"`
-	WorkDir           string              `json:"workDir,omitempty"`
-	StorePath         string              `json:"storePath,omitempty"`
-	ShutdownRequested bool                `json:"shutdownRequested"`
-	RestartRequested  bool                `json:"restartRequested"`
-	Shutdown          daemonShutdownState `json:"shutdown,omitempty"`
-}
-
-type DaemonVersion struct {
-	Name            string `json:"name"`
-	Version         string `json:"version"`
-	ProtocolVersion string `json:"protocolVersion"`
-	GoVersion       string `json:"goVersion"`
-	GOOS            string `json:"goos"`
-	GOARCH          string `json:"goarch"`
-}
-
-type DaemonStartResult struct {
-	OK             bool         `json:"ok"`
-	AlreadyRunning bool         `json:"alreadyRunning"`
-	Status         DaemonStatus `json:"status"`
-}
-
-type DaemonStopResult struct {
-	OK       bool         `json:"ok"`
-	Stopping bool         `json:"stopping"`
-	Restart  bool         `json:"restart"`
-	Status   DaemonStatus `json:"status"`
-}
-
-type daemonShutdownParams struct {
-	Reason string `json:"reason,omitempty"`
-}
+type DaemonStatus = protocol.DaemonStatus
+type DaemonVersion = protocol.DaemonVersion
+type DaemonStartResult = protocol.DaemonStartResult
+type DaemonStopResult = protocol.DaemonStopResult
+type daemonShutdownParams = protocol.DaemonShutdownParams
 
 func (d *DaemonService) Status() DaemonStatus {
 	if d == nil {

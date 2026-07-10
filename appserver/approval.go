@@ -14,6 +14,7 @@ import (
 	toolfs "github.com/fugue-labs/gollem/appserver/tools/fs"
 	toolgit "github.com/fugue-labs/gollem/appserver/tools/git"
 	toolprocess "github.com/fugue-labs/gollem/appserver/tools/process"
+	"github.com/fugue-labs/gollem/core"
 )
 
 var ErrApprovalRequestDenied = errors.New("appserver: approval request denied")
@@ -33,7 +34,8 @@ type ApprovalService struct {
 }
 
 type pendingApproval struct {
-	ch chan approvalResolution
+	ch       chan approvalResolution
+	threadID string
 }
 
 type approvalResolution struct {
@@ -42,57 +44,18 @@ type approvalResolution struct {
 }
 
 type approvalRequestBase struct {
-	ThreadID    string `json:"threadId"`
-	TurnID      string `json:"turnId"`
-	ItemID      string `json:"itemId"`
-	StartedAtMS int64  `json:"startedAtMs"`
-	Reason      string `json:"reason,omitempty"`
+	protocol.ApprovalRequestBase
+	requestID string
 }
 
-type fileChangeApprovalParams struct {
-	approvalRequestBase
-	GrantRoot   *string `json:"grantRoot"`
-	Operation   string  `json:"operation,omitempty"`
-	Path        string  `json:"path,omitempty"`
-	Destination string  `json:"destination,omitempty"`
-	Destructive bool    `json:"destructive,omitempty"`
-}
-
-type commandApprovalParams struct {
-	approvalRequestBase
-	ApprovalID     string     `json:"approvalId,omitempty"`
-	Command        string     `json:"command,omitempty"`
-	Args           []string   `json:"args,omitempty"`
-	CWD            string     `json:"cwd,omitempty"`
-	Operation      string     `json:"operation,omitempty"`
-	Signal         string     `json:"signal,omitempty"`
-	Destructive    bool       `json:"destructive,omitempty"`
-	CommandActions []struct{} `json:"commandActions,omitempty"`
-}
-
-type permissionsApprovalParams struct {
-	approvalRequestBase
-	CWD         string         `json:"cwd"`
-	Operation   string         `json:"operation,omitempty"`
-	Path        string         `json:"path,omitempty"`
-	Branch      string         `json:"branch,omitempty"`
-	Base        string         `json:"base,omitempty"`
-	Message     string         `json:"message,omitempty"`
-	Pathspecs   []string       `json:"pathspecs,omitempty"`
-	Permissions map[string]any `json:"permissions"`
-}
-
-type approvalRespondParams struct {
-	RequestID string `json:"requestId"`
-	ID        string `json:"id,omitempty"`
-	Approved  bool   `json:"approved"`
-	Message   string `json:"message,omitempty"`
-}
+type approvalRespondParams = protocol.ApprovalRespondParams
+type fileChangeApprovalParams = protocol.FileChangeApprovalRequestParams
+type commandApprovalParams = protocol.CommandExecutionApprovalRequestParams
+type permissionsApprovalParams = protocol.PermissionsApprovalRequestParams
 
 type approvalRespondResult struct {
-	OK        bool   `json:"ok"`
-	RequestID string `json:"requestId"`
-	Approved  bool   `json:"approved"`
+	protocol.ApprovalRespondResult
+	threadID string
 }
 
 func NewApprovalService() *ApprovalService {
@@ -127,22 +90,24 @@ func (s *ApprovalService) DrainRequests() []protocol.Request {
 
 func (s *ApprovalService) FilesystemApproval(ctx context.Context, op toolfs.Operation) error {
 	reason := fmt.Sprintf("Approve filesystem %s for %s", op.Kind, op.Path)
-	params := fileChangeApprovalParams{
-		approvalRequestBase: s.base(reason),
+	base := s.base(ctx, reason)
+	params := protocol.FileChangeApprovalRequestParams{
+		ApprovalRequestBase: base.ApprovalRequestBase,
 		GrantRoot:           nil,
 		Operation:           string(op.Kind),
 		Path:                op.Path,
 		Destination:         op.Destination,
 		Destructive:         op.Destructive,
 	}
-	return s.requestApproval(ctx, "item/fileChange/requestApproval", params.ItemID, params)
+	return s.requestApproval(ctx, "item/fileChange/requestApproval", base.requestID, params)
 }
 
 func (s *ApprovalService) ProcessApproval(ctx context.Context, op toolprocess.Operation) error {
 	command := strings.TrimSpace(strings.Join(append([]string{op.Command}, op.Args...), " "))
 	reason := fmt.Sprintf("Approve process %s", op.Kind)
-	params := commandApprovalParams{
-		approvalRequestBase: s.base(reason),
+	base := s.base(ctx, reason)
+	params := protocol.CommandExecutionApprovalRequestParams{
+		ApprovalRequestBase: base.ApprovalRequestBase,
 		Command:             command,
 		Args:                append([]string(nil), op.Args...),
 		CWD:                 op.WorkDir,
@@ -150,7 +115,7 @@ func (s *ApprovalService) ProcessApproval(ctx context.Context, op toolprocess.Op
 		Signal:              op.Signal,
 		Destructive:         op.Destructive,
 	}
-	return s.requestApproval(ctx, "item/commandExecution/requestApproval", params.ItemID, params)
+	return s.requestApproval(ctx, "item/commandExecution/requestApproval", base.requestID, params)
 }
 
 func (s *ApprovalService) GitApproval(ctx context.Context, op toolgit.Operation) error {
@@ -159,8 +124,9 @@ func (s *ApprovalService) GitApproval(ctx context.Context, op toolgit.Operation)
 	if cwd == "" {
 		cwd = "."
 	}
-	params := permissionsApprovalParams{
-		approvalRequestBase: s.base(reason),
+	requestBase := s.base(ctx, reason)
+	params := protocol.PermissionsApprovalRequestParams{
+		ApprovalRequestBase: requestBase.ApprovalRequestBase,
 		CWD:                 cwd,
 		Operation:           string(op.Kind),
 		Path:                op.Path,
@@ -174,7 +140,7 @@ func (s *ApprovalService) GitApproval(ctx context.Context, op toolgit.Operation)
 			"mutating":  op.Mutating,
 		},
 	}
-	return s.requestApproval(ctx, "item/permissions/requestApproval", params.ItemID, params)
+	return s.requestApproval(ctx, "item/permissions/requestApproval", requestBase.requestID, params)
 }
 
 func (s *ApprovalService) MCPToolApproval(ctx context.Context, serverName, toolName string, args map[string]any) error {
@@ -184,8 +150,9 @@ func (s *ApprovalService) MCPToolApproval(ctx context.Context, serverName, toolN
 		argKeys = append(argKeys, key)
 	}
 	slices.Sort(argKeys)
-	params := permissionsApprovalParams{
-		approvalRequestBase: s.base(reason),
+	base := s.base(ctx, reason)
+	params := protocol.PermissionsApprovalRequestParams{
+		ApprovalRequestBase: base.ApprovalRequestBase,
 		CWD:                 ".",
 		Operation:           "mcpToolCall",
 		Permissions: map[string]any{
@@ -196,7 +163,7 @@ func (s *ApprovalService) MCPToolApproval(ctx context.Context, serverName, toolN
 			"mutating":     true,
 		},
 	}
-	return s.requestApproval(ctx, "item/permissions/requestApproval", params.ItemID, params)
+	return s.requestApproval(ctx, "item/permissions/requestApproval", base.requestID, params)
 }
 
 func (s *Server) handleApprovalRespond(raw json.RawMessage) (any, *protocol.Error) {
@@ -212,7 +179,7 @@ func (s *Server) handleApprovalRespond(raw json.RawMessage) (any, *protocol.Erro
 		return nil, invalidParams("invalid approval response", err)
 	}
 	s.PublishNotification("serverRequest/resolved", serverRequestResolvedParams{
-		ThreadID:  approvalThreadID,
+		ThreadID:  firstNonEmpty(result.threadID, approvalThreadID),
 		RequestID: result.RequestID,
 	})
 	return result, nil
@@ -236,22 +203,29 @@ func (s *ApprovalService) Respond(params approvalRespondParams) (approvalRespond
 		return approvalRespondResult{}, fmt.Errorf("approval request %q is not pending", requestID)
 	}
 	pending.ch <- approvalResolution{Approved: params.Approved, Message: params.Message}
-	return approvalRespondResult{OK: true, RequestID: requestID, Approved: params.Approved}, nil
+	return approvalRespondResult{
+		ApprovalRespondResult: protocol.ApprovalRespondResult{OK: true, RequestID: requestID, Approved: params.Approved},
+		threadID:              pending.threadID,
+	}, nil
 }
 
-type serverRequestResolvedParams struct {
-	ThreadID  string `json:"threadId"`
-	RequestID string `json:"requestId"`
-}
+type serverRequestResolvedParams = protocol.ServerRequestResolvedNotificationParams
 
-func (s *ApprovalService) base(reason string) approvalRequestBase {
+func (s *ApprovalService) base(ctx context.Context, reason string) approvalRequestBase {
 	requestID := s.nextRequestID()
+	runtimeContext := runtimeTurnContextFrom(ctx)
+	threadID := firstNonEmpty(runtimeContext.ThreadID, approvalThreadID)
+	turnID := firstNonEmpty(runtimeContext.TurnID, approvalTurnID)
+	itemID := firstNonEmpty(runtimeApprovalItemIDFrom(ctx), core.ToolCallIDFromContext(ctx), requestID)
 	return approvalRequestBase{
-		ThreadID:    approvalThreadID,
-		TurnID:      approvalTurnID,
-		ItemID:      requestID,
-		StartedAtMS: time.Now().UnixMilli(),
-		Reason:      reason,
+		requestID: requestID,
+		ApprovalRequestBase: protocol.ApprovalRequestBase{
+			ThreadID:    threadID,
+			TurnID:      turnID,
+			ItemID:      itemID,
+			StartedAtMS: time.Now().UnixMilli(),
+			Reason:      reason,
+		},
 	}
 }
 
@@ -272,7 +246,11 @@ func (s *ApprovalService) requestApproval(ctx context.Context, method, requestID
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	pending := pendingApproval{ch: make(chan approvalResolution, 1)}
+	runtimeContext := runtimeTurnContextFrom(ctx)
+	pending := pendingApproval{
+		ch:       make(chan approvalResolution, 1),
+		threadID: firstNonEmpty(runtimeContext.ThreadID, approvalThreadID),
+	}
 	s.mu.Lock()
 	if s.pending == nil {
 		s.pending = make(map[string]pendingApproval)

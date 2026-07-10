@@ -200,6 +200,23 @@ type threadNotificationParams struct {
 	At       time.Time          `json:"at"`
 }
 
+type threadClosedNotificationParams struct {
+	ThreadID string `json:"threadId"`
+}
+
+type threadNotLoadedStatusNotificationParams struct {
+	ThreadID string            `json:"threadId"`
+	Status   map[string]string `json:"status"`
+	At       time.Time         `json:"at"`
+}
+
+type deprecationNoticeNotificationParams struct {
+	Summary string  `json:"summary"`
+	Details *string `json:"details"`
+}
+
+type contextCompactedNotificationParams = protocol.ThreadCompactedNotificationParams
+
 type threadGoalNotificationParams struct {
 	ThreadID string        `json:"threadId"`
 	Goal     any           `json:"goal,omitempty"`

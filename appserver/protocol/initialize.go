@@ -1,6 +1,9 @@
 package protocol
 
-const ProtocolVersion = "gollem.appserver.v0"
+const (
+	ProtocolVersion = "gollem.appserver.v0"
+	SchemaVersion   = "gollem.appserver.schema.v1"
+)
 
 // ImplementationInfo identifies one side of the app-server connection.
 type ImplementationInfo struct {

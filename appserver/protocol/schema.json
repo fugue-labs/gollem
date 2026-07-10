@@ -1,0 +1,3307 @@
+{
+  "$defs": {
+    "ApprovalRequestBase": {
+      "additionalProperties": false,
+      "properties": {
+        "itemId": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "startedAtMs": {
+          "type": "integer"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "itemId",
+        "startedAtMs"
+      ],
+      "type": "object"
+    },
+    "ApprovalRespondParams": {
+      "additionalProperties": false,
+      "properties": {
+        "approved": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "requestId",
+        "approved"
+      ],
+      "type": "object"
+    },
+    "ApprovalRespondResult": {
+      "additionalProperties": false,
+      "properties": {
+        "approved": {
+          "type": "boolean"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "requestId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ok",
+        "requestId",
+        "approved"
+      ],
+      "type": "object"
+    },
+    "CommandExecutionAction": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "command"
+      ],
+      "type": "object"
+    },
+    "CommandExecutionApprovalRequestParams": {
+      "additionalProperties": false,
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "args": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "command": {
+          "type": "string"
+        },
+        "commandActions": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CommandExecutionAction"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "destructive": {
+          "type": "boolean"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "signal": {
+          "type": "string"
+        },
+        "startedAtMs": {
+          "type": "integer"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "itemId",
+        "startedAtMs"
+      ],
+      "type": "object"
+    },
+    "CommandExecutionItem": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregatedOutput": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "command": {
+          "type": "string"
+        },
+        "commandActions": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CommandExecutionAction"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "completedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "durationMs": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exitCode": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "processId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "enum": [
+            "agent",
+            "userShell"
+          ],
+          "type": "string"
+        },
+        "startedAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "inProgress",
+            "completed",
+            "failed",
+            "declined"
+          ],
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "commandExecution"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "command",
+        "cwd",
+        "processId",
+        "source",
+        "status",
+        "commandActions",
+        "aggregatedOutput",
+        "exitCode",
+        "durationMs",
+        "startedAt",
+        "completedAt"
+      ],
+      "type": "object"
+    },
+    "CommandExecutionItemCompletedNotificationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "completedAtMs": {
+          "type": "integer"
+        },
+        "item": {
+          "$ref": "#/$defs/CommandExecutionItem"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "threadId",
+        "turnId",
+        "completedAtMs"
+      ],
+      "type": "object"
+    },
+    "CommandExecutionItemStartedNotificationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "item": {
+          "$ref": "#/$defs/CommandExecutionItem"
+        },
+        "startedAtMs": {
+          "type": "integer"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "threadId",
+        "turnId",
+        "startedAtMs"
+      ],
+      "type": "object"
+    },
+    "CommandExecutionOutputDeltaNotificationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "delta": {
+          "type": "string"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "itemId",
+        "delta"
+      ],
+      "type": "object"
+    },
+    "ContextCompactionItem": {
+      "additionalProperties": false,
+      "properties": {
+        "createdAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "contextCompaction"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "createdAt"
+      ],
+      "type": "object"
+    },
+    "DaemonShutdownParams": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "DaemonShutdownState": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "requested": {
+          "type": "boolean"
+        },
+        "restart": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "requested",
+        "restart"
+      ],
+      "type": "object"
+    },
+    "DaemonStartResult": {
+      "additionalProperties": false,
+      "properties": {
+        "alreadyRunning": {
+          "type": "boolean"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/DaemonStatus"
+        }
+      },
+      "required": [
+        "ok",
+        "alreadyRunning",
+        "status"
+      ],
+      "type": "object"
+    },
+    "DaemonStatus": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "protocolVersion": {
+          "type": "string"
+        },
+        "restartRequested": {
+          "type": "boolean"
+        },
+        "shutdown": {
+          "$ref": "#/$defs/DaemonShutdownState"
+        },
+        "shutdownRequested": {
+          "type": "boolean"
+        },
+        "startedAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "running",
+            "stopping"
+          ],
+          "type": "string"
+        },
+        "storePath": {
+          "type": "string"
+        },
+        "transport": {
+          "type": "string"
+        },
+        "uptimeMillis": {
+          "type": "integer"
+        },
+        "version": {
+          "type": "string"
+        },
+        "workDir": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "name",
+        "version",
+        "protocolVersion",
+        "pid",
+        "startedAt",
+        "uptimeMillis",
+        "shutdownRequested",
+        "restartRequested"
+      ],
+      "type": "object"
+    },
+    "DaemonStopResult": {
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "restart": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/DaemonStatus"
+        },
+        "stopping": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok",
+        "stopping",
+        "restart",
+        "status"
+      ],
+      "type": "object"
+    },
+    "DaemonVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "goVersion": {
+          "type": "string"
+        },
+        "goarch": {
+          "type": "string"
+        },
+        "goos": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "protocolVersion": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "protocolVersion",
+        "goVersion",
+        "goos",
+        "goarch"
+      ],
+      "type": "object"
+    },
+    "DynamicToolCallContentItem": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "type": "object"
+    },
+    "DynamicToolCallItem": {
+      "additionalProperties": false,
+      "properties": {
+        "arguments": {},
+        "contentItems": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/DynamicToolCallContentItem"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "durationMs": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "namespace": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "inProgress",
+            "completed",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "success": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tool": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "dynamicToolCall"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "namespace",
+        "tool",
+        "arguments",
+        "status",
+        "contentItems",
+        "success",
+        "durationMs"
+      ],
+      "type": "object"
+    },
+    "DynamicToolCallItemCompletedNotificationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "completedAtMs": {
+          "type": "integer"
+        },
+        "item": {
+          "$ref": "#/$defs/DynamicToolCallItem"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "threadId",
+        "turnId",
+        "completedAtMs"
+      ],
+      "type": "object"
+    },
+    "DynamicToolCallItemStartedNotificationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "item": {
+          "$ref": "#/$defs/DynamicToolCallItem"
+        },
+        "startedAtMs": {
+          "type": "integer"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "threadId",
+        "turnId",
+        "startedAtMs"
+      ],
+      "type": "object"
+    },
+    "Error": {
+      "properties": {
+        "code": {
+          "type": "integer"
+        },
+        "data": {},
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "FileChangeApprovalRequestParams": {
+      "additionalProperties": false,
+      "properties": {
+        "destination": {
+          "type": "string"
+        },
+        "destructive": {
+          "type": "boolean"
+        },
+        "grantRoot": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "startedAtMs": {
+          "type": "integer"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "itemId",
+        "startedAtMs",
+        "grantRoot"
+      ],
+      "type": "object"
+    },
+    "FileChangeArtifactEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "afterSha256": {
+          "type": "string"
+        },
+        "beforeSha256": {
+          "type": "string"
+        },
+        "bytes": {
+          "type": "integer"
+        },
+        "contentEncoding": {
+          "type": "string"
+        },
+        "contentOmittedReason": {
+          "type": "string"
+        },
+        "contentTruncated": {
+          "type": "boolean"
+        },
+        "diffOmittedReason": {
+          "type": "string"
+        },
+        "diffTruncated": {
+          "type": "boolean"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "operation",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "FileChangeItem": {
+      "additionalProperties": false,
+      "properties": {
+        "changes": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/FileUpdateChange"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/FileChangeArtifactEvidence"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "inProgress",
+            "completed"
+          ],
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "fileChange"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "changes",
+        "status"
+      ],
+      "type": "object"
+    },
+    "FileChangeItemCompletedNotificationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "completedAtMs": {
+          "type": "integer"
+        },
+        "item": {
+          "$ref": "#/$defs/FileChangeItem"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "threadId",
+        "turnId",
+        "completedAtMs"
+      ],
+      "type": "object"
+    },
+    "FileChangeItemStartedNotificationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "item": {
+          "$ref": "#/$defs/FileChangeItem"
+        },
+        "startedAtMs": {
+          "type": "integer"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "threadId",
+        "turnId",
+        "startedAtMs"
+      ],
+      "type": "object"
+    },
+    "FileChangePatchUpdatedNotificationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "changes": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/FileUpdateChange"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "itemId",
+        "changes"
+      ],
+      "type": "object"
+    },
+    "FileUpdateChange": {
+      "additionalProperties": false,
+      "properties": {
+        "diff": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PatchChangeKind"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "diff"
+      ],
+      "type": "object"
+    },
+    "ItemLifecycleNotificationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "item": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimelineItem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "at"
+      ],
+      "type": "object"
+    },
+    "MCPContent": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "MCPToolCallError": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "MCPToolCallItem": {
+      "additionalProperties": false,
+      "properties": {
+        "appContext": {},
+        "arguments": {},
+        "durationMs": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MCPToolCallError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "mcpAppResourceUri": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pluginId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MCPToolCallResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "server": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "inProgress",
+            "completed",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "mcpToolCall"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "server",
+        "tool",
+        "status",
+        "arguments",
+        "appContext",
+        "mcpAppResourceUri",
+        "pluginId",
+        "result",
+        "error",
+        "durationMs"
+      ],
+      "type": "object"
+    },
+    "MCPToolCallItemCompletedNotificationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "completedAtMs": {
+          "type": "integer"
+        },
+        "item": {
+          "$ref": "#/$defs/MCPToolCallItem"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "threadId",
+        "turnId",
+        "completedAtMs"
+      ],
+      "type": "object"
+    },
+    "MCPToolCallItemStartedNotificationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "item": {
+          "$ref": "#/$defs/MCPToolCallItem"
+        },
+        "startedAtMs": {
+          "type": "integer"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "threadId",
+        "turnId",
+        "startedAtMs"
+      ],
+      "type": "object"
+    },
+    "MCPToolCallProgressNotificationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "itemId": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "itemId",
+        "message"
+      ],
+      "type": "object"
+    },
+    "MCPToolCallResult": {
+      "additionalProperties": false,
+      "properties": {
+        "_meta": {},
+        "content": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/MCPContent"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "structuredContent": {}
+      },
+      "required": [
+        "content",
+        "structuredContent",
+        "_meta"
+      ],
+      "type": "object"
+    },
+    "Notification": {
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "enum": [
+            "account/login/completed",
+            "account/rateLimits/updated",
+            "account/updated",
+            "app/list/updated",
+            "command/exec/outputDelta",
+            "configWarning",
+            "deprecationNotice",
+            "error",
+            "externalAgentConfig/import/completed",
+            "externalAgentConfig/import/progress",
+            "fs/changed",
+            "fuzzyFileSearch/sessionCompleted",
+            "fuzzyFileSearch/sessionUpdated",
+            "guardianWarning",
+            "hook/completed",
+            "hook/started",
+            "item/agentMessage/delta",
+            "item/autoApprovalReview/completed",
+            "item/autoApprovalReview/started",
+            "item/commandExecution/outputDelta",
+            "item/commandExecution/terminalInteraction",
+            "item/completed",
+            "item/fileChange/outputDelta",
+            "item/fileChange/patchUpdated",
+            "item/mcpToolCall/progress",
+            "item/plan/delta",
+            "item/reasoning/summaryPartAdded",
+            "item/reasoning/summaryTextDelta",
+            "item/reasoning/textDelta",
+            "item/started",
+            "mcpServer/oauthLogin/completed",
+            "mcpServer/startupStatus/updated",
+            "model/rerouted",
+            "model/safetyBuffering/updated",
+            "model/verification",
+            "process/exited",
+            "process/outputDelta",
+            "rawResponseItem/completed",
+            "remoteControl/status/changed",
+            "serverRequest/resolved",
+            "skills/changed",
+            "thread/archived",
+            "thread/closed",
+            "thread/compacted",
+            "thread/deleted",
+            "thread/goal/cleared",
+            "thread/goal/updated",
+            "thread/name/updated",
+            "thread/realtime/closed",
+            "thread/realtime/error",
+            "thread/realtime/itemAdded",
+            "thread/realtime/outputAudio/delta",
+            "thread/realtime/sdp",
+            "thread/realtime/started",
+            "thread/realtime/transcript/delta",
+            "thread/realtime/transcript/done",
+            "thread/settings/updated",
+            "thread/started",
+            "thread/status/changed",
+            "thread/tokenUsage/updated",
+            "thread/unarchived",
+            "turn/completed",
+            "turn/diff/updated",
+            "turn/moderationMetadata",
+            "turn/plan/updated",
+            "turn/started",
+            "warning",
+            "windows/worldWritableWarning",
+            "windowsSandbox/setupCompleted",
+            "cache/benchmark/completed",
+            "initialized"
+          ],
+          "type": "string"
+        },
+        "params": {}
+      },
+      "required": [
+        "method"
+      ],
+      "type": "object"
+    },
+    "PatchChangeKind": {
+      "additionalProperties": false,
+      "properties": {
+        "movePath": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "enum": [
+            "add",
+            "delete",
+            "update"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "PermissionsApprovalRequestParams": {
+      "additionalProperties": false,
+      "properties": {
+        "base": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "pathspecs": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "permissions": {
+          "anyOf": [
+            {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "startedAtMs": {
+          "type": "integer"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "itemId",
+        "startedAtMs",
+        "cwd",
+        "permissions"
+      ],
+      "type": "object"
+    },
+    "Request": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestID"
+        },
+        "method": {
+          "enum": [
+            "account/login/cancel",
+            "account/login/start",
+            "account/logout",
+            "account/rateLimitResetCredit/consume",
+            "account/rateLimits/read",
+            "account/read",
+            "account/sendAddCreditsNudgeEmail",
+            "account/usage/read",
+            "account/workspaceMessages/read",
+            "app/list",
+            "collaborationMode/list",
+            "command/exec",
+            "command/exec/resize",
+            "command/exec/terminate",
+            "command/exec/write",
+            "config/batchWrite",
+            "config/mcpServer/reload",
+            "config/read",
+            "config/value/write",
+            "configRequirements/read",
+            "environment/add",
+            "environment/info",
+            "experimentalFeature/enablement/set",
+            "experimentalFeature/list",
+            "externalAgentConfig/detect",
+            "externalAgentConfig/import",
+            "externalAgentConfig/import/readHistories",
+            "feedback/upload",
+            "fs/copy",
+            "fs/createDirectory",
+            "fs/getMetadata",
+            "fs/readDirectory",
+            "fs/readFile",
+            "fs/remove",
+            "fs/unwatch",
+            "fs/watch",
+            "fs/writeFile",
+            "fuzzyFileSearch",
+            "fuzzyFileSearch/sessionStart",
+            "fuzzyFileSearch/sessionStop",
+            "fuzzyFileSearch/sessionUpdate",
+            "getAuthStatus",
+            "getConversationSummary",
+            "gitDiffToRemote",
+            "hooks/list",
+            "initialize",
+            "marketplace/add",
+            "marketplace/remove",
+            "marketplace/upgrade",
+            "mcpServer/oauth/login",
+            "mcpServer/resource/read",
+            "mcpServer/tool/call",
+            "mcpServerStatus/list",
+            "memory/reset",
+            "mock/experimentalMethod",
+            "model/list",
+            "modelProvider/capabilities/read",
+            "permissionProfile/list",
+            "plugin/install",
+            "plugin/installed",
+            "plugin/list",
+            "plugin/read",
+            "plugin/share/checkout",
+            "plugin/share/delete",
+            "plugin/share/list",
+            "plugin/share/save",
+            "plugin/share/updateTargets",
+            "plugin/skill/read",
+            "plugin/uninstall",
+            "process/kill",
+            "process/resizePty",
+            "process/spawn",
+            "process/writeStdin",
+            "remoteControl/client/list",
+            "remoteControl/client/revoke",
+            "remoteControl/disable",
+            "remoteControl/enable",
+            "remoteControl/pairing/start",
+            "remoteControl/pairing/status",
+            "remoteControl/status/read",
+            "review/start",
+            "skills/config/write",
+            "skills/extraRoots/set",
+            "skills/list",
+            "thread/approveGuardianDeniedAction",
+            "thread/archive",
+            "thread/backgroundTerminals/clean",
+            "thread/backgroundTerminals/list",
+            "thread/backgroundTerminals/terminate",
+            "thread/compact/start",
+            "thread/decrement_elicitation",
+            "thread/delete",
+            "thread/fork",
+            "thread/goal/clear",
+            "thread/goal/get",
+            "thread/goal/set",
+            "thread/increment_elicitation",
+            "thread/inject_items",
+            "thread/items/list",
+            "thread/list",
+            "thread/loaded/list",
+            "thread/memoryMode/set",
+            "thread/metadata/update",
+            "thread/name/set",
+            "thread/read",
+            "thread/realtime/appendAudio",
+            "thread/realtime/appendSpeech",
+            "thread/realtime/appendText",
+            "thread/realtime/listVoices",
+            "thread/realtime/start",
+            "thread/realtime/stop",
+            "thread/resume",
+            "thread/rollback",
+            "thread/search",
+            "thread/settings/update",
+            "thread/shellCommand",
+            "thread/start",
+            "thread/turns/list",
+            "thread/unarchive",
+            "thread/unsubscribe",
+            "turn/interrupt",
+            "turn/start",
+            "turn/steer",
+            "windowsSandbox/readiness",
+            "windowsSandbox/setupStart",
+            "approval/respond",
+            "cache/benchmark",
+            "cache/stats",
+            "daemon/restart",
+            "daemon/start",
+            "daemon/status",
+            "daemon/stop",
+            "daemon/version",
+            "git/commit",
+            "git/diff",
+            "git/status",
+            "git/worktree/create",
+            "git/worktree/list",
+            "provider/capabilities/read",
+            "provider/list",
+            "tool/list",
+            "turn/retry"
+          ],
+          "type": "string"
+        },
+        "params": {}
+      },
+      "required": [
+        "id",
+        "method"
+      ],
+      "type": "object"
+    },
+    "RequestID": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer"
+        }
+      ]
+    },
+    "Response": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/Error"
+        },
+        "id": {
+          "$ref": "#/$defs/RequestID"
+        },
+        "result": {}
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "ServerRequestResolvedNotificationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "requestId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "requestId"
+      ],
+      "type": "object"
+    },
+    "ThreadCompactStartParams": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ThreadCompactStartResponse": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "ThreadCompactedNotificationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId"
+      ],
+      "type": "object"
+    },
+    "ThreadTokenUsageUpdatedNotificationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "tokenUsage": {
+          "$ref": "#/$defs/TokenUsage"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "tokenUsage"
+      ],
+      "type": "object"
+    },
+    "TimelineItem": {
+      "additionalProperties": false,
+      "properties": {
+        "createdAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "parentItemId": {
+          "type": "string"
+        },
+        "payload": {},
+        "seq": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "threadId",
+        "seq",
+        "kind",
+        "createdAt",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "TokenUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "last": {
+          "$ref": "#/$defs/TokenUsageBreakdown"
+        },
+        "modelContextWindow": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total": {
+          "$ref": "#/$defs/TokenUsageBreakdown"
+        }
+      },
+      "required": [
+        "total",
+        "last",
+        "modelContextWindow"
+      ],
+      "type": "object"
+    },
+    "TokenUsageBreakdown": {
+      "additionalProperties": false,
+      "properties": {
+        "cachedInputTokens": {
+          "type": "integer"
+        },
+        "inputTokens": {
+          "type": "integer"
+        },
+        "outputTokens": {
+          "type": "integer"
+        },
+        "reasoningOutputTokens": {
+          "type": "integer"
+        },
+        "totalTokens": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "totalTokens",
+        "inputTokens",
+        "cachedInputTokens",
+        "outputTokens",
+        "reasoningOutputTokens"
+      ],
+      "type": "object"
+    },
+    "ToolPayloadSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {
+          "type": "integer"
+        },
+        "omitted": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "omitted",
+        "reason",
+        "bytes",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "TurnDiffUpdatedNotificationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "diff": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "diff"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Gollem App Server Protocol",
+  "type": "object",
+  "x-gollem-item-payload-bindings": [
+    {
+      "kind": "commandExecution",
+      "type": "CommandExecutionItem"
+    },
+    {
+      "kind": "contextCompaction",
+      "type": "ContextCompactionItem"
+    },
+    {
+      "kind": "dynamicToolCall",
+      "type": "DynamicToolCallItem"
+    },
+    {
+      "kind": "fileChange",
+      "type": "FileChangeItem"
+    },
+    {
+      "kind": "mcpToolCall",
+      "type": "MCPToolCallItem"
+    }
+  ],
+  "x-gollem-methods": [
+    {
+      "method": "account/login/cancel",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1002, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "account/login/start",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:995, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "account/logout",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1008, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "account/rateLimitResetCredit/consume",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1020, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "account/rateLimits/read",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1014, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "account/read",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1143, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "account/sendAddCreditsNudgeEmail",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1038, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "account/usage/read",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1026, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "account/workspaceMessages/read",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1032, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "app/list",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:732, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "collaborationMode/list",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "protocol crate:common.rs:927"
+    },
+    {
+      "method": "command/exec",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1051, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "command/exec/resize",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1070, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "command/exec/terminate",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1064, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "command/exec/write",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1058, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "config/batchWrite",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1130, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "config/mcpServer/reload",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:960, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "config/read",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1104, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "config/value/write",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1124, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "configRequirements/read",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1137, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "environment/add",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "protocol crate:common.rs:941"
+    },
+    {
+      "method": "environment/info",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "protocol crate:common.rs:948"
+    },
+    {
+      "method": "experimentalFeature/enablement/set",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:878, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "experimentalFeature/list",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:868, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "externalAgentConfig/detect",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1109, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "externalAgentConfig/import",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1114, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "externalAgentConfig/import/readHistories",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1119, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "feedback/upload",
+      "surface": "client-request",
+      "state": "not-applicable",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:1044, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "fs/copy",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:769, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "fs/createDirectory",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:749, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "fs/getMetadata",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:754, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "fs/readDirectory",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:759, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "fs/readFile",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:739, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "fs/remove",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:764, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "fs/unwatch",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:779, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "fs/watch",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:774, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "fs/writeFile",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:744, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "fuzzyFileSearch",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "fuzzyFileSearch/sessionStart",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "protocol crate:common.rs:1174"
+    },
+    {
+      "method": "fuzzyFileSearch/sessionStop",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "protocol crate:common.rs:1186"
+    },
+    {
+      "method": "fuzzyFileSearch/sessionUpdate",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "protocol crate:common.rs:1180"
+    },
+    {
+      "method": "getAuthStatus",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "typescript:ClientRequest.ts"
+    },
+    {
+      "method": "getConversationSummary",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "typescript:ClientRequest.ts"
+    },
+    {
+      "method": "gitDiffToRemote",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "typescript:ClientRequest.ts"
+    },
+    {
+      "method": "hooks/list",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:667, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "initialize",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "marketplace/add",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:672, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "marketplace/remove",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:677, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "marketplace/upgrade",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:682, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "mcpServer/oauth/login",
+      "surface": "client-request",
+      "state": "blocked",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:954, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "mcpServer/resource/read",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:972, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "mcpServer/tool/call",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:978, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "mcpServerStatus/list",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:966, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "memory/reset",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "protocol crate:common.rs:567"
+    },
+    {
+      "method": "mock/experimentalMethod",
+      "surface": "client-request",
+      "state": "not-applicable",
+      "source": "protocol crate:common.rs:934"
+    },
+    {
+      "method": "model/list",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:858, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "modelProvider/capabilities/read",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:863, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "permissionProfile/list",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:873, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "plugin/install",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:789, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "plugin/installed",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:692, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "plugin/list",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:687, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "plugin/read",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:697, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "plugin/share/checkout",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:722, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "plugin/share/delete",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:727, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "plugin/share/list",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:717, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "plugin/share/save",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:707, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "plugin/share/updateTargets",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:712, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "plugin/skill/read",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:702, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "plugin/uninstall",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:794, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "process/kill",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "protocol crate:common.rs:1091"
+    },
+    {
+      "method": "process/resizePty",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "protocol crate:common.rs:1098"
+    },
+    {
+      "method": "process/spawn",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "protocol crate:common.rs:1077"
+    },
+    {
+      "method": "process/writeStdin",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "protocol crate:common.rs:1084"
+    },
+    {
+      "method": "remoteControl/client/list",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "protocol crate:common.rs:914"
+    },
+    {
+      "method": "remoteControl/client/revoke",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "protocol crate:common.rs:920"
+    },
+    {
+      "method": "remoteControl/disable",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "protocol crate:common.rs:890"
+    },
+    {
+      "method": "remoteControl/enable",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "protocol crate:common.rs:884"
+    },
+    {
+      "method": "remoteControl/pairing/start",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "protocol crate:common.rs:902"
+    },
+    {
+      "method": "remoteControl/pairing/status",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "protocol crate:common.rs:908"
+    },
+    {
+      "method": "remoteControl/status/read",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "protocol crate:common.rs:896"
+    },
+    {
+      "method": "review/start",
+      "surface": "client-request",
+      "state": "blocked",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:852, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "skills/config/write",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:784, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "skills/extraRoots/set",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:662, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "skills/list",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:657, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/approveGuardianDeniedAction",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:587, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/archive",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:494, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/backgroundTerminals/clean",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "protocol crate:common.rs:593"
+    },
+    {
+      "method": "thread/backgroundTerminals/list",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "protocol crate:common.rs:599"
+    },
+    {
+      "method": "thread/backgroundTerminals/terminate",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "protocol crate:common.rs:605"
+    },
+    {
+      "method": "thread/compact/start",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:577, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/decrement_elicitation",
+      "surface": "client-request",
+      "state": "blocked",
+      "source": "protocol crate:common.rs:523"
+    },
+    {
+      "method": "thread/delete",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:499, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/fork",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:488, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/goal/clear",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:543, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/goal/get",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:538, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/goal/set",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:533, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/increment_elicitation",
+      "surface": "client-request",
+      "state": "blocked",
+      "source": "protocol crate:common.rs:514"
+    },
+    {
+      "method": "thread/inject_items",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:652, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/items/list",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "protocol crate:common.rs:645"
+    },
+    {
+      "method": "thread/list",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:615, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/loaded/list",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:627, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/memoryMode/set",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "protocol crate:common.rs:561"
+    },
+    {
+      "method": "thread/metadata/update",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:548, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/name/set",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:528, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/read",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:632, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/realtime/appendAudio",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "protocol crate:common.rs:823"
+    },
+    {
+      "method": "thread/realtime/appendSpeech",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "protocol crate:common.rs:835"
+    },
+    {
+      "method": "thread/realtime/appendText",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "protocol crate:common.rs:829"
+    },
+    {
+      "method": "thread/realtime/listVoices",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "protocol crate:common.rs:847"
+    },
+    {
+      "method": "thread/realtime/start",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "protocol crate:common.rs:817"
+    },
+    {
+      "method": "thread/realtime/stop",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "protocol crate:common.rs:841"
+    },
+    {
+      "method": "thread/resume",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:482, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/rollback",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:610, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/search",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "protocol crate:common.rs:622"
+    },
+    {
+      "method": "thread/settings/update",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "protocol crate:common.rs:554"
+    },
+    {
+      "method": "thread/shellCommand",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:582, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/start",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:476, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/turns/list",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "protocol crate:common.rs:638"
+    },
+    {
+      "method": "thread/unarchive",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:572, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "thread/unsubscribe",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:504, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "turn/interrupt",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:811, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "turn/start",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:799, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "turn/steer",
+      "surface": "client-request",
+      "state": "implemented",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:805, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "windowsSandbox/readiness",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:989, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "windowsSandbox/setupStart",
+      "surface": "client-request",
+      "state": "deferred-stub",
+      "source": "json schema:ClientRequest, protocol crate:common.rs:984, typescript:ClientRequest.ts"
+    },
+    {
+      "method": "account/login/completed",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "account/rateLimits/updated",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1656, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "account/updated",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1655, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "app/list/updated",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1657, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "command/exec/outputDelta",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1639, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "configWarning",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1675, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "deprecationNotice",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1674, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "error",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1609, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "externalAgentConfig/import/completed",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1660, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "externalAgentConfig/import/progress",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1659, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "fs/changed",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1661, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "fuzzyFileSearch/sessionCompleted",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1677, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "fuzzyFileSearch/sessionUpdated",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1676, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "guardianWarning",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1673, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "hook/completed",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1626, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "hook/started",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1624, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "item/agentMessage/delta",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1635, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "item/autoApprovalReview/completed",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1631, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "item/autoApprovalReview/started",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1630, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "item/commandExecution/outputDelta",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1646, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "item/commandExecution/terminalInteraction",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1647, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "item/completed",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1632, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "item/fileChange/outputDelta",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1649, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "item/fileChange/patchUpdated",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1650, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "item/mcpToolCall/progress",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1652, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "item/plan/delta",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1637, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "item/reasoning/summaryPartAdded",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1663, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "item/reasoning/summaryTextDelta",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1662, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "item/reasoning/textDelta",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1664, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "item/started",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1629, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "mcpServer/oauthLogin/completed",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1653, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "mcpServer/startupStatus/updated",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1654, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "model/rerouted",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1667, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "model/safetyBuffering/updated",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1671, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "model/verification",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1668, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "process/exited",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1645, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "process/outputDelta",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1642, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "rawResponseItem/completed",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "protocol crate:common.rs:1634, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "remoteControl/status/changed",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1658, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "serverRequest/resolved",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1651, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "skills/changed",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1616, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/archived",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1612, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/closed",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1615, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/compacted",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1666, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/deleted",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1613, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/goal/cleared",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1619, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/goal/updated",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1618, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/name/updated",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1617, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/realtime/closed",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1693, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/realtime/error",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1691, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/realtime/itemAdded",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1681, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/realtime/outputAudio/delta",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1687, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/realtime/sdp",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1689, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/realtime/started",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1679, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/realtime/transcript/delta",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1683, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/realtime/transcript/done",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1685, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/settings/updated",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1621, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/started",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1610, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/status/changed",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1611, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/tokenUsage/updated",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1622, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "thread/unarchived",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1614, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "turn/completed",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1625, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "turn/diff/updated",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1627, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "turn/moderationMetadata",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1670, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "turn/plan/updated",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1628, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "turn/started",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1623, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "warning",
+      "surface": "server-notification",
+      "state": "blocked",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1672, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "windows/worldWritableWarning",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1696, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "windowsSandbox/setupCompleted",
+      "surface": "server-notification",
+      "state": "deferred-stub",
+      "source": "json schema:ServerNotification, protocol crate:common.rs:1697, typescript:ServerNotification.ts"
+    },
+    {
+      "method": "cache/benchmark/completed",
+      "surface": "server-notification",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "account/chatgptAuthTokens/refresh",
+      "surface": "server-request",
+      "state": "deferred-stub",
+      "source": "json schema:ServerRequest, protocol crate:common.rs:1492, typescript:ServerRequest.ts"
+    },
+    {
+      "method": "applyPatchApproval",
+      "surface": "server-request",
+      "state": "deferred-stub",
+      "source": "json schema:ServerRequest, typescript:ServerRequest.ts"
+    },
+    {
+      "method": "attestation/generate",
+      "surface": "server-request",
+      "state": "blocked",
+      "source": "json schema:ServerRequest, protocol crate:common.rs:1498, typescript:ServerRequest.ts"
+    },
+    {
+      "method": "currentTime/read",
+      "surface": "server-request",
+      "state": "blocked",
+      "source": "protocol crate:common.rs:1505"
+    },
+    {
+      "method": "execCommandApproval",
+      "surface": "server-request",
+      "state": "deferred-stub",
+      "source": "json schema:ServerRequest, typescript:ServerRequest.ts"
+    },
+    {
+      "method": "item/commandExecution/requestApproval",
+      "surface": "server-request",
+      "state": "implemented",
+      "source": "json schema:ServerRequest, protocol crate:common.rs:1456, typescript:ServerRequest.ts"
+    },
+    {
+      "method": "item/fileChange/requestApproval",
+      "surface": "server-request",
+      "state": "implemented",
+      "source": "json schema:ServerRequest, protocol crate:common.rs:1463, typescript:ServerRequest.ts"
+    },
+    {
+      "method": "item/permissions/requestApproval",
+      "surface": "server-request",
+      "state": "implemented",
+      "source": "json schema:ServerRequest, protocol crate:common.rs:1481, typescript:ServerRequest.ts"
+    },
+    {
+      "method": "item/tool/call",
+      "surface": "server-request",
+      "state": "implemented",
+      "source": "json schema:ServerRequest, protocol crate:common.rs:1487, typescript:ServerRequest.ts"
+    },
+    {
+      "method": "item/tool/requestUserInput",
+      "surface": "server-request",
+      "state": "implemented",
+      "source": "json schema:ServerRequest, protocol crate:common.rs:1469, typescript:ServerRequest.ts"
+    },
+    {
+      "method": "mcpServer/elicitation/request",
+      "surface": "server-request",
+      "state": "implemented",
+      "source": "json schema:ServerRequest, protocol crate:common.rs:1475, typescript:ServerRequest.ts"
+    },
+    {
+      "method": "initialized",
+      "surface": "client-notification",
+      "state": "implemented",
+      "source": "json schema:ClientNotification, typescript:ClientNotification.ts"
+    },
+    {
+      "method": "approval/respond",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "cache/benchmark",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "cache/stats",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "daemon/restart",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "daemon/start",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "daemon/status",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "daemon/stop",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "daemon/version",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "git/commit",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "git/diff",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "git/status",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "git/worktree/create",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "git/worktree/list",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "provider/capabilities/read",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "provider/list",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "tool/list",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    },
+    {
+      "method": "turn/retry",
+      "surface": "gollem-extension",
+      "state": "implemented",
+      "source": "goal.txt"
+    }
+  ],
+  "x-gollem-protocol-version": "gollem.appserver.v0",
+  "x-gollem-schema-version": "gollem.appserver.schema.v1",
+  "x-gollem-type-bindings": [
+    {
+      "method": "approval/respond",
+      "surface": "gollem-extension",
+      "params": [
+        "ApprovalRespondParams"
+      ],
+      "result": [
+        "ApprovalRespondResult"
+      ]
+    },
+    {
+      "method": "daemon/restart",
+      "surface": "gollem-extension",
+      "params": [
+        "DaemonShutdownParams"
+      ],
+      "result": [
+        "DaemonStopResult"
+      ]
+    },
+    {
+      "method": "daemon/start",
+      "surface": "gollem-extension",
+      "result": [
+        "DaemonStartResult"
+      ]
+    },
+    {
+      "method": "daemon/status",
+      "surface": "gollem-extension",
+      "result": [
+        "DaemonStatus"
+      ]
+    },
+    {
+      "method": "daemon/stop",
+      "surface": "gollem-extension",
+      "params": [
+        "DaemonShutdownParams"
+      ],
+      "result": [
+        "DaemonStopResult"
+      ]
+    },
+    {
+      "method": "daemon/version",
+      "surface": "gollem-extension",
+      "result": [
+        "DaemonVersion"
+      ]
+    },
+    {
+      "method": "item/commandExecution/outputDelta",
+      "surface": "server-notification",
+      "params": [
+        "CommandExecutionOutputDeltaNotificationParams"
+      ]
+    },
+    {
+      "method": "item/commandExecution/requestApproval",
+      "surface": "server-request",
+      "params": [
+        "CommandExecutionApprovalRequestParams"
+      ]
+    },
+    {
+      "method": "item/completed",
+      "surface": "server-notification",
+      "params": [
+        "ItemLifecycleNotificationParams",
+        "DynamicToolCallItemCompletedNotificationParams",
+        "CommandExecutionItemCompletedNotificationParams",
+        "FileChangeItemCompletedNotificationParams",
+        "MCPToolCallItemCompletedNotificationParams"
+      ]
+    },
+    {
+      "method": "item/fileChange/patchUpdated",
+      "surface": "server-notification",
+      "params": [
+        "FileChangePatchUpdatedNotificationParams"
+      ]
+    },
+    {
+      "method": "item/fileChange/requestApproval",
+      "surface": "server-request",
+      "params": [
+        "FileChangeApprovalRequestParams"
+      ]
+    },
+    {
+      "method": "item/mcpToolCall/progress",
+      "surface": "server-notification",
+      "params": [
+        "MCPToolCallProgressNotificationParams"
+      ]
+    },
+    {
+      "method": "item/permissions/requestApproval",
+      "surface": "server-request",
+      "params": [
+        "PermissionsApprovalRequestParams"
+      ]
+    },
+    {
+      "method": "item/started",
+      "surface": "server-notification",
+      "params": [
+        "ItemLifecycleNotificationParams",
+        "DynamicToolCallItemStartedNotificationParams",
+        "CommandExecutionItemStartedNotificationParams",
+        "FileChangeItemStartedNotificationParams",
+        "MCPToolCallItemStartedNotificationParams"
+      ]
+    },
+    {
+      "method": "serverRequest/resolved",
+      "surface": "server-notification",
+      "params": [
+        "ServerRequestResolvedNotificationParams"
+      ]
+    },
+    {
+      "method": "thread/compact/start",
+      "surface": "client-request",
+      "params": [
+        "ThreadCompactStartParams"
+      ],
+      "result": [
+        "ThreadCompactStartResponse"
+      ]
+    },
+    {
+      "method": "thread/compacted",
+      "surface": "server-notification",
+      "params": [
+        "ThreadCompactedNotificationParams"
+      ]
+    },
+    {
+      "method": "thread/tokenUsage/updated",
+      "surface": "server-notification",
+      "params": [
+        "ThreadTokenUsageUpdatedNotificationParams"
+      ]
+    },
+    {
+      "method": "turn/diff/updated",
+      "surface": "server-notification",
+      "params": [
+        "TurnDiffUpdatedNotificationParams"
+      ]
+    }
+  ]
+}

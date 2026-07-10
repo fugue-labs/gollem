@@ -147,3 +147,27 @@ func TestServiceValidationAndReload(t *testing.T) {
 		t.Fatalf("empty reload = %#v", reload)
 	}
 }
+
+func TestServiceListToolsIsDeterministicAndKeepsHealthyServers(t *testing.T) {
+	svc := NewService()
+	if err := svc.AddServer("zeta", &mockSource{tools: []extmcp.Tool{{Name: "second", InputSchema: json.RawMessage(`{"type":"object"}`)}}}); err != nil {
+		t.Fatalf("AddServer zeta: %v", err)
+	}
+	if err := svc.AddServer("alpha", &mockSource{tools: []extmcp.Tool{{Name: "first", Description: "First tool", InputSchema: json.RawMessage(`{"type":"object"}`)}}}); err != nil {
+		t.Fatalf("AddServer alpha: %v", err)
+	}
+	if err := svc.AddServer("broken", &mockSource{listErr: errors.New("offline")}); err != nil {
+		t.Fatalf("AddServer broken: %v", err)
+	}
+
+	listed, err := svc.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(listed.Tools) != 2 || listed.Tools[0].QualifiedName != "alpha__first" || listed.Tools[1].QualifiedName != "zeta__second" {
+		t.Fatalf("tools = %#v", listed.Tools)
+	}
+	if len(listed.Errors) != 1 || listed.Errors[0].ServerID != "broken" || listed.Errors[0].Message != "offline" {
+		t.Fatalf("errors = %#v", listed.Errors)
+	}
+}

@@ -56,6 +56,11 @@ func ServeWebSocket(ctx context.Context, server *Server, conn *websocket.Conn) e
 	select {
 	case err := <-serveErr:
 		firstErr = err
+		if err == nil {
+			if err := <-writerErr; firstErr == nil {
+				firstErr = err
+			}
+		}
 	case err := <-readerErr:
 		firstErr = err
 		_ = inputW.Close()

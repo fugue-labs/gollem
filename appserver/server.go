@@ -36,12 +36,17 @@ const (
 // Server dispatches Codex-style app-server JSON-RPC requests to Gollem
 // services. It is transport-neutral; stdio/socket/WebSocket layers can wrap it.
 type Server struct {
-	mu         sync.Mutex
-	state      connectionState
-	serverInfo protocol.ImplementationInfo
-	clientInfo protocol.ImplementationInfo
-	optOut     map[string]struct{}
-	loaded     map[string]struct{}
+	mu          sync.Mutex
+	state       connectionState
+	serverInfo  protocol.ImplementationInfo
+	clientInfo  protocol.ImplementationInfo
+	optOut      map[string]struct{}
+	loaded      map[string]struct{}
+	subscribed  map[string]struct{}
+	idleUnload  map[string]*threadIdleUnload
+	commands    map[string]threadShellCommandRun
+	commandExec map[string]struct{}
+	commandSeq  int
 
 	store     store.Store
 	fs        *toolfs.Service
@@ -61,6 +66,7 @@ type Server struct {
 	memory    *MemoryService
 
 	requestSchedulerLimit int
+	threadIdleUnloadAfter time.Duration
 }
 
 // Option configures a Server.
@@ -164,6 +170,14 @@ func WithMemoryService(memory *MemoryService) Option {
 	}
 }
 
+func WithThreadIdleUnloadAfter(after time.Duration) Option {
+	return func(s *Server) {
+		if after >= 0 {
+			s.threadIdleUnloadAfter = after
+		}
+	}
+}
+
 func WithRequestSchedulerLimit(limit int) Option {
 	return func(s *Server) {
 		if limit > 0 {
@@ -177,6 +191,10 @@ func NewServer(opts ...Option) *Server {
 		serverInfo:            protocol.ImplementationInfo{Name: "gollem-appserver"},
 		optOut:                make(map[string]struct{}),
 		loaded:                make(map[string]struct{}),
+		subscribed:            make(map[string]struct{}),
+		idleUnload:            make(map[string]*threadIdleUnload),
+		commands:              make(map[string]threadShellCommandRun),
+		commandExec:           make(map[string]struct{}),
 		catalog:               catalog.NewDefault(),
 		config:                appconfig.NewService(),
 		cache:                 appcache.NewService(),
@@ -188,6 +206,7 @@ func NewServer(opts ...Option) *Server {
 		interact:              NewInteractionService(),
 		daemon:                NewDaemonService(),
 		requestSchedulerLimit: defaultRequestSchedulerLimit,
+		threadIdleUnloadAfter: 30 * time.Minute,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -418,10 +437,20 @@ func (s *Server) dispatch(ctx context.Context, method string, params json.RawMes
 		return s.handleThreadSearch(ctx, params)
 	case "thread/loaded/list":
 		return s.handleThreadLoadedList(ctx, params)
+	case "thread/unsubscribe":
+		return s.handleThreadUnsubscribe(ctx, params)
 	case "thread/read":
 		return s.handleThreadRead(ctx, params)
 	case "thread/fork":
 		return s.handleThreadFork(ctx, params)
+	case "thread/compact/start":
+		return s.handleThreadCompactStart(ctx, params)
+	case "thread/shellCommand":
+		return s.handleThreadShellCommand(ctx, params)
+	case "thread/approveGuardianDeniedAction":
+		return s.handleThreadApproveGuardianDeniedAction(ctx, params)
+	case "thread/rollback":
+		return s.handleThreadRollback(ctx, params)
 	case "thread/archive":
 		return s.handleThreadStatus(ctx, params, method, store.ThreadArchived)
 	case "thread/unarchive":
@@ -1268,7 +1297,7 @@ func (s *Server) loadThreadHistory(ctx context.Context, st store.Store, threadID
 		}
 		filtered = append(filtered, item)
 	}
-	return runtimeMessagesFromItems(filtered), nil
+	return runtimeMessagesFromItems(compactionWindowItems(filtered)), nil
 }
 
 func firstTurnItemSeq(ctx context.Context, st store.Store, threadID, turnID string) (int64, error) {
@@ -1628,7 +1657,16 @@ func (s *Server) handleProcessStart(ctx context.Context, method string, raw json
 		return nil, invalidParams("timeoutMillis must be non-negative", nil)
 	}
 	shell := boolDefault(params.Shell, defaultShell)
+	processID := strings.TrimSpace(firstNonEmpty(params.ProcessID, params.ID))
+	registeredCommandExec := false
+	if method == "command/exec" {
+		if processID == "" {
+			processID = s.nextCommandExecProcessID()
+		}
+		registeredCommandExec = s.registerCommandExecProcess(processID)
+	}
 	snapshot, err := processSvc.Start(ctx, toolprocess.StartRequest{
+		ID:             processID,
 		Command:        params.Command,
 		Args:           params.Args,
 		Shell:          shell,
@@ -1638,6 +1676,9 @@ func (s *Server) handleProcessStart(ctx context.Context, method string, raw json
 		MaxOutputBytes: params.MaxOutputBytes,
 	})
 	if err != nil {
+		if registeredCommandExec {
+			s.unregisterCommandExecProcess(processID)
+		}
 		return nil, mapError(method, err)
 	}
 	return map[string]any{"process": processSnapshotResultFrom(snapshot)}, nil
@@ -1963,6 +2004,7 @@ func mapError(method string, err error) *protocol.Error {
 		errors.Is(err, toolprocess.ErrInvalidWorkDir),
 		errors.Is(err, toolprocess.ErrProcessNotFound),
 		errors.Is(err, toolprocess.ErrProcessNotRunning),
+		errors.Is(err, toolprocess.ErrProcessAlreadyExists),
 		errors.Is(err, store.ErrThreadNotFound),
 		errors.Is(err, store.ErrTurnNotFound),
 		errors.Is(err, store.ErrItemNotFound),
@@ -1977,6 +2019,8 @@ func mapError(method string, err error) *protocol.Error {
 		return rpcError(protocol.CodeInvalidRequest, "operation denied by approval policy", err)
 	case errors.Is(err, ErrRuntimeNotConfigured):
 		return protocol.MethodUnavailableErrorWithReason(method, "turn runtime model factory is not configured")
+	case errors.Is(err, ErrRuntimeShuttingDown):
+		return protocol.MethodUnavailableErrorWithReason(method, "turn runtime is shutting down")
 	default:
 		return rpcError(protocol.CodeInternalError, "internal app-server error", err)
 	}
@@ -2103,6 +2147,10 @@ type threadLoadedListParams struct {
 type threadLoadedListResult struct {
 	Data       []string `json:"data"`
 	NextCursor *string  `json:"nextCursor"`
+}
+
+type threadUnsubscribeResponse struct {
+	Status string `json:"status"`
 }
 
 type threadSearchParams struct {
@@ -2259,6 +2307,8 @@ type metadataResult struct {
 }
 
 type processStartParams struct {
+	ID             string            `json:"id,omitempty"`
+	ProcessID      string            `json:"processId,omitempty"`
 	Command        string            `json:"command"`
 	Args           []string          `json:"args,omitempty"`
 	Shell          *bool             `json:"shell,omitempty"`

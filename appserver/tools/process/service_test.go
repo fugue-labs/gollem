@@ -60,6 +60,166 @@ func TestServiceStartShellWaitCapturesOutput(t *testing.T) {
 	}
 }
 
+func TestServiceRunPublishesPerRequestObservers(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	var outputs []OutputEvent
+	var exits []ExitEvent
+	var mu sync.Mutex
+
+	done, err := svc.Run(ctx, StartRequest{
+		Command: "printf 'request stdout'; printf 'request stderr' >&2",
+		Shell:   true,
+		OutputSink: func(event OutputEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			outputs = append(outputs, event)
+		},
+		ExitSink: func(event ExitEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			exits = append(exits, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if done.Status != StatusCompleted || string(done.Stdout) != "request stdout" || string(done.Stderr) != "request stderr" {
+		t.Fatalf("snapshot = %+v", done)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(outputs) < 2 {
+		t.Fatalf("per-request output events = %+v", outputs)
+	}
+	if len(exits) != 1 || exits[0].Snapshot.ID != done.ID || exits[0].Snapshot.Status != StatusCompleted {
+		t.Fatalf("per-request exit events = %+v", exits)
+	}
+}
+
+func TestServiceRunCanSuppressGlobalObservers(t *testing.T) {
+	ctx := context.Background()
+	var globalOutputs, globalExits, requestOutputs, requestExits int
+	svc := newTestService(t,
+		WithOutputSink(func(OutputEvent) { globalOutputs++ }),
+		WithExitSink(func(ExitEvent) { globalExits++ }),
+	)
+	done, err := svc.Run(ctx, StartRequest{
+		Command:             "printf private-output",
+		Shell:               true,
+		SuppressGlobalSinks: true,
+		OutputSink:          func(OutputEvent) { requestOutputs++ },
+		ExitSink:            func(ExitEvent) { requestExits++ },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if done.Status != StatusCompleted || string(done.Stdout) != "private-output" {
+		t.Fatalf("snapshot = %+v", done)
+	}
+	if globalOutputs != 0 || globalExits != 0 || requestOutputs == 0 || requestExits != 1 {
+		t.Fatalf("observer counts global=%d/%d request=%d/%d", globalOutputs, globalExits, requestOutputs, requestExits)
+	}
+}
+
+func TestServiceRunCancellationKillsOwnedProcessWithoutSecondApproval(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var approvals []Operation
+	var audits []AuditEvent
+	var mu sync.Mutex
+	ready := make(chan struct{})
+	var readyOnce sync.Once
+	svc := newTestService(t,
+		WithApproval(func(_ context.Context, operation Operation) error {
+			mu.Lock()
+			defer mu.Unlock()
+			approvals = append(approvals, operation)
+			return nil
+		}),
+		WithAuditSink(func(event AuditEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			audits = append(audits, event)
+		}),
+	)
+
+	type runResult struct {
+		snapshot *Snapshot
+		err      error
+	}
+	resultCh := make(chan runResult, 1)
+	go func() {
+		snapshot, err := svc.Run(ctx, StartRequest{
+			Command: "printf ready; sleep 30",
+			Shell:   true,
+			OutputSink: func(event OutputEvent) {
+				if strings.Contains(string(event.Data), "ready") {
+					readyOnce.Do(func() { close(ready) })
+				}
+			},
+		})
+		resultCh <- runResult{snapshot: snapshot, err: err}
+	}()
+
+	select {
+	case <-ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for owned process output")
+	}
+	cancel()
+	var result runResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after cancellation")
+	}
+	if !errors.Is(result.err, context.Canceled) {
+		t.Fatalf("Run cancellation error = %v, want context.Canceled", result.err)
+	}
+	if result.snapshot == nil || result.snapshot.Status != StatusKilled {
+		t.Fatalf("canceled snapshot = %+v", result.snapshot)
+	}
+	processes, err := svc.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(processes) != 1 || processes[0].Status == StatusRunning {
+		t.Fatalf("processes after cancellation = %+v", processes)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(approvals) != 1 || approvals[0].Kind != OperationStart {
+		t.Fatalf("approval operations = %+v, want only start", approvals)
+	}
+	if len(audits) < 2 || audits[len(audits)-1].Operation.Kind != OperationCancel || !audits[len(audits)-1].Allowed {
+		t.Fatalf("audit events = %+v, want allowed ownership cancellation", audits)
+	}
+}
+
+func TestServiceStartUsesProvidedIDAndRejectsDuplicate(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+
+	first, err := svc.Start(ctx, StartRequest{ID: "client-proc", Command: "cat"})
+	if err != nil {
+		t.Fatalf("Start first: %v", err)
+	}
+	if first.ID != "client-proc" {
+		t.Fatalf("process id = %q, want client-proc", first.ID)
+	}
+	if _, err := svc.Start(ctx, StartRequest{ID: "client-proc", Command: "cat"}); !errors.Is(err, ErrProcessAlreadyExists) {
+		t.Fatalf("duplicate start error = %v, want ErrProcessAlreadyExists", err)
+	}
+	if err := svc.Kill(ctx, first.ID); err != nil {
+		t.Fatalf("Kill first: %v", err)
+	}
+	if _, err := waitWithTimeout(t, svc, first.ID); err != nil {
+		t.Fatalf("Wait first: %v", err)
+	}
+}
+
 func TestServiceWorkDirIsWorkspaceScoped(t *testing.T) {
 	ctx := context.Background()
 	outside := t.TempDir()

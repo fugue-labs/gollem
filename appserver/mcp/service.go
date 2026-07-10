@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -127,6 +128,25 @@ type ToolCallTarget struct {
 	Arguments  map[string]any `json:"arguments"`
 }
 
+type ToolListResponse struct {
+	Tools  []ToolDescriptor `json:"tools"`
+	Errors []ToolListError  `json:"errors,omitempty"`
+}
+
+type ToolDescriptor struct {
+	ServerID      string          `json:"serverId"`
+	ServerName    string          `json:"serverName"`
+	Name          string          `json:"name"`
+	QualifiedName string          `json:"qualifiedName"`
+	Description   string          `json:"description,omitempty"`
+	InputSchema   json.RawMessage `json:"inputSchema,omitempty"`
+}
+
+type ToolListError struct {
+	ServerID string `json:"serverId"`
+	Message  string `json:"message"`
+}
+
 type ReloadResponse struct {
 	Reloaded    bool       `json:"reloaded"`
 	Status      string     `json:"status"`
@@ -208,6 +228,49 @@ func (s *Service) ListStatuses(ctx context.Context, params StatusListParams) Sta
 		Servers: statuses,
 		Data:    cloneStatuses(statuses),
 	}
+}
+
+// ListTools returns deterministic server-qualified MCP tool descriptors. A
+// broken server is reported alongside tools from healthy servers so one source
+// cannot hide the rest of the registry.
+func (s *Service) ListTools(ctx context.Context) (ToolListResponse, error) {
+	s = ensureService(s)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	servers := s.snapshotServers(StatusListParams{})
+	response := ToolListResponse{Tools: make([]ToolDescriptor, 0)}
+	for _, server := range servers {
+		tools, err := server.source.ListTools(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ToolListResponse{}, ctx.Err()
+			}
+			response.Errors = append(response.Errors, ToolListError{ServerID: server.name, Message: err.Error()})
+			continue
+		}
+		for _, tool := range tools {
+			name := strings.TrimSpace(tool.Name)
+			if name == "" {
+				continue
+			}
+			response.Tools = append(response.Tools, ToolDescriptor{
+				ServerID:      server.name,
+				ServerName:    server.name,
+				Name:          name,
+				QualifiedName: server.name + "__" + name,
+				Description:   tool.Description,
+				InputSchema:   append(json.RawMessage(nil), tool.InputSchema...),
+			})
+		}
+	}
+	slices.SortFunc(response.Tools, func(a, b ToolDescriptor) int {
+		if byServer := strings.Compare(a.ServerName, b.ServerName); byServer != 0 {
+			return byServer
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
+	return response, nil
 }
 
 func (s *Service) ReadResource(ctx context.Context, params ResourceReadParams) (ResourceReadResponse, error) {

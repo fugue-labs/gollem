@@ -17,6 +17,7 @@ var (
 	ErrApprovalDenied  = errors.New("appserver/git: operation denied by approval policy")
 	ErrPathOutsideRoot = errors.New("appserver/git: path escapes allowed root")
 	ErrInvalidPathspec = errors.New("appserver/git: invalid pathspec")
+	ErrInvalidRevision = errors.New("appserver/git: invalid revision")
 	ErrInvalidMessage  = errors.New("appserver/git: commit message must not be empty")
 )
 
@@ -210,7 +211,8 @@ func (s *Service) Status(ctx context.Context) (*Status, error) {
 }
 
 func (s *Service) Diff(ctx context.Context, req DiffRequest) (*Diff, error) {
-	op := Operation{Kind: OperationDiff, Base: req.Ref, Pathspecs: cloneStrings(req.Pathspecs)}
+	ref := strings.TrimSpace(req.Ref)
+	op := Operation{Kind: OperationDiff, Base: ref, Pathspecs: cloneStrings(req.Pathspecs)}
 	if err := checkContext(ctx); err != nil {
 		s.emit(op, false, err)
 		return nil, err
@@ -219,12 +221,16 @@ func (s *Service) Diff(ctx context.Context, req DiffRequest) (*Diff, error) {
 		s.emit(op, false, err)
 		return nil, err
 	}
+	if err := validateRevision(ref); err != nil {
+		s.emit(op, false, err)
+		return nil, err
+	}
 	args := []string{"diff", "--no-ext-diff", "--no-color"}
 	if req.Cached {
 		args = append(args, "--cached")
 	}
-	if req.Ref != "" {
-		args = append(args, req.Ref)
+	if ref != "" {
+		args = append(args, ref)
 	}
 	if len(req.Pathspecs) > 0 {
 		args = append(args, "--")
@@ -323,11 +329,12 @@ func (s *Service) WorktreeList(ctx context.Context) ([]Worktree, error) {
 }
 
 func (s *Service) WorktreeCreate(ctx context.Context, req WorktreeCreateRequest) (*Worktree, error) {
+	base := strings.TrimSpace(req.Base)
 	op := Operation{
 		Kind:     OperationWorktreeCreate,
 		Path:     req.Path,
 		Branch:   req.Branch,
-		Base:     req.Base,
+		Base:     base,
 		Mutating: true,
 	}
 	if err := checkContext(ctx); err != nil {
@@ -345,6 +352,10 @@ func (s *Service) WorktreeCreate(ctx context.Context, req WorktreeCreateRequest)
 			return nil, fmt.Errorf("invalid branch name: %w", err)
 		}
 	}
+	if err := validateRevision(base); err != nil {
+		s.emit(op, false, err)
+		return nil, err
+	}
 	if err := s.requireApproval(ctx, op); err != nil {
 		s.emit(op, false, err)
 		return nil, err
@@ -357,8 +368,8 @@ func (s *Service) WorktreeCreate(ctx context.Context, req WorktreeCreateRequest)
 		args = append(args, "-b", req.Branch)
 	}
 	args = append(args, path)
-	if req.Base != "" {
-		args = append(args, req.Base)
+	if base != "" {
+		args = append(args, base)
 	}
 	if _, err := s.git(ctx, args...); err != nil {
 		s.emit(op, false, err)
@@ -460,6 +471,16 @@ func validatePathspecs(pathspecs []string) error {
 		if path == "" || filepath.IsAbs(path) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 			return fmt.Errorf("%w: %s", ErrInvalidPathspec, path)
 		}
+	}
+	return nil
+}
+
+func validateRevision(revision string) error {
+	if revision == "" {
+		return nil
+	}
+	if strings.HasPrefix(revision, "-") || strings.ContainsAny(revision, "\x00\r\n") {
+		return fmt.Errorf("%w: %s", ErrInvalidRevision, revision)
 	}
 	return nil
 }

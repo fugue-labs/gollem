@@ -44,7 +44,12 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 
 // Close closes the database handle.
 func (s *SQLiteStore) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
 		return nil
 	}
 	db := s.db
@@ -102,7 +107,11 @@ func (s *SQLiteStore) init() error {
 }
 
 func (s *SQLiteStore) withTx(ctx context.Context, fn func(*sql.Tx) error) (err error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	db, err := s.dbLocked()
+	if err != nil {
+		return err
+	}
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin sqlite transaction: %w", err)
 	}
@@ -115,6 +124,13 @@ func (s *SQLiteStore) withTx(ctx context.Context, fn func(*sql.Tx) error) (err e
 	}()
 	err = fn(tx)
 	return err
+}
+
+func (s *SQLiteStore) dbLocked() (*sql.DB, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrStoreClosed
+	}
+	return s.db, nil
 }
 
 func normalizeContext(ctx context.Context) context.Context {
@@ -154,7 +170,11 @@ func (s *SQLiteStore) GetThread(ctx context.Context, id string) (*Thread, error)
 	ctx = normalizeContext(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	thread, err := loadThread(ctx, s.db, id)
+	db, err := s.dbLocked()
+	if err != nil {
+		return nil, err
+	}
+	thread, err := loadThread(ctx, db, id)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +187,11 @@ func (s *SQLiteStore) ListThreads(ctx context.Context, filter ThreadFilter) ([]*
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM app_threads ORDER BY updated_at DESC, id ASC`)
+	db, err := s.dbLocked()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT payload FROM app_threads ORDER BY updated_at DESC, id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list threads: %w", err)
 	}
@@ -465,7 +489,11 @@ func (s *SQLiteStore) GetTurn(ctx context.Context, id string) (*Turn, error) {
 	ctx = normalizeContext(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	turn, err := loadTurn(ctx, s.db, id)
+	db, err := s.dbLocked()
+	if err != nil {
+		return nil, err
+	}
+	turn, err := loadTurn(ctx, db, id)
 	if err != nil {
 		return nil, err
 	}
@@ -478,7 +506,11 @@ func (s *SQLiteStore) ListTurns(ctx context.Context, filter TurnFilter) ([]*Turn
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM app_turns ORDER BY created_at ASC, id ASC`)
+	db, err := s.dbLocked()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT payload FROM app_turns ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list turns: %w", err)
 	}
@@ -502,6 +534,73 @@ func (s *SQLiteStore) ListTurns(ctx context.Context, filter TurnFilter) ([]*Turn
 		return nil, fmt.Errorf("iterate turns: %w", err)
 	}
 	return out, nil
+}
+
+// RollbackThread implements Store.
+func (s *SQLiteStore) RollbackThread(ctx context.Context, req RollbackThreadRequest) (*RollbackThreadResult, error) {
+	ctx = normalizeContext(ctx)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if req.NumTurns < 1 {
+		return nil, errors.New("appserver/store: rollback num turns must be >= 1")
+	}
+	var result *RollbackThreadResult
+	if err := s.withTx(ctx, func(tx *sql.Tx) error {
+		thread, err := loadThreadTx(ctx, tx, req.ID)
+		if err != nil {
+			return err
+		}
+		if thread.Status == ThreadDeleted {
+			return ErrThreadDeleted
+		}
+		removed, err := loadLastTurnsTx(ctx, tx, thread.ID, req.NumTurns)
+		if err != nil {
+			return err
+		}
+		if err := pruneRolledBackHistoryTx(ctx, tx, thread.ID, removed); err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		thread.UpdatedAt = now
+		if err := saveThreadTx(ctx, tx, thread); err != nil {
+			return err
+		}
+		markerPayload, err := json.Marshal(map[string]any{
+			"numTurns":       req.NumTurns,
+			"removedTurnIds": turnIDs(removed),
+			"createdAt":      now,
+		})
+		if err != nil {
+			return fmt.Errorf("marshal rollback marker: %w", err)
+		}
+		marker := &Item{
+			ID:        newID("item"),
+			ThreadID:  thread.ID,
+			Kind:      "thread_rollback",
+			Status:    "completed",
+			Payload:   markerPayload,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		if err := saveItemTx(ctx, tx, marker); err != nil {
+			return err
+		}
+		remaining, err := loadTurnsForThreadTx(ctx, tx, thread.ID)
+		if err != nil {
+			return err
+		}
+		result = &RollbackThreadResult{
+			Thread:       cloneThread(thread),
+			Turns:        cloneTurns(remaining),
+			RemovedTurns: cloneTurns(removed),
+			Marker:       cloneItem(marker),
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // AppendItem implements Store.
@@ -547,12 +646,53 @@ func (s *SQLiteStore) AppendItem(ctx context.Context, req AppendItemRequest) (*I
 	return cloneItem(item), nil
 }
 
+// UpdateItem implements Store.
+func (s *SQLiteStore) UpdateItem(ctx context.Context, req UpdateItemRequest) (*Item, error) {
+	ctx = normalizeContext(ctx)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var item *Item
+	if err := s.withTx(ctx, func(tx *sql.Tx) error {
+		loaded, err := loadItemTx(ctx, tx, req.ID)
+		if err != nil {
+			return err
+		}
+		thread, err := loadThreadTx(ctx, tx, loaded.ThreadID)
+		if err != nil {
+			return err
+		}
+		if thread.Status == ThreadDeleted {
+			return ErrThreadDeleted
+		}
+		if req.Status != "" {
+			loaded.Status = req.Status
+		}
+		if req.Payload != nil {
+			loaded.Payload = cloneRaw(req.Payload)
+		}
+		loaded.UpdatedAt = time.Now().UTC()
+		if err := saveItemTx(ctx, tx, loaded); err != nil {
+			return err
+		}
+		item = loaded
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return cloneItem(item), nil
+}
+
 // GetItem implements Store.
 func (s *SQLiteStore) GetItem(ctx context.Context, id string) (*Item, error) {
 	ctx = normalizeContext(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	item, err := loadItem(ctx, s.db, id)
+	db, err := s.dbLocked()
+	if err != nil {
+		return nil, err
+	}
+	item, err := loadItem(ctx, db, id)
 	if err != nil {
 		return nil, err
 	}
@@ -565,7 +705,11 @@ func (s *SQLiteStore) ListItems(ctx context.Context, filter ItemFilter) ([]*Item
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM app_items WHERE seq > ? ORDER BY seq ASC`, filter.AfterSeq)
+	db, err := s.dbLocked()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT payload FROM app_items WHERE seq > ? ORDER BY seq ASC`, filter.AfterSeq)
 	if err != nil {
 		return nil, fmt.Errorf("list items: %w", err)
 	}
@@ -682,8 +826,116 @@ func loadTurnTx(ctx context.Context, tx *sql.Tx, id string) (*Turn, error) {
 	return scanTurn(tx.QueryRowContext(ctx, `SELECT payload FROM app_turns WHERE id = ?`, id))
 }
 
+func loadTurnsForThreadTx(ctx context.Context, tx *sql.Tx, threadID string) ([]*Turn, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT payload FROM app_turns WHERE thread_id = ? ORDER BY created_at ASC, id ASC`, threadID)
+	if err != nil {
+		return nil, fmt.Errorf("load thread turns: %w", err)
+	}
+	defer rows.Close()
+	var turns []*Turn
+	for rows.Next() {
+		turn, err := scanTurn(rows)
+		if err != nil {
+			return nil, err
+		}
+		turns = append(turns, turn)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate thread turns: %w", err)
+	}
+	return turns, nil
+}
+
+func loadLastTurnsTx(ctx context.Context, tx *sql.Tx, threadID string, limit int) ([]*Turn, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT payload FROM app_turns WHERE thread_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`, threadID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("load rollback turns: %w", err)
+	}
+	defer rows.Close()
+	var turns []*Turn
+	for rows.Next() {
+		turn, err := scanTurn(rows)
+		if err != nil {
+			return nil, err
+		}
+		turns = append(turns, turn)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rollback turns: %w", err)
+	}
+	return turns, nil
+}
+
+func pruneRolledBackHistoryTx(ctx context.Context, tx *sql.Tx, threadID string, removed []*Turn) error {
+	if len(removed) == 0 {
+		return nil
+	}
+	removedIDs := make(map[string]struct{}, len(removed))
+	for _, turn := range removed {
+		removedIDs[turn.ID] = struct{}{}
+	}
+	cutoff, err := firstRemovedItemSeqTx(ctx, tx, threadID, removed)
+	if err != nil {
+		return err
+	}
+	if cutoff > 0 {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM app_items WHERE thread_id = ? AND seq >= ?`, threadID, cutoff); err != nil {
+			return fmt.Errorf("delete rolled back items: %w", err)
+		}
+	} else {
+		for id := range removedIDs {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM app_items WHERE thread_id = ? AND turn_id = ?`, threadID, id); err != nil {
+				return fmt.Errorf("delete rolled back turn items: %w", err)
+			}
+		}
+	}
+	for id := range removedIDs {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM app_turns WHERE id = ?`, id); err != nil {
+			return fmt.Errorf("delete rolled back turn: %w", err)
+		}
+	}
+	return nil
+}
+
+func firstRemovedItemSeqTx(ctx context.Context, tx *sql.Tx, threadID string, removed []*Turn) (int64, error) {
+	removedIDs := make(map[string]struct{}, len(removed))
+	var earliest time.Time
+	for _, turn := range removed {
+		removedIDs[turn.ID] = struct{}{}
+		if !turn.CreatedAt.IsZero() && (earliest.IsZero() || turn.CreatedAt.Before(earliest)) {
+			earliest = turn.CreatedAt
+		}
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT payload FROM app_items WHERE thread_id = ? ORDER BY seq ASC`, threadID)
+	if err != nil {
+		return 0, fmt.Errorf("load rollback items: %w", err)
+	}
+	defer rows.Close()
+	var fallback int64
+	for rows.Next() {
+		item, err := scanItem(rows)
+		if err != nil {
+			return 0, err
+		}
+		if _, ok := removedIDs[item.TurnID]; ok {
+			return item.Seq, nil
+		}
+		if fallback == 0 && !earliest.IsZero() && !item.CreatedAt.Before(earliest) {
+			fallback = item.Seq
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate rollback items: %w", err)
+	}
+	return fallback, nil
+}
+
 func loadItem(ctx context.Context, db *sql.DB, id string) (*Item, error) {
 	return scanItem(db.QueryRowContext(ctx, `SELECT payload FROM app_items WHERE id = ?`, id))
+}
+
+func loadItemTx(ctx context.Context, tx *sql.Tx, id string) (*Item, error) {
+	return scanItem(tx.QueryRowContext(ctx, `SELECT payload FROM app_items WHERE id = ?`, id))
 }
 
 func scanThread(row interface{ Scan(dest ...any) error }) (*Thread, error) {
@@ -770,15 +1022,35 @@ func copyThreadHistoryTx(ctx context.Context, tx *sql.Tx, sourceThreadID, forkTh
 	if err != nil {
 		return fmt.Errorf("load source items: %w", err)
 	}
-	defer itemRows.Close()
+	var items []*Item
 	for itemRows.Next() {
 		item, err := scanItem(itemRows)
 		if err != nil {
+			itemRows.Close()
 			return err
 		}
-		item.ID = newID("item")
+		items = append(items, item)
+	}
+	if err := itemRows.Err(); err != nil {
+		itemRows.Close()
+		return fmt.Errorf("iterate source items: %w", err)
+	}
+	if err := itemRows.Close(); err != nil {
+		return fmt.Errorf("close source items: %w", err)
+	}
+
+	itemMap := make(map[string]string, len(items))
+	for _, item := range items {
+		itemMap[item.ID] = newID("item")
+	}
+	for _, item := range items {
+		oldID := item.ID
+		oldParentID := item.ParentItemID
+		item.ID = itemMap[oldID]
+		item.Payload = remapForkedItemPayloadID(item.Payload, oldID, item.ID)
 		item.ThreadID = forkThreadID
 		item.TurnID = turnMap[item.TurnID]
+		item.ParentItemID = itemMap[oldParentID]
 		item.Seq = 0
 		item.CreatedAt = now
 		item.UpdatedAt = now
@@ -786,10 +1058,31 @@ func copyThreadHistoryTx(ctx context.Context, tx *sql.Tx, sourceThreadID, forkTh
 			return err
 		}
 	}
-	if err := itemRows.Err(); err != nil {
-		return fmt.Errorf("iterate source items: %w", err)
-	}
 	return nil
+}
+
+func remapForkedItemPayloadID(raw json.RawMessage, oldID, newID string) json.RawMessage {
+	if len(raw) == 0 || oldID == "" || newID == "" {
+		return raw
+	}
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(raw, &payload) != nil {
+		return raw
+	}
+	var payloadID string
+	if json.Unmarshal(payload["id"], &payloadID) != nil || payloadID != oldID {
+		return raw
+	}
+	encodedID, err := json.Marshal(newID)
+	if err != nil {
+		return raw
+	}
+	payload["id"] = encodedID
+	updated, err := json.Marshal(payload)
+	if err != nil {
+		return raw
+	}
+	return updated
 }
 
 func matchesThreadFilter(thread *Thread, filter ThreadFilter) bool {
@@ -854,6 +1147,14 @@ func cloneTurn(src *Turn) *Turn {
 	return &dst
 }
 
+func cloneTurns(src []*Turn) []*Turn {
+	out := make([]*Turn, 0, len(src))
+	for _, turn := range src {
+		out = append(out, cloneTurn(turn))
+	}
+	return out
+}
+
 func cloneItem(src *Item) *Item {
 	if src == nil {
 		return nil
@@ -861,6 +1162,16 @@ func cloneItem(src *Item) *Item {
 	dst := *src
 	dst.Payload = cloneRaw(src.Payload)
 	return &dst
+}
+
+func turnIDs(turns []*Turn) []string {
+	ids := make([]string, 0, len(turns))
+	for _, turn := range turns {
+		if turn != nil && turn.ID != "" {
+			ids = append(ids, turn.ID)
+		}
+	}
+	return ids
 }
 
 func cloneMap(src map[string]any) map[string]any {

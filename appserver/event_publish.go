@@ -44,6 +44,18 @@ func (s *Server) publishThreadNotification(method string, thread *store.Thread) 
 	})
 }
 
+func (s *Server) publishThreadClosed(threadID string) {
+	if threadID == "" {
+		return
+	}
+	s.PublishNotification("thread/closed", threadClosedNotificationParams{ThreadID: threadID})
+	s.PublishNotification("thread/status/changed", threadNotLoadedStatusNotificationParams{
+		ThreadID: threadID,
+		Status:   map[string]string{"type": "notLoaded"},
+		At:       time.Now().UTC(),
+	})
+}
+
 func (s *Server) publishThreadGoalNotification(method string, thread *store.Thread, goal any) {
 	if thread == nil {
 		return

@@ -30,6 +30,7 @@ var (
 	ErrTurnNotFound   = errors.New("appserver/store: turn not found")
 	ErrItemNotFound   = errors.New("appserver/store: item not found")
 	ErrThreadDeleted  = errors.New("appserver/store: thread is deleted")
+	ErrStoreClosed    = errors.New("appserver/store: store is closed")
 )
 
 // Thread is a durable conversation container.
@@ -125,6 +126,18 @@ type TurnFilter struct {
 	Limit    int
 }
 
+type RollbackThreadRequest struct {
+	ID       string
+	NumTurns int
+}
+
+type RollbackThreadResult struct {
+	Thread       *Thread
+	Turns        []*Turn
+	RemovedTurns []*Turn
+	Marker       *Item
+}
+
 type AppendItemRequest struct {
 	ThreadID     string
 	TurnID       string
@@ -132,6 +145,12 @@ type AppendItemRequest struct {
 	Kind         string
 	Status       string
 	Payload      json.RawMessage
+}
+
+type UpdateItemRequest struct {
+	ID      string
+	Status  string
+	Payload json.RawMessage
 }
 
 type ItemFilter struct {
@@ -158,8 +177,10 @@ type Store interface {
 	CompleteTurn(context.Context, CompleteTurnRequest) (*Turn, error)
 	GetTurn(context.Context, string) (*Turn, error)
 	ListTurns(context.Context, TurnFilter) ([]*Turn, error)
+	RollbackThread(context.Context, RollbackThreadRequest) (*RollbackThreadResult, error)
 
 	AppendItem(context.Context, AppendItemRequest) (*Item, error)
+	UpdateItem(context.Context, UpdateItemRequest) (*Item, error)
 	GetItem(context.Context, string) (*Item, error)
 	ListItems(context.Context, ItemFilter) ([]*Item, error)
 }

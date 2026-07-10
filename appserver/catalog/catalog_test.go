@@ -121,7 +121,7 @@ func TestToolListAvailability(t *testing.T) {
 	if processTool == nil || !processTool.Available || !processTool.Mutation || !processTool.RequiresApproval {
 		t.Fatalf("process tool metadata = %#v", processTool)
 	}
-	if !containsMethod(processTool.Methods, "thread/backgroundTerminals/list") || !containsMethod(processTool.Methods, "thread/backgroundTerminals/clean") {
+	if !containsMethod(processTool.Methods, "thread/shellCommand") || !containsMethod(processTool.Methods, "thread/backgroundTerminals/list") || !containsMethod(processTool.Methods, "thread/backgroundTerminals/clean") {
 		t.Fatalf("process tool methods = %#v", processTool.Methods)
 	}
 
@@ -166,7 +166,7 @@ func TestToolListAvailability(t *testing.T) {
 	if threadStoreTool == nil || !threadStoreTool.Available || !threadStoreTool.CodexCompatible || threadStoreTool.Mutation {
 		t.Fatalf("thread-store tool metadata = %#v", threadStoreTool)
 	}
-	if !containsMethod(threadStoreTool.Methods, "thread/search") || !containsMethod(threadStoreTool.Methods, "thread/loaded/list") || !containsMethod(threadStoreTool.Methods, "thread/inject_items") || !containsMethod(threadStoreTool.Methods, "thread/goal/set") || !containsMethod(threadStoreTool.Methods, "thread/memoryMode/set") || !containsMethod(threadStoreTool.Methods, "thread/name/set") {
+	if !containsMethod(threadStoreTool.Methods, "thread/search") || !containsMethod(threadStoreTool.Methods, "thread/loaded/list") || !containsMethod(threadStoreTool.Methods, "thread/unsubscribe") || !containsMethod(threadStoreTool.Methods, "thread/compact/start") || !containsMethod(threadStoreTool.Methods, "thread/rollback") || !containsMethod(threadStoreTool.Methods, "thread/inject_items") || !containsMethod(threadStoreTool.Methods, "thread/goal/set") || !containsMethod(threadStoreTool.Methods, "thread/memoryMode/set") || !containsMethod(threadStoreTool.Methods, "thread/name/set") {
 		t.Fatalf("thread-store tool methods = %#v", threadStoreTool.Methods)
 	}
 }

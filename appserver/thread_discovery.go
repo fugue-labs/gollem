@@ -19,6 +19,10 @@ const (
 	maxThreadSearchSnippet   = 240
 )
 
+type threadIdleUnload struct {
+	timer *time.Timer
+}
+
 func (s *Server) handleThreadLoadedList(ctx context.Context, raw json.RawMessage) (any, *protocol.Error) {
 	st, rpcErr := s.requireStore("thread/loaded/list")
 	if rpcErr != nil {
@@ -123,7 +127,12 @@ func (s *Server) markThreadLoadedID(threadID string) {
 	if s.loaded == nil {
 		s.loaded = make(map[string]struct{})
 	}
+	if s.subscribed == nil {
+		s.subscribed = make(map[string]struct{})
+	}
 	s.loaded[threadID] = struct{}{}
+	s.subscribed[threadID] = struct{}{}
+	s.cancelThreadIdleUnloadLocked(threadID)
 }
 
 func (s *Server) markThreadUnloaded(threadID string) {
@@ -133,6 +142,8 @@ func (s *Server) markThreadUnloaded(threadID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.loaded, threadID)
+	delete(s.subscribed, threadID)
+	s.cancelThreadIdleUnloadLocked(threadID)
 }
 
 func (s *Server) loadedThreadIDs() map[string]struct{} {
@@ -146,6 +157,69 @@ func (s *Server) loadedThreadIDs() map[string]struct{} {
 		out[id] = struct{}{}
 	}
 	return out
+}
+
+func (s *Server) unsubscribeThread(threadID string) string {
+	if s == nil || threadID == "" {
+		return "notLoaded"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.loaded[threadID]; !ok {
+		return "notLoaded"
+	}
+	if _, ok := s.subscribed[threadID]; !ok {
+		return "notSubscribed"
+	}
+	delete(s.subscribed, threadID)
+	s.scheduleThreadIdleUnloadLocked(threadID)
+	return "unsubscribed"
+}
+
+func (s *Server) cancelThreadIdleUnloadLocked(threadID string) {
+	if s.idleUnload == nil || threadID == "" {
+		return
+	}
+	if entry := s.idleUnload[threadID]; entry != nil && entry.timer != nil {
+		entry.timer.Stop()
+	}
+	delete(s.idleUnload, threadID)
+}
+
+func (s *Server) scheduleThreadIdleUnloadLocked(threadID string) {
+	if threadID == "" || s.threadIdleUnloadAfter < 0 {
+		return
+	}
+	if s.idleUnload == nil {
+		s.idleUnload = make(map[string]*threadIdleUnload)
+	}
+	s.cancelThreadIdleUnloadLocked(threadID)
+	entry := &threadIdleUnload{}
+	entry.timer = time.AfterFunc(s.threadIdleUnloadAfter, func() {
+		s.expireThreadIdleUnload(threadID, entry)
+	})
+	s.idleUnload[threadID] = entry
+}
+
+func (s *Server) expireThreadIdleUnload(threadID string, entry *threadIdleUnload) {
+	if s == nil || threadID == "" {
+		return
+	}
+	closed := false
+	s.mu.Lock()
+	if s.idleUnload != nil && s.idleUnload[threadID] == entry {
+		delete(s.idleUnload, threadID)
+		if _, subscribed := s.subscribed[threadID]; !subscribed {
+			if _, loaded := s.loaded[threadID]; loaded {
+				delete(s.loaded, threadID)
+				closed = true
+			}
+		}
+	}
+	s.mu.Unlock()
+	if closed {
+		s.publishThreadClosed(threadID)
+	}
 }
 
 func parseCursor(cursor string, method string) (int, *protocol.Error) {

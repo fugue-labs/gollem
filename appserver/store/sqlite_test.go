@@ -88,6 +88,28 @@ func TestSQLiteStoreThreadLifecyclePersists(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreClosedOperationsReturnErrStoreClosed(t *testing.T) {
+	ctx := context.Background()
+	s := newTestSQLiteStore(t, filepath.Join(t.TempDir(), "appserver.db"))
+	thread, err := s.CreateThread(ctx, CreateThreadRequest{Title: "closed"})
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if _, err := s.CreateThread(ctx, CreateThreadRequest{Title: "after close"}); !errors.Is(err, ErrStoreClosed) {
+		t.Fatalf("CreateThread after close error = %v, want ErrStoreClosed", err)
+	}
+	if _, err := s.GetThread(ctx, thread.ID); !errors.Is(err, ErrStoreClosed) {
+		t.Fatalf("GetThread after close error = %v, want ErrStoreClosed", err)
+	}
+	if _, err := s.ListThreads(ctx, ThreadFilter{}); !errors.Is(err, ErrStoreClosed) {
+		t.Fatalf("ListThreads after close error = %v, want ErrStoreClosed", err)
+	}
+}
+
 func TestSQLiteStoreTurnsAndItemsPersistAndPaginate(t *testing.T) {
 	ctx := context.Background()
 	s := newTestSQLiteStore(t, filepath.Join(t.TempDir(), "appserver.db"))
@@ -149,6 +171,17 @@ func TestSQLiteStoreTurnsAndItemsPersistAndPaginate(t *testing.T) {
 	if first.Seq == 0 || second.Seq <= first.Seq {
 		t.Fatalf("item seqs not increasing: first=%d second=%d", first.Seq, second.Seq)
 	}
+	updatedFirst, err := s.UpdateItem(ctx, UpdateItemRequest{
+		ID:      first.ID,
+		Status:  "failed",
+		Payload: json.RawMessage(`{"role":"user","text":"updated"}`),
+	})
+	if err != nil {
+		t.Fatalf("UpdateItem: %v", err)
+	}
+	if updatedFirst.ID != first.ID || updatedFirst.Seq != first.Seq || updatedFirst.Status != "failed" || string(updatedFirst.Payload) != `{"role":"user","text":"updated"}` {
+		t.Fatalf("updated item = %#v, want same id/seq with updated status and payload", updatedFirst)
+	}
 
 	items, err := s.ListItems(ctx, ItemFilter{ThreadID: thread.ID, Limit: 1})
 	if err != nil {
@@ -174,6 +207,116 @@ func TestSQLiteStoreTurnsAndItemsPersistAndPaginate(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreRollbackThreadPrunesTurnsAndItems(t *testing.T) {
+	ctx := context.Background()
+	s := newTestSQLiteStore(t, filepath.Join(t.TempDir(), "appserver.db"))
+
+	thread, err := s.CreateThread(ctx, CreateThreadRequest{Title: "Rollback"})
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	var turns []*Turn
+	for _, prompt := range []string{"one", "two", "three"} {
+		turn, err := s.CreateTurn(ctx, CreateTurnRequest{ThreadID: thread.ID, Input: json.RawMessage(`{"prompt":"` + prompt + `"}`)})
+		if err != nil {
+			t.Fatalf("CreateTurn %s: %v", prompt, err)
+		}
+		if _, err := s.AppendItem(ctx, AppendItemRequest{ThreadID: thread.ID, TurnID: turn.ID, Kind: "message", Payload: json.RawMessage(`{"role":"user","text":"` + prompt + `"}`)}); err != nil {
+			t.Fatalf("AppendItem %s: %v", prompt, err)
+		}
+		turns = append(turns, turn)
+	}
+	if _, err := s.AppendItem(ctx, AppendItemRequest{ThreadID: thread.ID, Kind: "response_item", Payload: json.RawMessage(`{"text":"later injected context"}`)}); err != nil {
+		t.Fatalf("AppendItem trailing: %v", err)
+	}
+
+	rolled, err := s.RollbackThread(ctx, RollbackThreadRequest{ID: thread.ID, NumTurns: 2})
+	if err != nil {
+		t.Fatalf("RollbackThread: %v", err)
+	}
+	if rolled.Thread.ID != thread.ID || len(rolled.Turns) != 1 || rolled.Turns[0].ID != turns[0].ID {
+		t.Fatalf("rollback result = %+v", rolled)
+	}
+	if len(rolled.RemovedTurns) != 2 || rolled.Marker == nil || rolled.Marker.Kind != "thread_rollback" {
+		t.Fatalf("rollback removed/marker = %+v marker=%+v", rolled.RemovedTurns, rolled.Marker)
+	}
+	remainingTurns, err := s.ListTurns(ctx, TurnFilter{ThreadID: thread.ID})
+	if err != nil {
+		t.Fatalf("ListTurns: %v", err)
+	}
+	if len(remainingTurns) != 1 || remainingTurns[0].ID != turns[0].ID {
+		t.Fatalf("remaining turns = %+v", remainingTurns)
+	}
+	remainingItems, err := s.ListItems(ctx, ItemFilter{ThreadID: thread.ID})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if len(remainingItems) != 2 || remainingItems[0].TurnID != turns[0].ID || remainingItems[1].Kind != "thread_rollback" {
+		t.Fatalf("remaining items = %+v", remainingItems)
+	}
+	if _, err := s.GetTurn(ctx, turns[1].ID); !errors.Is(err, ErrTurnNotFound) {
+		t.Fatalf("rolled back turn lookup error = %v, want ErrTurnNotFound", err)
+	}
+
+	rolled, err = s.RollbackThread(ctx, RollbackThreadRequest{ID: thread.ID, NumTurns: 10})
+	if err != nil {
+		t.Fatalf("RollbackThread all: %v", err)
+	}
+	if len(rolled.Turns) != 0 || len(rolled.RemovedTurns) != 1 {
+		t.Fatalf("rollback all = %+v", rolled)
+	}
+	remainingItems, err = s.ListItems(ctx, ItemFilter{ThreadID: thread.ID})
+	if err != nil {
+		t.Fatalf("ListItems after all: %v", err)
+	}
+	if len(remainingItems) != 1 || remainingItems[0].Kind != "thread_rollback" {
+		t.Fatalf("remaining items after all = %+v", remainingItems)
+	}
+
+	if _, err := s.RollbackThread(ctx, RollbackThreadRequest{ID: thread.ID}); err == nil {
+		t.Fatal("RollbackThread with zero num turns succeeded")
+	}
+}
+
+func TestSQLiteStoreRollbackThreadPrunesTrailingItemsWhenTurnHasNoItems(t *testing.T) {
+	ctx := context.Background()
+	s := newTestSQLiteStore(t, filepath.Join(t.TempDir(), "appserver.db"))
+
+	thread, err := s.CreateThread(ctx, CreateThreadRequest{Title: "Empty Turn Rollback"})
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	firstTurn, err := s.CreateTurn(ctx, CreateTurnRequest{ThreadID: thread.ID, Input: json.RawMessage(`{"prompt":"keep"}`)})
+	if err != nil {
+		t.Fatalf("CreateTurn first: %v", err)
+	}
+	if _, err := s.AppendItem(ctx, AppendItemRequest{ThreadID: thread.ID, TurnID: firstTurn.ID, Kind: "message", Payload: json.RawMessage(`{"text":"keep"}`)}); err != nil {
+		t.Fatalf("AppendItem first: %v", err)
+	}
+	emptyTurn, err := s.CreateTurn(ctx, CreateTurnRequest{ThreadID: thread.ID, Input: json.RawMessage(`{"prompt":"remove"}`)})
+	if err != nil {
+		t.Fatalf("CreateTurn empty: %v", err)
+	}
+	if _, err := s.AppendItem(ctx, AppendItemRequest{ThreadID: thread.ID, Kind: "response_item", Payload: json.RawMessage(`{"text":"trailing context"}`)}); err != nil {
+		t.Fatalf("AppendItem trailing: %v", err)
+	}
+
+	rolled, err := s.RollbackThread(ctx, RollbackThreadRequest{ID: thread.ID, NumTurns: 1})
+	if err != nil {
+		t.Fatalf("RollbackThread: %v", err)
+	}
+	if len(rolled.RemovedTurns) != 1 || rolled.RemovedTurns[0].ID != emptyTurn.ID {
+		t.Fatalf("removed turns = %+v", rolled.RemovedTurns)
+	}
+	remainingItems, err := s.ListItems(ctx, ItemFilter{ThreadID: thread.ID})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if len(remainingItems) != 2 || remainingItems[0].TurnID != firstTurn.ID || remainingItems[1].Kind != "thread_rollback" {
+		t.Fatalf("remaining items = %+v", remainingItems)
+	}
+}
+
 func TestSQLiteStoreForkCopiesThreadHistory(t *testing.T) {
 	ctx := context.Background()
 	s := newTestSQLiteStore(t, filepath.Join(t.TempDir(), "appserver.db"))
@@ -190,8 +333,23 @@ func TestSQLiteStoreForkCopiesThreadHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTurn: %v", err)
 	}
-	if _, err := s.AppendItem(ctx, AppendItemRequest{ThreadID: source.ID, TurnID: turn.ID, Kind: "message", Payload: json.RawMessage(`{"text":"fork me"}`)}); err != nil {
+	parent, err := s.AppendItem(ctx, AppendItemRequest{ThreadID: source.ID, TurnID: turn.ID, Kind: "dynamicToolCall", Payload: json.RawMessage(`{"tool":"echo"}`)})
+	if err != nil {
 		t.Fatalf("AppendItem: %v", err)
+	}
+	parent, err = s.UpdateItem(ctx, UpdateItemRequest{ID: parent.ID, Payload: json.RawMessage(`{"id":"` + parent.ID + `","tool":"echo"}`)})
+	if err != nil {
+		t.Fatalf("UpdateItem parent payload ID: %v", err)
+	}
+	child, err := s.AppendItem(ctx, AppendItemRequest{
+		ThreadID:     source.ID,
+		TurnID:       turn.ID,
+		ParentItemID: parent.ID,
+		Kind:         "commandExecution",
+		Payload:      json.RawMessage(`{"command":"echo fork"}`),
+	})
+	if err != nil {
+		t.Fatalf("AppendItem child: %v", err)
 	}
 
 	fork, err := s.ForkThread(ctx, ForkThreadRequest{
@@ -221,8 +379,23 @@ func TestSQLiteStoreForkCopiesThreadHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListItems fork: %v", err)
 	}
-	if len(forkItems) != 1 || forkItems[0].ThreadID != fork.ID || forkItems[0].TurnID != forkTurns[0].ID {
+	if len(forkItems) != 2 || forkItems[0].ThreadID != fork.ID || forkItems[0].TurnID != forkTurns[0].ID {
 		t.Fatalf("fork items = %+v turns = %+v", forkItems, forkTurns)
+	}
+	if forkItems[0].ID == parent.ID || forkItems[1].ID == child.ID {
+		t.Fatalf("fork item IDs were not regenerated: source=%q/%q fork=%q/%q", parent.ID, child.ID, forkItems[0].ID, forkItems[1].ID)
+	}
+	if forkItems[1].ParentItemID != forkItems[0].ID {
+		t.Fatalf("fork child parent = %q, want remapped parent %q", forkItems[1].ParentItemID, forkItems[0].ID)
+	}
+	var forkParentPayload struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(forkItems[0].Payload, &forkParentPayload); err != nil {
+		t.Fatalf("decode fork parent payload: %v", err)
+	}
+	if forkParentPayload.ID != forkItems[0].ID {
+		t.Fatalf("fork parent payload id = %q, want %q", forkParentPayload.ID, forkItems[0].ID)
 	}
 }
 

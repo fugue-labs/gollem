@@ -1,0 +1,256 @@
+{
+  "protocolVersion": "gollem.appserver.v0",
+  "schemaVersion": "gollem.appserver.schema.v1",
+  "cases": [
+    {
+      "name": "dynamic-tool-started",
+      "surface": "server-notification",
+      "method": "item/started",
+      "paramsType": "DynamicToolCallItemStartedNotificationParams",
+      "message": {
+        "method": "item/started",
+        "params": {
+          "item": {
+            "type": "dynamicToolCall",
+            "id": "item-tool",
+            "namespace": "workspace",
+            "tool": "read_file",
+            "arguments": {"path": "README.md"},
+            "status": "inProgress",
+            "contentItems": null,
+            "success": null,
+            "durationMs": null
+          },
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "startedAtMs": 1783715400000
+        }
+      }
+    },
+    {
+      "name": "command-completed",
+      "surface": "server-notification",
+      "method": "item/completed",
+      "paramsType": "CommandExecutionItemCompletedNotificationParams",
+      "message": {
+        "method": "item/completed",
+        "params": {
+          "item": {
+            "type": "commandExecution",
+            "id": "item-command",
+            "command": "go test ./...",
+            "cwd": "/workspace",
+            "processId": "process-1",
+            "source": "agent",
+            "status": "completed",
+            "commandActions": [{"type": "unknown", "command": "go test ./..."}],
+            "aggregatedOutput": "ok",
+            "exitCode": 0,
+            "durationMs": 250,
+            "startedAt": "2026-07-10T20:30:00Z",
+            "completedAt": "2026-07-10T20:30:00.25Z"
+          },
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "completedAtMs": 1783715400250
+        }
+      }
+    },
+    {
+      "name": "file-change-completed",
+      "surface": "server-notification",
+      "method": "item/completed",
+      "paramsType": "FileChangeItemCompletedNotificationParams",
+      "message": {
+        "method": "item/completed",
+        "params": {
+          "item": {
+            "type": "fileChange",
+            "id": "item-file",
+            "changes": [
+              {
+                "path": "README.md",
+                "kind": {"type": "update", "movePath": null},
+                "diff": "@@ -1 +1 @@\n-old\n+new\n"
+              }
+            ],
+            "status": "completed",
+            "evidence": [
+              {
+                "path": "README.md",
+                "operation": "write",
+                "bytes": 4,
+                "afterSha256": "11507a0e2f5e69d5dfa40a62a1bd7b6ee57e6bcd85c3f7b58d7b7d8b4de1b4f8"
+              }
+            ]
+          },
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "completedAtMs": 1783715400500
+        }
+      }
+    },
+    {
+      "name": "mcp-call-completed",
+      "surface": "server-notification",
+      "method": "item/completed",
+      "paramsType": "MCPToolCallItemCompletedNotificationParams",
+      "message": {
+        "method": "item/completed",
+        "params": {
+          "item": {
+            "type": "mcpToolCall",
+            "id": "item-mcp",
+            "server": "repository",
+            "tool": "search",
+            "status": "completed",
+            "arguments": {"query": "runtime"},
+            "appContext": null,
+            "mcpAppResourceUri": null,
+            "pluginId": null,
+            "result": {
+              "content": [{"type": "text", "text": "match"}],
+              "structuredContent": {"count": 1},
+              "_meta": null
+            },
+            "error": null,
+            "durationMs": 40
+          },
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "completedAtMs": 1783715400750
+        }
+      }
+    },
+    {
+      "name": "context-compaction-item",
+      "surface": "server-notification",
+      "method": "item/completed",
+      "paramsType": "ItemLifecycleNotificationParams",
+      "payloadType": "ContextCompactionItem",
+      "message": {
+        "method": "item/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-compact",
+          "itemId": "item-compact",
+          "item": {
+            "id": "item-compact",
+            "threadId": "thread-1",
+            "turnId": "turn-compact",
+            "seq": 14,
+            "kind": "contextCompaction",
+            "status": "completed",
+            "payload": {
+              "type": "contextCompaction",
+              "summary": "Bounded prior context summary.",
+              "createdAt": "2026-07-10T20:31:00Z"
+            },
+            "createdAt": "2026-07-10T20:31:00Z",
+            "updatedAt": "2026-07-10T20:31:00Z"
+          },
+          "at": "2026-07-10T20:31:00Z"
+        }
+      }
+    },
+    {
+      "name": "thread-compacted",
+      "surface": "server-notification",
+      "method": "thread/compacted",
+      "paramsType": "ThreadCompactedNotificationParams",
+      "message": {
+        "method": "thread/compacted",
+        "params": {"threadId": "thread-1", "turnId": "turn-compact"}
+      }
+    },
+    {
+      "name": "token-usage-updated",
+      "surface": "server-notification",
+      "method": "thread/tokenUsage/updated",
+      "paramsType": "ThreadTokenUsageUpdatedNotificationParams",
+      "message": {
+        "method": "thread/tokenUsage/updated",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 180,
+              "inputTokens": 120,
+              "cachedInputTokens": 20,
+              "outputTokens": 60,
+              "reasoningOutputTokens": 10
+            },
+            "last": {
+              "totalTokens": 80,
+              "inputTokens": 50,
+              "cachedInputTokens": 10,
+              "outputTokens": 30,
+              "reasoningOutputTokens": 5
+            },
+            "modelContextWindow": null
+          }
+        }
+      }
+    },
+    {
+      "name": "turn-diff-updated",
+      "surface": "server-notification",
+      "method": "turn/diff/updated",
+      "paramsType": "TurnDiffUpdatedNotificationParams",
+      "message": {
+        "method": "turn/diff/updated",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "diff": "diff --git a/README.md b/README.md\n"
+        }
+      }
+    },
+    {
+      "name": "file-change-approval",
+      "surface": "server-request",
+      "method": "item/fileChange/requestApproval",
+      "paramsType": "FileChangeApprovalRequestParams",
+      "message": {
+        "id": "approval-1",
+        "method": "item/fileChange/requestApproval",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "itemId": "item-file",
+          "startedAtMs": 1783715400000,
+          "reason": "write file",
+          "grantRoot": null,
+          "operation": "write",
+          "path": "README.md",
+          "destructive": false
+        }
+      }
+    },
+    {
+      "name": "daemon-status",
+      "surface": "gollem-extension",
+      "method": "daemon/status",
+      "resultType": "DaemonStatus",
+      "message": {
+        "id": "daemon-status-1",
+        "result": {
+          "status": "running",
+          "name": "gollem-appserver",
+          "version": "dev",
+          "protocolVersion": "gollem.appserver.v0",
+          "pid": 4242,
+          "startedAt": "2026-07-10T20:00:00Z",
+          "uptimeMillis": 1860000,
+          "transport": "stdio",
+          "workDir": "/workspace",
+          "storePath": "/workspace/.gollem/appserver.db",
+          "shutdownRequested": false,
+          "restartRequested": false,
+          "shutdown": {"requested": false, "restart": false}
+        }
+      }
+    }
+  ]
+}

@@ -36,6 +36,9 @@ func TestServiceStatusAndDiff(t *testing.T) {
 	if _, err := svc.Diff(ctx, DiffRequest{Pathspecs: []string{"../outside"}}); !errors.Is(err, ErrInvalidPathspec) {
 		t.Fatalf("invalid pathspec error = %v, want ErrInvalidPathspec", err)
 	}
+	if _, err := svc.Diff(ctx, DiffRequest{Ref: "--output=outside.patch"}); !errors.Is(err, ErrInvalidRevision) {
+		t.Fatalf("invalid revision error = %v, want ErrInvalidRevision", err)
+	}
 }
 
 func TestServiceCommitApprovalAndAudit(t *testing.T) {
@@ -103,6 +106,9 @@ func TestServiceWorktreeCreateListAndScope(t *testing.T) {
 	}
 	if _, err := svc.WorktreeCreate(ctx, WorktreeCreateRequest{Path: "../escape", Branch: "feature/escape", Base: "HEAD"}); !errors.Is(err, ErrPathOutsideRoot) {
 		t.Fatalf("outside worktree error = %v, want ErrPathOutsideRoot", err)
+	}
+	if _, err := svc.WorktreeCreate(ctx, WorktreeCreateRequest{Path: "invalid-base", Branch: "feature/invalid-base", Base: "--detach"}); !errors.Is(err, ErrInvalidRevision) {
+		t.Fatalf("invalid worktree base error = %v, want ErrInvalidRevision", err)
 	}
 }
 
