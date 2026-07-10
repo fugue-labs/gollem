@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/fugue-labs/gollem/core"
@@ -144,7 +146,7 @@ func TestHTTPServerTransportRunClosesSessionsOnCancel(t *testing.T) {
 func TestHTTPServerTransportSessionIDsAreOpaque(t *testing.T) {
 	seen := make(map[string]struct{}, 256)
 	for range 256 {
-		id, err := generateHTTPSessionID()
+		id, err := generateHTTPSessionID(rand.Reader)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -164,6 +166,87 @@ func TestHTTPServerTransportSessionIDsAreOpaque(t *testing.T) {
 		if len(random) != httpSessionIDBytes {
 			t.Fatalf("session ID contains %d random bytes, want %d", len(random), httpSessionIDBytes)
 		}
+	}
+}
+
+func TestHTTPServerTransportSessionIDEntropyFailureRetainsNothing(t *testing.T) {
+	wantErr := errors.New("entropy unavailable")
+	transport := newHTTPServerTransport(NewServer(), iotest.ErrReader(wantErr))
+
+	if _, err := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil)); !errors.Is(err, wantErr) {
+		t.Fatalf("newSession error = %v, want wrapped entropy error", err)
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if len(transport.sessions) != 0 {
+		t.Fatalf("entropy failure retained %d sessions, want 0", len(transport.sessions))
+	}
+}
+
+func TestHTTPServerTransportSessionIDShortReadFails(t *testing.T) {
+	transport := newHTTPServerTransport(NewServer(), bytes.NewReader(make([]byte, httpSessionIDBytes-1)))
+
+	if _, err := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil)); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("newSession error = %v, want %v", err, io.ErrUnexpectedEOF)
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if len(transport.sessions) != 0 {
+		t.Fatalf("short entropy read retained %d sessions, want 0", len(transport.sessions))
+	}
+}
+
+func TestHTTPServerTransportSessionIDCollisionRetriesThenSucceeds(t *testing.T) {
+	collidingEntropy := make([]byte, httpSessionIDBytes)
+	distinctEntropy := bytes.Repeat([]byte{1}, httpSessionIDBytes)
+	sequence := append(append(append([]byte(nil), collidingEntropy...), collidingEntropy...), distinctEntropy...)
+	transport := newHTTPServerTransport(NewServer(), bytes.NewReader(sequence))
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	existing, err := transport.newSession(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(existing.close)
+
+	created, err := transport.newSession(request)
+	if err != nil {
+		t.Fatalf("newSession after collision: %v", err)
+	}
+	t.Cleanup(created.close)
+	if created.id == existing.id {
+		t.Fatalf("collision replaced existing session %q", existing.id)
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if len(transport.sessions) != 2 || transport.sessions[existing.id] != existing || transport.sessions[created.id] != created {
+		t.Fatalf("session map after retry = %#v, want both original and new sessions", transport.sessions)
+	}
+}
+
+func TestHTTPServerTransportSessionIDCollisionExhaustionIsBounded(t *testing.T) {
+	collidingEntropy := make([]byte, httpSessionIDBytes)
+	sequence := bytes.Repeat(collidingEntropy, 1+httpSessionCollisionRetries)
+	transport := newHTTPServerTransport(NewServer(), bytes.NewReader(sequence))
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	existing, err := transport.newSession(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(existing.close)
+
+	if _, err := transport.newSession(request); err == nil || !strings.Contains(err.Error(), "exhausted") {
+		t.Fatalf("collision exhaustion error = %v, want bounded exhaustion", err)
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if len(transport.sessions) != 1 || transport.sessions[existing.id] != existing {
+		t.Fatalf("collision exhaustion changed session map: %#v", transport.sessions)
+	}
+	existing.mu.Lock()
+	closed := existing.closed
+	existing.mu.Unlock()
+	if closed {
+		t.Fatal("collision exhaustion closed the existing session")
 	}
 }
 

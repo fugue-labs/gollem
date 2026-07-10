@@ -6,11 +6,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 )
 
-const httpSessionIDBytes = 32
+const (
+	httpSessionIDBytes          = 32
+	httpSessionCollisionRetries = 8
+)
 
 // HTTPSessionAuthorizer authorizes a follow-up HTTP request against the
 // identity captured in a session's context when it was initialized. Hosts
@@ -27,11 +31,13 @@ type HTTPSessionAuthorizer func(sessionCtx context.Context, r *http.Request) (bo
 // HTTPServerTransport serves MCP over the streamable HTTP transport.
 // Each MCP session gets its own cloned Server instance.
 type HTTPServerTransport struct {
-	mu          sync.Mutex
-	template    *Server
-	sessions    map[string]*httpServerSession
-	sessionCtx  func(*http.Request) context.Context
-	sessionAuth HTTPSessionAuthorizer
+	mu               sync.Mutex
+	template         *Server
+	sessions         map[string]*httpServerSession
+	sessionCtx       func(*http.Request) context.Context
+	sessionAuth      HTTPSessionAuthorizer
+	sessionIDEntropy io.Reader
+	entropyMu        sync.Mutex
 }
 
 // SetSessionContextFunc installs a hook that derives each new MCP
@@ -80,12 +86,20 @@ type httpServerSession struct {
 
 // NewHTTPServerTransport binds a reusable Server template to an HTTP transport.
 func NewHTTPServerTransport(server *Server) *HTTPServerTransport {
+	return newHTTPServerTransport(server, rand.Reader)
+}
+
+// newHTTPServerTransport keeps entropy injection package-private so production
+// callers cannot accidentally weaken session IDs while collision/failure tests
+// can exercise the exact construction path deterministically.
+func newHTTPServerTransport(server *Server, entropy io.Reader) *HTTPServerTransport {
 	if server == nil {
 		server = NewServer()
 	}
 	return &HTTPServerTransport{
-		template: server,
-		sessions: make(map[string]*httpServerSession),
+		template:         server,
+		sessions:         make(map[string]*httpServerSession),
+		sessionIDEntropy: entropy,
 	}
 }
 
@@ -254,10 +268,20 @@ func (t *HTTPServerTransport) newSession(r *http.Request) (*httpServerSession, e
 			base = derived
 		}
 	}
-	for {
-		sessionID, err := generateHTTPSessionID()
+	for attempt := 0; attempt < httpSessionCollisionRetries; attempt++ {
+		sessionID, err := t.generateHTTPSessionID()
 		if err != nil {
 			return nil, err
+		}
+
+		// Hold the session lock while checking the generated identifier and
+		// publishing the fully constructed session. This reserves the ID before
+		// any server clone/allocation and prevents concurrent creators from
+		// racing between a preflight check and insertion.
+		t.mu.Lock()
+		if _, exists := t.sessions[sessionID]; exists {
+			t.mu.Unlock()
+			continue
 		}
 		ctx, cancel := context.WithCancel(base)
 		server := cloneServerTemplate(t.template)
@@ -273,21 +297,11 @@ func (t *HTTPServerTransport) newSession(r *http.Request) (*httpServerSession, e
 			return nil
 		})
 
-		t.mu.Lock()
-		_, exists := t.sessions[sessionID]
-		if !exists {
-			t.sessions[sessionID] = session
-		}
+		t.sessions[sessionID] = session
 		t.mu.Unlock()
-		if !exists {
-			return session, nil
-		}
-
-		// A collision is cryptographically negligible, but never replace a
-		// live session if it does occur.
-		cancel()
-		_ = server.Close()
+		return session, nil
 	}
+	return nil, fmt.Errorf("mcp: exhausted %d HTTP session ID collision attempts", httpSessionCollisionRetries)
 }
 
 func (t *HTTPServerTransport) getSession(id string) (*httpServerSession, bool) {
@@ -390,9 +404,18 @@ func cloneServerTemplate(template *Server) *Server {
 	return cloned
 }
 
-func generateHTTPSessionID() (string, error) {
+func (t *HTTPServerTransport) generateHTTPSessionID() (string, error) {
+	t.entropyMu.Lock()
+	defer t.entropyMu.Unlock()
+	return generateHTTPSessionID(t.sessionIDEntropy)
+}
+
+func generateHTTPSessionID(entropy io.Reader) (string, error) {
+	if entropy == nil {
+		return "", fmt.Errorf("mcp: generating HTTP session ID: entropy source is nil")
+	}
 	random := make([]byte, httpSessionIDBytes)
-	if _, err := rand.Read(random); err != nil {
+	if _, err := io.ReadFull(entropy, random); err != nil {
 		return "", fmt.Errorf("mcp: generating HTTP session ID: %w", err)
 	}
 	return "mcp-" + base64.RawURLEncoding.EncodeToString(random), nil
