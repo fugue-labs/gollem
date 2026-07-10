@@ -13,17 +13,20 @@ const (
 	defaultHTTPMaxConcurrentPerSession       = 4
 	defaultHTTPOutboxMaxMessages             = 256
 	defaultHTTPOutboxMaxBytes          int64 = 8 << 20
+	defaultHTTPRequestBodyTimeout            = 30 * time.Second
 )
 
 // HTTPServerTransportConfig contains the hard resource limits for a
-// streamable HTTP MCP transport. Every limit is mandatory and positive: the
-// configured constructor deliberately has no zero-means-unlimited mode.
+// streamable HTTP MCP transport. Capacity/size limits are mandatory and
+// positive. RequestBodyTimeout zero normalizes to the safe 30-second default;
+// it never means unlimited.
 type HTTPServerTransportConfig struct {
 	MaxSessions                     int
 	MaxSessionsPerPrincipal         int
 	IdleTimeout                     time.Duration
 	AbsoluteLifetime                time.Duration
 	MaxRequestBodyBytes             int64
+	RequestBodyTimeout              time.Duration
 	MaxConcurrentMessages           int
 	MaxConcurrentMessagesPerSession int
 	OutboxMaxMessages               int
@@ -39,6 +42,7 @@ func DefaultHTTPServerTransportConfig() HTTPServerTransportConfig {
 		IdleTimeout:                     30 * time.Minute,
 		AbsoluteLifetime:                24 * time.Hour,
 		MaxRequestBodyBytes:             defaultHTTPMaxRequestBodyBytes,
+		RequestBodyTimeout:              defaultHTTPRequestBodyTimeout,
 		MaxConcurrentMessages:           defaultHTTPMaxConcurrentMessages,
 		MaxConcurrentMessagesPerSession: defaultHTTPMaxConcurrentPerSession,
 		OutboxMaxMessages:               defaultHTTPOutboxMaxMessages,
@@ -63,6 +67,8 @@ func (c HTTPServerTransportConfig) validate() error {
 		return fmt.Errorf("mcp: HTTP transport IdleTimeout cannot exceed AbsoluteLifetime")
 	case c.MaxRequestBodyBytes <= 0:
 		return fmt.Errorf("mcp: HTTP transport MaxRequestBodyBytes must be positive")
+	case c.RequestBodyTimeout < 0:
+		return fmt.Errorf("mcp: HTTP transport RequestBodyTimeout cannot be negative")
 	case c.MaxConcurrentMessages <= 0:
 		return fmt.Errorf("mcp: HTTP transport MaxConcurrentMessages must be positive")
 	case c.MaxConcurrentMessagesPerSession <= 0:
@@ -78,6 +84,13 @@ func (c HTTPServerTransportConfig) validate() error {
 	default:
 		return nil
 	}
+}
+
+func (c HTTPServerTransportConfig) withDefaults() HTTPServerTransportConfig {
+	if c.RequestBodyTimeout == 0 {
+		c.RequestBodyTimeout = defaultHTTPRequestBodyTimeout
+	}
+	return c
 }
 
 // sweepInterval is intentionally derived rather than independently tunable.
@@ -97,16 +110,24 @@ func (c HTTPServerTransportConfig) sweepInterval() time.Duration {
 // HTTPServerTransportStats is a source-free operational snapshot. It contains
 // counts only—never session IDs, principals, request data, or queued payloads.
 // InFlightMessages counts ordinary asynchronous request/notification handlers.
-// POST decoding and matched nested-response delivery use separate internal
-// lanes, each bounded by MaxConcurrentMessages globally and
-// MaxConcurrentMessagesPerSession where session-scoped. RejectedMessages
-// aggregates admission failures from all three lanes.
+// Ordinary decoding, protected nested-response decoding, matched response
+// delivery, and SSE use separately bounded lanes. Each global lane is capped
+// by MaxConcurrentMessages; ordinary session-scoped lanes are capped by
+// MaxConcurrentMessagesPerSession, the protected decode reserve is exactly one
+// per session, and SSE is one per session. Thus aggregate decode work is
+// explicitly bounded at 2*MaxConcurrentMessages globally and
+// MaxConcurrentMessagesPerSession+1 for a session with pending nested requests.
+// RejectedMessages aggregates failures from every lane.
 type HTTPServerTransportStats struct {
 	ActiveSessions           int
 	ProvisionalSessions      int
 	RejectedSessionCreations uint64
 	ExpiredSessions          uint64
 	InFlightMessages         int
+	InFlightDecodes          int
+	InFlightProtectedDecodes int
+	InFlightControlResponses int
+	InFlightSSEStreams       int
 	RejectedMessages         uint64
 	OutboxOverflowClosures   uint64
 }

@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	httpSessionIDBytes          = 32
-	httpSessionCollisionRetries = 8
+	httpSessionIDBytes             = 32
+	httpSessionCollisionRetries    = 8
+	httpProtectedDecodesPerSession = 1
+	defaultHTTPSSEWriteTimeout     = 30 * time.Second
 )
 
 var (
@@ -45,7 +47,9 @@ type HTTPSessionAuthorizer func(sessionCtx context.Context, r *http.Request) (bo
 // HTTPSessionPrincipalFunc extracts a stable, non-secret principal identifier
 // from a freshly authenticated request. The value is captured immutably at
 // initialization, compared on every follow-up request, and used only for
-// quotas and revocation indexing. A token hash is suitable; plaintext bearer
+// quotas and revocation indexing. It also bounds concurrent pre-session
+// initialize decodes per principal; transports without this hook retain only
+// the global initialize-decode cap. A token hash is suitable; plaintext bearer
 // credentials are not.
 type HTTPSessionPrincipalFunc func(r *http.Request) (string, error)
 
@@ -97,8 +101,15 @@ type HTTPServerTransport struct {
 	// Decode and response-control work are separately bounded from ordinary
 	// asynchronous handlers. This prevents four handlers blocked on nested MCP
 	// sampling from starving the responses required to release those handlers.
-	decodeInFlight  int
-	controlInFlight int
+	decodeInFlight          int
+	protectedDecodeInFlight int
+	controlInFlight         int
+	sseInFlight             int
+	initializingByPrincipal map[string]int
+
+	// SSE writes use a fixed non-zero bound. Request body deadlines are explicit
+	// in HTTPServerTransportConfig.
+	sseWriteTimeout time.Duration
 }
 
 // SetSessionContextFunc installs a hook that derives each new MCP session's
@@ -173,10 +184,12 @@ type httpServerSession struct {
 	state          httpSessionState
 	closed         bool // retained for diagnostics and compatibility with package tests
 
-	operations       int
-	inFlightMessages int
-	controlInFlight  int
-	sseOpen          bool
+	operations              int
+	decodeInFlight          int
+	protectedDecodeInFlight int
+	inFlightMessages        int
+	controlInFlight         int
+	sseOpen                 bool
 
 	outbox      [][]byte
 	outboxBytes int64
@@ -214,6 +227,7 @@ func newHTTPServerTransport(server *Server, entropy io.Reader) *HTTPServerTransp
 }
 
 func newHTTPServerTransportWithConfig(server *Server, config HTTPServerTransportConfig, entropy io.Reader) (*HTTPServerTransport, error) {
+	config = config.withDefaults()
 	if err := config.validate(); err != nil {
 		return nil, err
 	}
@@ -222,16 +236,18 @@ func newHTTPServerTransportWithConfig(server *Server, config HTTPServerTransport
 	}
 	sweepCtx, sweepCancel := context.WithCancel(context.Background())
 	t := &HTTPServerTransport{
-		template:          server,
-		config:            config,
-		sessions:          make(map[string]*httpServerSession),
-		principalSessions: make(map[string]map[string]*httpServerSession),
-		sessionIDEntropy:  entropy,
-		sweepStop:         make(chan struct{}),
-		sweepDone:         make(chan struct{}),
-		closeDone:         make(chan struct{}),
-		sweepCtx:          sweepCtx,
-		sweepCancel:       sweepCancel,
+		template:                server,
+		config:                  config,
+		sessions:                make(map[string]*httpServerSession),
+		principalSessions:       make(map[string]map[string]*httpServerSession),
+		sessionIDEntropy:        entropy,
+		sweepStop:               make(chan struct{}),
+		sweepDone:               make(chan struct{}),
+		closeDone:               make(chan struct{}),
+		sweepCtx:                sweepCtx,
+		sweepCancel:             sweepCancel,
+		sseWriteTimeout:         defaultHTTPSSEWriteTimeout,
+		initializingByPrincipal: make(map[string]int),
 	}
 	go t.sweepLoop()
 	return t, nil
@@ -314,7 +330,12 @@ func (t *HTTPServerTransport) ClosePrincipal(principal string) int {
 func (t *HTTPServerTransport) Stats() HTTPServerTransportStats {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.stats
+	stats := t.stats
+	stats.InFlightDecodes = t.decodeInFlight
+	stats.InFlightProtectedDecodes = t.protectedDecodeInFlight
+	stats.InFlightControlResponses = t.controlInFlight
+	stats.InFlightSSEStreams = t.sseInFlight
+	return stats
 }
 
 // ServeHTTP implements http.Handler for the streamable HTTP MCP transport.
@@ -343,7 +364,7 @@ func (t *HTTPServerTransport) handleStream(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	flusher, ok := w.(http.Flusher)
+	_, ok = w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
@@ -355,6 +376,13 @@ func (t *HTTPServerTransport) handleStream(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer lease.release()
+	streamWriter, err := newHTTPSSEWriter(w, lease.ctx, t.sseWriteTimeout)
+	if err != nil {
+		// Do not call Write on a writer that cannot be deadline-bounded: even
+		// attempting to render an error could retain the handler indefinitely.
+		return
+	}
+	defer streamWriter.close()
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -362,14 +390,17 @@ func (t *HTTPServerTransport) handleStream(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Mcp-Session-Id", sessionID)
 	// Commit headers immediately so an empty outbox still establishes the
 	// stream and competing GETs can receive a prompt one-stream rejection.
-	flusher.Flush()
+	if err := streamWriter.flush(); err != nil {
+		t.closeExpectedSession(session, false)
+		return
+	}
 
 	for {
 		if payload, found := session.dequeue(); found {
-			if _, err := fmt.Fprintf(w, "event: message\ndata: %s\n\n", payload); err != nil {
+			if err := streamWriter.write(payload); err != nil {
+				t.closeExpectedSession(session, false)
 				return
 			}
-			flusher.Flush()
 			continue
 		}
 
@@ -381,8 +412,115 @@ func (t *HTTPServerTransport) handleStream(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+type httpSSEWriter struct {
+	w          http.ResponseWriter
+	controller *http.ResponseController
+	ctx        context.Context
+	timeout    time.Duration
+	stopCancel func() bool
+}
+
+func newHTTPSSEWriter(w http.ResponseWriter, ctx context.Context, timeout time.Duration) (*httpSSEWriter, error) {
+	if timeout <= 0 {
+		timeout = defaultHTTPSSEWriteTimeout
+	}
+	writer := &httpSSEWriter{
+		w:          w,
+		controller: http.NewResponseController(w),
+		ctx:        ctx,
+		timeout:    timeout,
+	}
+	// Fail closed before committing SSE headers when the writer cannot provide
+	// a real write deadline. Detached write goroutines are deliberately not a
+	// fallback because a hostile writer could retain one forever.
+	if err := writer.controller.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, err
+	}
+	if err := writer.controller.SetWriteDeadline(time.Time{}); err != nil {
+		return nil, err
+	}
+	writer.stopCancel = context.AfterFunc(ctx, func() {
+		_ = writer.controller.SetWriteDeadline(time.Now())
+	})
+	return writer, nil
+}
+
+func (w *httpSSEWriter) write(payload []byte) error {
+	return w.withDeadline(func() error {
+		if _, err := fmt.Fprintf(w.w, "event: message\ndata: %s\n\n", payload); err != nil {
+			return err
+		}
+		return w.controller.Flush()
+	})
+}
+
+func (w *httpSSEWriter) flush() error {
+	return w.withDeadline(func() error {
+		return w.controller.Flush()
+	})
+}
+
+func (w *httpSSEWriter) withDeadline(operation func() error) error {
+	if err := w.ctx.Err(); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(w.timeout)
+	if contextDeadline, ok := w.ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := w.controller.SetWriteDeadline(deadline); err != nil {
+		return err
+	}
+	err := operation()
+	if err != nil {
+		return err
+	}
+	if err := w.ctx.Err(); err != nil {
+		return err
+	}
+	return w.controller.SetWriteDeadline(time.Time{})
+}
+
+func (w *httpSSEWriter) close() {
+	if w.stopCancel != nil && !w.stopCancel() {
+		// Cancellation won the race; preserve its expired deadline until the
+		// blocked write has returned.
+		return
+	}
+	_ = w.controller.SetWriteDeadline(time.Time{})
+}
+
 func (t *HTTPServerTransport) handlePost(w http.ResponseWriter, r *http.Request) {
-	decodeLease, err := t.acquireDecode()
+	sessionID := r.Header.Get("Mcp-Session-Id")
+	var (
+		session                    *httpServerSession
+		requestHook                HTTPSessionRequestContextFunc
+		initializationPrincipal    string
+		initializationPrincipalSet bool
+	)
+	if sessionID != "" {
+		var ok bool
+		session, requestHook, ok = t.authorizedSession(w, r, sessionID)
+		if !ok {
+			return
+		}
+	} else {
+		t.mu.Lock()
+		principalFunc := t.principalFunc
+		t.mu.Unlock()
+		if principalFunc != nil {
+			var err error
+			initializationPrincipal, err = principalFunc(r)
+			if err != nil {
+				t.recordRejectedSessionCreation()
+				http.Error(w, "failed to derive session principal", http.StatusInternalServerError)
+				return
+			}
+			initializationPrincipalSet = true
+		}
+	}
+
+	decodeLease, err := t.acquireDecode(session, initializationPrincipal, w, r)
 	if err != nil {
 		t.writeLeaseError(w, err)
 		return
@@ -394,33 +532,43 @@ func (t *HTTPServerTransport) handlePost(w http.ResponseWriter, r *http.Request)
 		}
 	}()
 
-	sessionID := r.Header.Get("Mcp-Session-Id")
 	if sessionID == "" {
-		msg, ok := t.decodeOneMessage(w, r)
+		msg, ok := t.decodeOneMessage(w, r, decodeLease.ctx)
 		if !ok {
 			return
 		}
-		decodeLease.release()
+		decodeErr := decodeLease.release()
 		releaseDecodeHere = false
+		if decodeErr != nil {
+			t.writeDecodeError(w, decodeErr, decodeLease.ctx)
+			return
+		}
 		if msg.Method != "initialize" {
 			http.Error(w, "missing Mcp-Session-Id", http.StatusBadRequest)
 			return
 		}
-		t.handleInitialize(w, r, msg)
+		t.handleInitialize(w, r, msg, initializationPrincipal, initializationPrincipalSet)
 		return
 	}
 
-	session, requestHook, ok := t.authorizedSession(w, r, sessionID)
+	msg, ok := t.decodeOneMessage(w, r, decodeLease.ctx)
 	if !ok {
 		return
 	}
-	msg, ok := t.decodeOneMessage(w, r)
-	if !ok {
-		return
-	}
-	decodeLease.release()
+	decodeErr := decodeLease.release()
 	releaseDecodeHere = false
-
+	if decodeErr != nil {
+		t.writeDecodeError(w, decodeErr, decodeLease.ctx)
+		return
+	}
+	if decodeLease.protected && (msg.Method != "" || !hasJSONRPCID(msg.ID) || !session.server.hasPendingResponse(msg.ID)) {
+		t.mu.Lock()
+		t.stats.RejectedMessages++
+		t.mu.Unlock()
+		t.setRetryAfter(w)
+		http.Error(w, "protected response decode rejected", http.StatusTooManyRequests)
+		return
+	}
 	// A method-less message is a continuation of a server-initiated nested
 	// request, not another ordinary handler. Only an ID currently outstanding
 	// on this exact cloned Server may enter the separately bounded control lane.
@@ -464,8 +612,8 @@ func (t *HTTPServerTransport) handlePost(w http.ResponseWriter, r *http.Request)
 	releaseHere = false
 }
 
-func (t *HTTPServerTransport) handleInitialize(w http.ResponseWriter, r *http.Request, msg *jsonRPCMessage) {
-	session, err := t.newSession(r)
+func (t *HTTPServerTransport) handleInitialize(w http.ResponseWriter, r *http.Request, msg *jsonRPCMessage, principal string, principalSet bool) {
+	session, err := t.newSessionWithPrincipal(r, principal, principalSet)
 	if err != nil {
 		t.writeSessionCreationError(w, err)
 		return
@@ -527,12 +675,12 @@ func (t *HTTPServerTransport) handleDelete(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (t *HTTPServerTransport) decodeOneMessage(w http.ResponseWriter, r *http.Request) (*jsonRPCMessage, bool) {
+func (t *HTTPServerTransport) decodeOneMessage(w http.ResponseWriter, r *http.Request, decodeCtx context.Context) (*jsonRPCMessage, bool) {
 	reader := http.MaxBytesReader(w, r.Body, t.config.MaxRequestBodyBytes)
 	decoder := json.NewDecoder(reader)
 	var msg jsonRPCMessage
 	if err := decoder.Decode(&msg); err != nil {
-		t.writeDecodeError(w, err)
+		t.writeDecodeError(w, err, decodeCtx)
 		return nil, false
 	}
 	var trailing json.RawMessage
@@ -540,17 +688,32 @@ func (t *HTTPServerTransport) decodeOneMessage(w http.ResponseWriter, r *http.Re
 		if err == nil {
 			http.Error(w, "request must contain exactly one JSON value", http.StatusBadRequest)
 		} else {
-			t.writeDecodeError(w, err)
+			t.writeDecodeError(w, err, decodeCtx)
 		}
+		return nil, false
+	}
+	if decodeCtx != nil && decodeCtx.Err() != nil {
+		t.writeDecodeError(w, decodeCtx.Err(), decodeCtx)
 		return nil, false
 	}
 	return &msg, true
 }
 
-func (t *HTTPServerTransport) writeDecodeError(w http.ResponseWriter, err error) {
+func (t *HTTPServerTransport) writeDecodeError(w http.ResponseWriter, err error, decodeCtx context.Context) {
 	var tooLarge *http.MaxBytesError
 	if errors.As(err, &tooLarge) {
 		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	var timeout interface{ Timeout() bool }
+	if (decodeCtx != nil && errors.Is(decodeCtx.Err(), context.DeadlineExceeded)) || (errors.As(err, &timeout) && timeout.Timeout()) {
+		w.Header().Set("Connection", "close")
+		http.Error(w, "request body timeout", http.StatusRequestTimeout)
+		return
+	}
+	if decodeCtx != nil && errors.Is(decodeCtx.Err(), context.Canceled) {
+		w.Header().Set("Connection", "close")
+		http.Error(w, "request canceled", http.StatusServiceUnavailable)
 		return
 	}
 	http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -600,15 +763,23 @@ func (t *HTTPServerTransport) setRetryAfter(w http.ResponseWriter) {
 }
 
 func (t *HTTPServerTransport) newSession(r *http.Request) (*httpServerSession, error) {
+	return t.newSessionWithPrincipal(r, "", false)
+}
+
+func (t *HTTPServerTransport) newSessionWithPrincipal(r *http.Request, principal string, principalSet bool) (*httpServerSession, error) {
 	t.mu.Lock()
 	hook := t.sessionCtx
 	principalFunc := t.principalFunc
-	if err := t.checkSessionCapacityLocked(""); err != nil {
+	expired := t.reapExpiredAtCapacityLocked("", time.Now())
+	capacityErr := t.checkSessionCapacityLocked("")
+	if capacityErr != nil {
 		t.stats.RejectedSessionCreations++
-		t.mu.Unlock()
-		return nil, err
 	}
 	t.mu.Unlock()
+	shutdownHTTPSessions(expired)
+	if capacityErr != nil {
+		return nil, capacityErr
+	}
 
 	base := context.Background()
 	if hook != nil {
@@ -619,9 +790,8 @@ func (t *HTTPServerTransport) newSession(r *http.Request) (*httpServerSession, e
 	// Preserve values but never inherit initialize-request cancellation.
 	base = context.WithoutCancel(base)
 
-	principal := ""
-	principalBound := principalFunc != nil
-	if principalFunc != nil {
+	principalBound := principalSet || principalFunc != nil
+	if !principalSet && principalFunc != nil {
 		var err error
 		principal, err = principalFunc(r)
 		if err != nil {
@@ -638,13 +808,17 @@ func (t *HTTPServerTransport) newSession(r *http.Request) (*httpServerSession, e
 		}
 
 		t.mu.Lock()
-		if err := t.checkSessionCapacityLocked(principal); err != nil {
+		expired = t.reapExpiredAtCapacityLocked(principal, time.Now())
+		capacityErr = t.checkSessionCapacityLocked(principal)
+		if capacityErr != nil {
 			t.stats.RejectedSessionCreations++
 			t.mu.Unlock()
-			return nil, err
+			shutdownHTTPSessions(expired)
+			return nil, capacityErr
 		}
 		if _, exists := t.sessions[sessionID]; exists {
 			t.mu.Unlock()
+			shutdownHTTPSessions(expired)
 			continue
 		}
 
@@ -679,11 +853,42 @@ func (t *HTTPServerTransport) newSession(r *http.Request) (*httpServerSession, e
 		}
 		t.stats.ProvisionalSessions++
 		t.mu.Unlock()
+		shutdownHTTPSessions(expired)
 		return session, nil
 	}
 
 	t.recordRejectedSessionCreation()
 	return nil, fmt.Errorf("mcp: exhausted %d HTTP session ID collision attempts", httpSessionCollisionRetries)
+}
+
+func (t *HTTPServerTransport) reapExpiredAtCapacityLocked(principal string, now time.Time) []*httpServerSession {
+	globalFull := len(t.sessions) >= t.config.MaxSessions
+	principalFull := principal != "" && len(t.principalSessions[principal]) >= t.config.MaxSessionsPerPrincipal
+	if !globalFull && !principalFull {
+		return nil
+	}
+	return t.reapExpiredSessionsLocked(now)
+}
+
+// reapExpiredSessionsLocked requires t.mu and returns detached sessions for
+// shutdown after the caller releases t.mu.
+func (t *HTTPServerTransport) reapExpiredSessionsLocked(now time.Time) []*httpServerSession {
+	var expired []*httpServerSession
+	for _, session := range t.sessions {
+		session.mu.Lock()
+		if t.sessionExpiredLocked(session, now) && t.detachSessionLocked(session) {
+			t.stats.ExpiredSessions++
+			expired = append(expired, session)
+		}
+		session.mu.Unlock()
+	}
+	return expired
+}
+
+func shutdownHTTPSessions(sessions []*httpServerSession) {
+	for _, session := range sessions {
+		session.shutdown()
+	}
 }
 
 func (t *HTTPServerTransport) checkSessionCapacityLocked(principal string) error {
@@ -854,7 +1059,14 @@ func (t *HTTPServerTransport) acquireSessionLease(session *httpServerSession, r 
 				t.mu.Unlock()
 				return nil, errHTTPSSEAlreadyOpen
 			}
+			if t.sseInFlight >= t.config.MaxConcurrentMessages {
+				t.stats.RejectedMessages++
+				session.mu.Unlock()
+				t.mu.Unlock()
+				return nil, errHTTPMessageLimit
+			}
 			session.sseOpen = true
+			t.sseInFlight++
 		case leaseControl:
 			if t.controlInFlight >= t.config.MaxConcurrentMessages || session.controlInFlight >= t.config.MaxConcurrentMessagesPerSession {
 				t.stats.RejectedMessages++
@@ -959,7 +1171,13 @@ func (l *httpSessionLease) release() {
 			session.inFlightMessages--
 			t.stats.InFlightMessages--
 		case leaseSSE:
+			if t.sseInFlight <= 0 {
+				session.mu.Unlock()
+				t.mu.Unlock()
+				panic("mcp: HTTP SSE accounting underflow")
+			}
 			session.sseOpen = false
+			t.sseInFlight--
 		case leaseControl:
 			if session.controlInFlight <= 0 || t.controlInFlight <= 0 {
 				session.mu.Unlock()
@@ -978,36 +1196,205 @@ func (l *httpSessionLease) release() {
 }
 
 type httpDecodeLease struct {
-	once      sync.Once
-	transport *HTTPServerTransport
+	once                    sync.Once
+	transport               *HTTPServerTransport
+	session                 *httpServerSession
+	protected               bool
+	ctx                     context.Context
+	cancel                  context.CancelFunc
+	stopSession             func() bool
+	stopTransport           func() bool
+	stopBody                func() bool
+	stopDeadline            func() bool
+	controller              *http.ResponseController
+	readDeadline            bool
+	initializationPrincipal string
+	terminalErr             error
 }
 
-func (t *HTTPServerTransport) acquireDecode() (*httpDecodeLease, error) {
+func (t *HTTPServerTransport) acquireDecode(session *httpServerSession, initializationPrincipal string, w http.ResponseWriter, r *http.Request) (*httpDecodeLease, error) {
+	allowProtected := session != nil && session.server.hasPendingRequests()
+	var expired bool
+	now := time.Now()
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	if session != nil {
+		session.mu.Lock()
+	}
 	if t.closed {
+		if session != nil {
+			session.mu.Unlock()
+		}
+		t.mu.Unlock()
 		return nil, errHTTPTransportClosed
 	}
-	if t.decodeInFlight >= t.config.MaxConcurrentMessages {
+	if session != nil && (t.sessions[session.id] != session || session.state != httpSessionActive) {
+		session.mu.Unlock()
+		t.mu.Unlock()
+		return nil, errHTTPSessionInactive
+	}
+	if session != nil && t.sessionExpiredLocked(session, now) {
+		t.detachSessionLocked(session)
+		t.stats.ExpiredSessions++
+		expired = true
+	}
+	principalInitAvailable := initializationPrincipal == "" ||
+		t.initializingByPrincipal[initializationPrincipal] < t.config.MaxConcurrentMessagesPerSession
+	regularAvailable := !expired && principalInitAvailable && t.decodeInFlight < t.config.MaxConcurrentMessages &&
+		(session == nil || session.decodeInFlight < t.config.MaxConcurrentMessagesPerSession)
+	protectedAvailable := !expired && session != nil && allowProtected &&
+		t.protectedDecodeInFlight < t.config.MaxConcurrentMessages &&
+		session.protectedDecodeInFlight < httpProtectedDecodesPerSession
+	protected := false
+	switch {
+	case regularAvailable:
+		t.decodeInFlight++
+		if session == nil && initializationPrincipal != "" {
+			t.initializingByPrincipal[initializationPrincipal]++
+		}
+		if session != nil {
+			session.decodeInFlight++
+			session.operations++
+			session.lastActivity = now
+		}
+	case protectedAvailable:
+		protected = true
+		t.protectedDecodeInFlight++
+		session.protectedDecodeInFlight++
+		session.operations++
+		session.lastActivity = now
+	case expired:
+		// Shutdown after releasing accounting locks below.
+	default:
 		t.stats.RejectedMessages++
+		if session != nil {
+			session.mu.Unlock()
+		}
+		t.mu.Unlock()
 		return nil, errHTTPMessageLimit
 	}
-	t.decodeInFlight++
-	return &httpDecodeLease{transport: t}, nil
+	if session != nil {
+		session.mu.Unlock()
+	}
+	t.mu.Unlock()
+	if expired {
+		session.shutdown()
+		return nil, errHTTPSessionInactive
+	}
+
+	if r.Body == nil {
+		r.Body = http.NoBody
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), t.config.RequestBodyTimeout)
+	lease := &httpDecodeLease{
+		transport:               t,
+		session:                 session,
+		protected:               protected,
+		ctx:                     ctx,
+		cancel:                  cancel,
+		controller:              http.NewResponseController(w),
+		initializationPrincipal: initializationPrincipal,
+	}
+	lease.stopTransport = context.AfterFunc(t.sweepCtx, cancel)
+	if session != nil {
+		lease.stopSession = context.AfterFunc(session.ctx, cancel)
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		lease.readDeadline = lease.controller.SetReadDeadline(deadline) == nil
+	}
+	lease.stopDeadline = context.AfterFunc(ctx, func() {
+		_ = lease.controller.SetReadDeadline(time.Now())
+	})
+	// Closing Body is the fallback for custom readers and complements the real
+	// connection read deadline. Well-behaved ReadClosers unblock Read on Close.
+	lease.stopBody = context.AfterFunc(ctx, func() { _ = r.Body.Close() })
+	return lease, nil
 }
 
-func (l *httpDecodeLease) release() {
+func (l *httpDecodeLease) release() error {
 	if l == nil {
-		return
+		return nil
 	}
 	l.once.Do(func() {
-		l.transport.mu.Lock()
-		defer l.transport.mu.Unlock()
-		if l.transport.decodeInFlight <= 0 {
-			panic("mcp: HTTP decode accounting underflow")
+		l.terminalErr = l.ctx.Err()
+		bodyStopped := true
+		deadlineStopped := true
+		sessionStopped := true
+		transportStopped := true
+		if l.stopBody != nil {
+			bodyStopped = l.stopBody()
 		}
-		l.transport.decodeInFlight--
+		if l.stopDeadline != nil {
+			deadlineStopped = l.stopDeadline()
+		}
+		if l.stopSession != nil {
+			sessionStopped = l.stopSession()
+		}
+		if l.stopTransport != nil {
+			transportStopped = l.stopTransport()
+		}
+		if l.terminalErr == nil && (!bodyStopped || !deadlineStopped || !sessionStopped || !transportStopped) {
+			l.terminalErr = context.Canceled
+		}
+		if l.cancel != nil {
+			l.cancel()
+		}
+		if l.readDeadline && deadlineStopped && l.controller != nil {
+			_ = l.controller.SetReadDeadline(time.Time{})
+		}
+
+		t := l.transport
+		t.mu.Lock()
+		if l.session != nil {
+			l.session.mu.Lock()
+		}
+		if l.protected {
+			if t.protectedDecodeInFlight <= 0 || l.session == nil || l.session.protectedDecodeInFlight <= 0 {
+				if l.session != nil {
+					l.session.mu.Unlock()
+				}
+				t.mu.Unlock()
+				panic("mcp: HTTP protected decode accounting underflow")
+			}
+			t.protectedDecodeInFlight--
+			l.session.protectedDecodeInFlight--
+		} else {
+			if t.decodeInFlight <= 0 || (l.session != nil && l.session.decodeInFlight <= 0) {
+				if l.session != nil {
+					l.session.mu.Unlock()
+				}
+				t.mu.Unlock()
+				panic("mcp: HTTP decode accounting underflow")
+			}
+			t.decodeInFlight--
+			if l.session == nil && l.initializationPrincipal != "" {
+				count := t.initializingByPrincipal[l.initializationPrincipal]
+				if count <= 0 {
+					t.mu.Unlock()
+					panic("mcp: HTTP initialization decode accounting underflow")
+				}
+				if count == 1 {
+					delete(t.initializingByPrincipal, l.initializationPrincipal)
+				} else {
+					t.initializingByPrincipal[l.initializationPrincipal] = count - 1
+				}
+			}
+			if l.session != nil {
+				l.session.decodeInFlight--
+			}
+		}
+		if l.session != nil {
+			if l.session.operations <= 0 {
+				l.session.mu.Unlock()
+				t.mu.Unlock()
+				panic("mcp: HTTP decode operation accounting underflow")
+			}
+			l.session.operations--
+			l.session.lastActivity = time.Now()
+			l.session.mu.Unlock()
+		}
+		t.mu.Unlock()
 	})
+	return l.terminalErr
 }
 
 // immutableSessionRequestContext combines current request values/cancellation
@@ -1210,16 +1597,8 @@ func (t *HTTPServerTransport) sweepLoop() {
 }
 
 func (t *HTTPServerTransport) sweepOnce(now time.Time) {
-	var expired []*httpServerSession
 	t.mu.Lock()
-	for _, session := range t.sessions {
-		session.mu.Lock()
-		if t.sessionExpiredLocked(session, now) && t.detachSessionLocked(session) {
-			t.stats.ExpiredSessions++
-			expired = append(expired, session)
-		}
-		session.mu.Unlock()
-	}
+	expired := t.reapExpiredSessionsLocked(now)
 	validator := t.principalValidator
 	principals := make([]string, 0, len(t.principalSessions))
 	if validator != nil {
@@ -1229,9 +1608,7 @@ func (t *HTTPServerTransport) sweepOnce(now time.Time) {
 	}
 	t.mu.Unlock()
 
-	for _, session := range expired {
-		session.shutdown()
-	}
+	shutdownHTTPSessions(expired)
 	for _, principal := range principals {
 		valid, err := validator(t.sweepCtx, principal)
 		if err != nil {

@@ -1,11 +1,13 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -53,6 +55,9 @@ func TestDefaultHTTPServerTransportConfigIsBounded(t *testing.T) {
 	if config.MaxRequestBodyBytes != 8<<20 {
 		t.Fatalf("MaxRequestBodyBytes = %d, want %d", config.MaxRequestBodyBytes, 8<<20)
 	}
+	if config.RequestBodyTimeout != 30*time.Second {
+		t.Fatalf("RequestBodyTimeout = %v, want 30s", config.RequestBodyTimeout)
+	}
 	if config.MaxConcurrentMessages != 256 || config.MaxConcurrentMessagesPerSession != 4 {
 		t.Fatalf("message defaults = %d/%d, want 256/4", config.MaxConcurrentMessages, config.MaxConcurrentMessagesPerSession)
 	}
@@ -74,6 +79,7 @@ func TestHTTPServerTransportConfigRejectsEveryUnboundedOrIncoherentLimit(t *test
 		"absolute":              func(c *HTTPServerTransportConfig) { c.AbsoluteLifetime = 0 },
 		"idle over absolute":    func(c *HTTPServerTransportConfig) { c.IdleTimeout = c.AbsoluteLifetime + 1 },
 		"body":                  func(c *HTTPServerTransportConfig) { c.MaxRequestBodyBytes = 0 },
+		"negative body timeout": func(c *HTTPServerTransportConfig) { c.RequestBodyTimeout = -1 },
 		"messages":              func(c *HTTPServerTransportConfig) { c.MaxConcurrentMessages = 0 },
 		"session messages":      func(c *HTTPServerTransportConfig) { c.MaxConcurrentMessagesPerSession = 0 },
 		"session over global":   func(c *HTTPServerTransportConfig) { c.MaxConcurrentMessagesPerSession = c.MaxConcurrentMessages + 1 },
@@ -90,6 +96,15 @@ func TestHTTPServerTransportConfigRejectsEveryUnboundedOrIncoherentLimit(t *test
 				t.Fatal("invalid config was accepted")
 			}
 		})
+	}
+}
+
+func TestHTTPServerTransportZeroBodyTimeoutNormalizesToSafeDefault(t *testing.T) {
+	config := containmentHTTPConfig()
+	config.RequestBodyTimeout = 0
+	transport := newContainmentTransport(t, NewServer(), config)
+	if transport.config.RequestBodyTimeout != defaultHTTPRequestBodyTimeout {
+		t.Fatalf("effective RequestBodyTimeout = %v, want %v", transport.config.RequestBodyTimeout, defaultHTTPRequestBodyTimeout)
 	}
 }
 
@@ -331,8 +346,8 @@ func TestHTTPServerTransportRequestContextHookErrorsReleaseEveryLeaseKind(t *tes
 		t.Fatalf("hook failures leaked counters: stats=%+v decode=%d control=%d ops=%d messages=%d controls=%d sse=%v",
 			stats, decodeInFlight, controlInFlight, operations, messages, controls, sseOpen)
 	}
-	if !activityAfter.Equal(lastActivity) {
-		t.Fatalf("rejected hook extended idle activity: before=%v after=%v", lastActivity, activityAfter)
+	if !activityAfter.After(lastActivity) {
+		t.Fatalf("admitted decode did not refresh idle activity: before=%v after=%v", lastActivity, activityAfter)
 	}
 }
 
@@ -1027,6 +1042,559 @@ func TestHTTPServerTransportAbsoluteExpiryCancelsActiveLease(t *testing.T) {
 	}
 }
 
+func TestHTTPServerTransportPerSessionDecodeLimitContainsIncompleteBodies(t *testing.T) {
+	config := containmentHTTPConfig()
+	config.MaxConcurrentMessages = 4
+	config.MaxConcurrentMessagesPerSession = 2
+	config.RequestBodyTimeout = 5 * time.Second
+	transport := newContainmentTransport(t, NewServer(), config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	sessionA := initializeContainmentSession(t, srv.Client(), srv.URL, nil)
+	sessionB := initializeContainmentSession(t, srv.Client(), srv.URL, nil)
+
+	bodyA1, resultA1 := startIncompleteHTTPPost(t, srv.Client(), srv.URL, sessionA)
+	bodyA2, resultA2 := startIncompleteHTTPPost(t, srv.Client(), srv.URL, sessionA)
+	eventuallyContainment(t, time.Second, func() bool {
+		stats := transport.Stats()
+		session, ok := transport.getSession(sessionA)
+		if !ok {
+			return false
+		}
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		return stats.InFlightDecodes == 2 && session.decodeInFlight == 2
+	})
+
+	response := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionA, nil,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`)
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("third same-session decode status = %d, want 429", response.StatusCode)
+	}
+
+	// The offending session cannot monopolize the remaining global lanes.
+	response = doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionB, nil,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}`)
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("other-session POST status = %d, want 202", response.StatusCode)
+	}
+
+	bodyA1.Close()
+	bodyA2.Close()
+	waitIncompleteHTTPResult(t, resultA1)
+	waitIncompleteHTTPResult(t, resultA2)
+	eventuallyContainment(t, time.Second, func() bool { return transport.Stats().InFlightDecodes == 0 })
+}
+
+func TestHTTPServerTransportPrincipalBoundInitializeDecodeCannotMonopolizeGlobalCapacity(t *testing.T) {
+	config := containmentHTTPConfig()
+	config.MaxConcurrentMessages = 3
+	config.MaxConcurrentMessagesPerSession = 1
+	config.RequestBodyTimeout = 5 * time.Second
+	transport := newContainmentTransport(t, NewServer(), config)
+	var derivations atomic.Int64
+	transport.SetSessionPrincipalFunc(func(r *http.Request) (string, error) {
+		derivations.Add(1)
+		return r.Header.Get("X-Principal"), nil
+	})
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+
+	bodyA, resultA := startIncompleteHTTPPostWithHeaders(t, srv.Client(), srv.URL, "", map[string]string{"X-Principal": "principal-a"})
+	eventuallyContainment(t, time.Second, func() bool {
+		transport.mu.Lock()
+		defer transport.mu.Unlock()
+		return transport.initializingByPrincipal["principal-a"] == 1 && transport.decodeInFlight == 1
+	})
+	initialize := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
+	samePrincipal := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, "",
+		map[string]string{"X-Principal": "principal-a"}, initialize)
+	samePrincipal.Body.Close()
+	if samePrincipal.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("same-principal initialize saturation = %d, want 429", samePrincipal.StatusCode)
+	}
+
+	otherPrincipal := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, "",
+		map[string]string{"X-Principal": "principal-b"}, initialize)
+	io.Copy(io.Discard, otherPrincipal.Body)
+	otherPrincipal.Body.Close()
+	if otherPrincipal.StatusCode != http.StatusOK {
+		t.Fatalf("other-principal initialize status = %d, want 200", otherPrincipal.StatusCode)
+	}
+	otherSessionID := otherPrincipal.Header.Get("Mcp-Session-Id")
+	otherSession, ok := transport.getSession(otherSessionID)
+	if !ok || otherSession.principal != "principal-b" {
+		t.Fatalf("other-principal session = %#v", otherSession)
+	}
+	if got := derivations.Load(); got != 3 {
+		t.Fatalf("principal derivations = %d, want exactly one per request (no create-time re-derivation)", got)
+	}
+
+	bodyA.Close()
+	waitIncompleteHTTPResult(t, resultA)
+	eventuallyContainment(t, time.Second, func() bool {
+		transport.mu.Lock()
+		defer transport.mu.Unlock()
+		_, retained := transport.initializingByPrincipal["principal-a"]
+		return !retained && transport.decodeInFlight == 0
+	})
+}
+
+func TestHTTPServerTransportAnonymousInitializeDecodeUsesGlobalBoundOnly(t *testing.T) {
+	config := containmentHTTPConfig()
+	config.MaxConcurrentMessages = 2
+	config.MaxConcurrentMessagesPerSession = 1
+	config.RequestBodyTimeout = 5 * time.Second
+	transport := newContainmentTransport(t, NewServer(), config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	body1, result1 := startIncompleteHTTPPost(t, srv.Client(), srv.URL, "")
+	body2, result2 := startIncompleteHTTPPost(t, srv.Client(), srv.URL, "")
+	eventuallyContainment(t, time.Second, func() bool { return transport.Stats().InFlightDecodes == 2 })
+	third := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, "", nil,
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	third.Body.Close()
+	if third.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("anonymous global decode saturation = %d, want 429", third.StatusCode)
+	}
+	body1.Close()
+	body2.Close()
+	waitIncompleteHTTPResult(t, result1)
+	waitIncompleteHTTPResult(t, result2)
+}
+
+func TestHTTPServerTransportSlowValidDecodeRefreshesShortIdleSession(t *testing.T) {
+	config := containmentHTTPConfig()
+	config.IdleTimeout = 20 * time.Millisecond
+	config.AbsoluteLifetime = time.Second
+	config.RequestBodyTimeout = 250 * time.Millisecond
+	transport := newContainmentTransport(t, NewServer(), config)
+	session, err := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil))
+	if err != nil || !transport.activateSession(session) {
+		t.Fatalf("activate: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	request.Header.Set("Mcp-Session-Id", session.id)
+	request.Body = &delayedReadCloser{
+		data:  []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`),
+		delay: 60 * time.Millisecond,
+	}
+	recorder := httptest.NewRecorder()
+	transport.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("slow valid POST status = %d, want 202; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, ok := transport.getSession(session.id); !ok {
+		t.Fatal("slow valid decode was expired between decode and dispatch")
+	}
+	session.server.WaitIdle()
+}
+
+func TestHTTPServerTransportReadDeadlineReleasesRealNetworkDecodeSlot(t *testing.T) {
+	config := containmentHTTPConfig()
+	config.RequestBodyTimeout = 40 * time.Millisecond
+	transport := newContainmentTransport(t, NewServer(), config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	sessionID := initializeContainmentSession(t, srv.Client(), srv.URL, nil)
+
+	address := strings.TrimPrefix(srv.URL, "http://")
+	conn, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	request := "POST / HTTP/1.1\r\nHost: " + address + "\r\nContent-Length: 100\r\nMcp-Session-Id: " + sessionID + "\r\nConnection: close\r\n\r\n{"
+	if _, err := io.WriteString(conn, request); err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodPost})
+	if err != nil {
+		t.Fatalf("read timeout response: %v", err)
+	}
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusRequestTimeout {
+		t.Fatalf("slow body status = %d, want 408", response.StatusCode)
+	}
+	eventuallyContainment(t, time.Second, func() bool {
+		stats := transport.Stats()
+		return stats.InFlightDecodes == 0 && stats.InFlightProtectedDecodes == 0
+	})
+}
+
+func TestHTTPServerTransportBodyCloseFallbackUnblocksCustomReader(t *testing.T) {
+	config := containmentHTTPConfig()
+	config.RequestBodyTimeout = 20 * time.Millisecond
+	transport := newContainmentTransport(t, NewServer(), config)
+	session, err := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil))
+	if err != nil || !transport.activateSession(session) {
+		t.Fatalf("activate: %v", err)
+	}
+	body := newCloseUnblocksReader()
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	request.Header.Set("Mcp-Session-Id", session.id)
+	request.Body = body
+	recorder := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		transport.ServeHTTP(recorder, request)
+		close(done)
+	}()
+	select {
+	case <-body.started:
+	case <-time.After(time.Second):
+		t.Fatal("custom body Read did not start")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("body timeout did not close-unblock custom reader")
+	}
+	if recorder.Code != http.StatusRequestTimeout {
+		t.Fatalf("custom slow body status = %d, want 408", recorder.Code)
+	}
+	stats := transport.Stats()
+	if stats.InFlightDecodes != 0 {
+		t.Fatalf("custom reader retained decode slot: %+v", stats)
+	}
+}
+
+func TestHTTPServerTransportProtectedDecodeDeliversNestedResponseWhenOrdinaryDecodesAreFull(t *testing.T) {
+	finished := make(chan error, 1)
+	server := NewServer()
+	server.AddTool(Tool{Name: "sample", InputSchema: mustRawJSON([]byte(`{"type":"object"}`))}, func(ctx context.Context, rc *RequestContext, _ map[string]any) (*ToolResult, error) {
+		_, err := rc.CreateMessage(ctx, &CreateMessageParams{
+			Messages:  []SamplingMessage{{Role: "user", Content: MarshalSamplingContent(Content{Type: "text", Text: "hello"})}},
+			MaxTokens: 1,
+		})
+		finished <- err
+		if err != nil {
+			return nil, err
+		}
+		return textToolResult("done"), nil
+	})
+	config := containmentHTTPConfig()
+	config.MaxConcurrentMessages = 2
+	config.MaxConcurrentMessagesPerSession = 2
+	config.RequestBodyTimeout = 5 * time.Second
+	transport := newContainmentTransport(t, server, config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	initializeBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{"sampling":{}},"clientInfo":{"name":"test-client","version":"1"}}}`
+	initializeResponse := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, "", nil, initializeBody)
+	initializeResponse.Body.Close()
+	sessionID := initializeResponse.Header.Get("Mcp-Session-Id")
+	session, ok := transport.getSession(sessionID)
+	if !ok {
+		t.Fatal("initialized session missing")
+	}
+	toolResponse := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"sample","arguments":{}}}`)
+	toolResponse.Body.Close()
+	eventuallyContainment(t, time.Second, func() bool {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		return len(session.outbox) > 0
+	})
+	payload, ok := session.dequeue()
+	if !ok {
+		t.Fatal("nested sampling request missing")
+	}
+	var nested jsonRPCMessage
+	if err := json.Unmarshal(payload, &nested); err != nil {
+		t.Fatal(err)
+	}
+	pendingID, err := parsePendingID(nested.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body1, result1 := startIncompleteHTTPPost(t, srv.Client(), srv.URL, sessionID)
+	body2, result2 := startIncompleteHTTPPost(t, srv.Client(), srv.URL, sessionID)
+	eventuallyContainment(t, time.Second, func() bool { return transport.Stats().InFlightDecodes == 2 })
+
+	// The reserve is not a bypass for arbitrary/unmatched traffic.
+	unmatched := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil,
+		`{"jsonrpc":"2.0","id":999999,"result":{}}`)
+	unmatched.Body.Close()
+	if unmatched.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("unmatched protected decode status = %d, want 429", unmatched.StatusCode)
+	}
+
+	matchedBody := `{"jsonrpc":"2.0","id":` + strconv.FormatInt(pendingID, 10) + `,"result":{"role":"assistant","content":{"type":"text","text":"ok"},"model":"test","stopReason":"endTurn"}}`
+	matched := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, matchedBody)
+	matched.Body.Close()
+	if matched.StatusCode != http.StatusAccepted {
+		t.Fatalf("matched protected response status = %d, want 202", matched.StatusCode)
+	}
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("nested sampling failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("protected response did not release blocked sampling handler")
+	}
+	body1.Close()
+	body2.Close()
+	waitIncompleteHTTPResult(t, result1)
+	waitIncompleteHTTPResult(t, result2)
+	eventuallyContainment(t, time.Second, func() bool {
+		stats := transport.Stats()
+		return stats.InFlightDecodes == 0 && stats.InFlightProtectedDecodes == 0 && stats.InFlightControlResponses == 0
+	})
+}
+
+func TestHTTPServerTransportProtectedDecodeReserveIsOnePerSession(t *testing.T) {
+	config := containmentHTTPConfig()
+	config.MaxConcurrentMessages = 2
+	config.MaxConcurrentMessagesPerSession = 2
+	config.RequestBodyTimeout = time.Second
+	transport := newContainmentTransport(t, NewServer(), config)
+	session, err := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil))
+	if err != nil || !transport.activateSession(session) {
+		t.Fatalf("activate: %v", err)
+	}
+	pendingID, _, err := session.server.prepareCall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.server.removePending(pendingID)
+	var leases []*httpDecodeLease
+	for range config.MaxConcurrentMessagesPerSession {
+		request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{}`))
+		lease, err := transport.acquireDecode(session, "", httptest.NewRecorder(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		leases = append(leases, lease)
+	}
+	protectedRequest := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{}`))
+	protected, err := transport.acquireDecode(session, "", httptest.NewRecorder(), protectedRequest)
+	if err != nil || !protected.protected {
+		t.Fatalf("protected reserve = %#v, %v", protected, err)
+	}
+	secondProtectedRequest := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{}`))
+	if _, err := transport.acquireDecode(session, "", httptest.NewRecorder(), secondProtectedRequest); !errors.Is(err, errHTTPMessageLimit) {
+		t.Fatalf("second protected decode = %v, want bounded rejection", err)
+	}
+	if stats := transport.Stats(); stats.InFlightDecodes != 2 || stats.InFlightProtectedDecodes != 1 {
+		t.Fatalf("decode reserve stats = %+v", stats)
+	}
+	protected.release()
+	for _, lease := range leases {
+		lease.release()
+	}
+}
+
+func TestHTTPServerTransportGlobalSSELimitAndStats(t *testing.T) {
+	config := containmentHTTPConfig()
+	config.MaxConcurrentMessages = 2
+	config.MaxConcurrentMessagesPerSession = 2
+	config.MaxSessions = 4
+	config.MaxSessionsPerPrincipal = 2
+	transport := newContainmentTransport(t, NewServer(), config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	sessionIDs := []string{
+		initializeContainmentSession(t, srv.Client(), srv.URL, nil),
+		initializeContainmentSession(t, srv.Client(), srv.URL, nil),
+		initializeContainmentSession(t, srv.Client(), srv.URL, nil),
+	}
+	open := func(sessionID string) *http.Response {
+		request, err := http.NewRequest(http.MethodGet, srv.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Mcp-Session-Id", sessionID)
+		response, err := srv.Client().Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	first := open(sessionIDs[0])
+	second := open(sessionIDs[1])
+	defer second.Body.Close()
+	if first.StatusCode != http.StatusOK || second.StatusCode != http.StatusOK {
+		t.Fatalf("initial SSE statuses = %d/%d", first.StatusCode, second.StatusCode)
+	}
+	if got := transport.Stats().InFlightSSEStreams; got != 2 {
+		t.Fatalf("InFlightSSEStreams = %d, want 2", got)
+	}
+	third := open(sessionIDs[2])
+	third.Body.Close()
+	if third.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("global SSE saturation status = %d, want 429", third.StatusCode)
+	}
+	first.Body.Close()
+	eventuallyContainment(t, time.Second, func() bool { return transport.Stats().InFlightSSEStreams == 1 })
+	third = open(sessionIDs[2])
+	if third.StatusCode != http.StatusOK {
+		third.Body.Close()
+		t.Fatalf("SSE after capacity release = %d, want 200", third.StatusCode)
+	}
+	third.Body.Close()
+	eventuallyContainment(t, time.Second, func() bool { return transport.Stats().InFlightSSEStreams == 1 })
+}
+
+func TestHTTPServerTransportBlockedSSEWriteUnblocksOnRevocationExpiryAndDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		close func(*HTTPServerTransport, *httpServerSession)
+	}{
+		{name: "principal revocation", close: func(transport *HTTPServerTransport, session *httpServerSession) {
+			if got := transport.ClosePrincipal(session.principal); got != 1 {
+				t.Fatalf("ClosePrincipal = %d, want 1", got)
+			}
+		}},
+		{name: "absolute expiry", close: func(transport *HTTPServerTransport, session *httpServerSession) {
+			transport.sweepOnce(session.createdAt.Add(transport.config.AbsoluteLifetime))
+		}},
+		{name: "write deadline", close: func(*HTTPServerTransport, *httpServerSession) {}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := containmentHTTPConfig()
+			transport := newContainmentTransport(t, NewServer(), config)
+			transport.sseWriteTimeout = 30 * time.Millisecond
+			transport.SetSessionPrincipalFunc(func(r *http.Request) (string, error) { return r.Header.Get("X-Principal"), nil })
+			initializeRequest := httptest.NewRequest(http.MethodPost, "/", nil)
+			initializeRequest.Header.Set("X-Principal", "principal-a")
+			session, err := transport.newSession(initializeRequest)
+			if err != nil || !transport.activateSession(session) {
+				t.Fatalf("activate: %v", err)
+			}
+			if err := transport.enqueue(session, []byte(`{"jsonrpc":"2.0","id":1,"result":{}}`)); err != nil {
+				t.Fatal(err)
+			}
+			writer := newDeadlineBlockingResponseWriter()
+			request := httptest.NewRequest(http.MethodGet, "/", nil)
+			request.Header.Set("Mcp-Session-Id", session.id)
+			request.Header.Set("X-Principal", "principal-a")
+			done := make(chan struct{})
+			go func() {
+				transport.ServeHTTP(writer, request)
+				close(done)
+			}()
+			select {
+			case <-writer.started:
+			case <-time.After(time.Second):
+				t.Fatal("SSE payload write did not block")
+			}
+			if got := transport.Stats().InFlightSSEStreams; got != 1 {
+				t.Fatalf("InFlightSSEStreams while blocked = %d, want 1", got)
+			}
+			tc.close(transport, session)
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("blocked SSE writer did not return")
+			}
+			if got := transport.Stats().InFlightSSEStreams; got != 0 {
+				t.Fatalf("InFlightSSEStreams after unblock = %d, want 0", got)
+			}
+			select {
+			case <-session.ctx.Done():
+			case <-time.After(time.Second):
+				t.Fatal("failed/closed SSE session was not canceled")
+			}
+		})
+	}
+}
+
+func TestHTTPServerTransportUnsupportedSSEWriterNeverStartsUnboundedWrite(t *testing.T) {
+	transport := newContainmentTransport(t, NewServer(), containmentHTTPConfig())
+	session, err := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil))
+	if err != nil || !transport.activateSession(session) {
+		t.Fatalf("activate: %v", err)
+	}
+	writer := newUnsupportedBlockingResponseWriter()
+	defer writer.unblockWrite()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Mcp-Session-Id", session.id)
+	done := make(chan struct{})
+	go func() {
+		transport.ServeHTTP(writer, request)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("unsupported SSE writer retained handler")
+	}
+	select {
+	case <-writer.writeStarted:
+		t.Fatal("transport attempted an unbounded fallback Write")
+	default:
+	}
+	if got := transport.Stats().InFlightSSEStreams; got != 0 {
+		t.Fatalf("unsupported writer retained SSE capacity: %d", got)
+	}
+}
+
+func TestHTTPServerTransportReapsExpiredSessionsAtExactCapacity(t *testing.T) {
+	t.Run("global", func(t *testing.T) {
+		config := containmentHTTPConfig()
+		config.MaxSessions = 1
+		config.MaxSessionsPerPrincipal = 1
+		transport := newContainmentTransport(t, NewServer(), config)
+		old, err := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil))
+		if err != nil || !transport.activateSession(old) {
+			t.Fatalf("activate old: %v", err)
+		}
+		old.mu.Lock()
+		old.lastActivity = time.Now().Add(-config.IdleTimeout)
+		old.mu.Unlock()
+		created, err := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil))
+		if err != nil {
+			t.Fatalf("create at expired capacity: %v", err)
+		}
+		if created == old || transport.Stats().ExpiredSessions != 1 {
+			t.Fatalf("opportunistic reap stats=%+v", transport.Stats())
+		}
+		select {
+		case <-old.ctx.Done():
+		case <-time.After(time.Second):
+			t.Fatal("reaped global session was not canceled")
+		}
+	})
+
+	t.Run("per principal", func(t *testing.T) {
+		config := containmentHTTPConfig()
+		config.MaxSessions = 3
+		config.MaxSessionsPerPrincipal = 1
+		transport := newContainmentTransport(t, NewServer(), config)
+		transport.SetSessionPrincipalFunc(func(r *http.Request) (string, error) { return r.Header.Get("X-Principal"), nil })
+		request := func(principal string) *http.Request {
+			r := httptest.NewRequest(http.MethodPost, "/", nil)
+			r.Header.Set("X-Principal", principal)
+			return r
+		}
+		old, err := transport.newSession(request("principal-a"))
+		if err != nil || !transport.activateSession(old) {
+			t.Fatalf("activate old principal session: %v", err)
+		}
+		other, err := transport.newSession(request("principal-b"))
+		if err != nil || !transport.activateSession(other) {
+			t.Fatalf("activate other principal: %v", err)
+		}
+		old.mu.Lock()
+		old.lastActivity = time.Now().Add(-config.IdleTimeout)
+		old.mu.Unlock()
+		if _, err := transport.newSession(request("principal-a")); err != nil {
+			t.Fatalf("create at expired principal capacity: %v", err)
+		}
+		if _, ok := transport.getSession(other.id); !ok {
+			t.Fatal("opportunistic principal reap removed unexpired other principal")
+		}
+	})
+}
+
 func TestHTTPServerTransportCloseIsConcurrentAndIdempotent(t *testing.T) {
 	transport, err := NewHTTPServerTransportWithConfig(NewServer(), containmentHTTPConfig())
 	if err != nil {
@@ -1102,4 +1670,213 @@ func eventuallyContainment(t *testing.T, timeout time.Duration, condition func()
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("condition not met within %s", strconv.FormatInt(timeout.Milliseconds(), 10)+"ms")
+}
+
+type incompleteHTTPResult struct {
+	response *http.Response
+	err      error
+}
+
+type incompleteHTTPBody struct {
+	started   chan struct{}
+	unblock   chan struct{}
+	startOnce sync.Once
+	closeOnce sync.Once
+	first     atomic.Bool
+}
+
+func newIncompleteHTTPBody() *incompleteHTTPBody {
+	body := &incompleteHTTPBody{
+		started: make(chan struct{}),
+		unblock: make(chan struct{}),
+	}
+	body.first.Store(true)
+	return body
+}
+
+func (b *incompleteHTTPBody) Read(p []byte) (int, error) {
+	if b.first.CompareAndSwap(true, false) {
+		if len(p) == 0 {
+			return 0, nil
+		}
+		p[0] = '{'
+		return 1, nil
+	}
+	b.startOnce.Do(func() { close(b.started) })
+	<-b.unblock
+	return 0, io.EOF
+}
+
+func (b *incompleteHTTPBody) Close() error {
+	b.closeOnce.Do(func() { close(b.unblock) })
+	return nil
+}
+
+func startIncompleteHTTPPost(t *testing.T, client *http.Client, endpoint, sessionID string) (*incompleteHTTPBody, <-chan incompleteHTTPResult) {
+	return startIncompleteHTTPPostWithHeaders(t, client, endpoint, sessionID, nil)
+}
+
+func startIncompleteHTTPPostWithHeaders(t *testing.T, client *http.Client, endpoint, sessionID string, headers map[string]string) (*incompleteHTTPBody, <-chan incompleteHTTPResult) {
+	t.Helper()
+	body := newIncompleteHTTPBody()
+	request, err := http.NewRequest(http.MethodPost, endpoint, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "" {
+		request.Header.Set("Mcp-Session-Id", sessionID)
+	}
+	for key, value := range headers {
+		request.Header.Set(key, value)
+	}
+	result := make(chan incompleteHTTPResult, 1)
+	go func() {
+		response, err := client.Do(request)
+		result <- incompleteHTTPResult{response: response, err: err}
+	}()
+	select {
+	case <-body.started:
+	case <-time.After(time.Second):
+		t.Fatal("incomplete client body did not begin streaming")
+	}
+	return body, result
+}
+
+func waitIncompleteHTTPResult(t *testing.T, result <-chan incompleteHTTPResult) {
+	t.Helper()
+	select {
+	case completed := <-result:
+		if completed.response != nil {
+			io.Copy(io.Discard, completed.response.Body)
+			completed.response.Body.Close()
+		}
+		// Closing an in-progress client request body may surface either the
+		// server's parse response or a client-side transport error. Both prove
+		// the request returned; lane accounting is asserted separately.
+	case <-time.After(time.Second):
+		t.Fatal("incomplete HTTP request did not return")
+	}
+}
+
+type closeUnblocksReader struct {
+	started   chan struct{}
+	closed    chan struct{}
+	startOnce sync.Once
+	closeOnce sync.Once
+}
+
+type delayedReadCloser struct {
+	data  []byte
+	delay time.Duration
+	once  sync.Once
+}
+
+func (r *delayedReadCloser) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	r.once.Do(func() { time.Sleep(r.delay) })
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+func (*delayedReadCloser) Close() error { return nil }
+
+func newCloseUnblocksReader() *closeUnblocksReader {
+	return &closeUnblocksReader{started: make(chan struct{}), closed: make(chan struct{})}
+}
+
+func (r *closeUnblocksReader) Read([]byte) (int, error) {
+	r.startOnce.Do(func() { close(r.started) })
+	<-r.closed
+	return 0, errors.New("body closed")
+}
+
+func (r *closeUnblocksReader) Close() error {
+	r.closeOnce.Do(func() { close(r.closed) })
+	return nil
+}
+
+type deadlineBlockingResponseWriter struct {
+	header    http.Header
+	started   chan struct{}
+	startOnce sync.Once
+
+	mu       sync.Mutex
+	deadline time.Time
+	wake     chan struct{}
+}
+
+type unsupportedBlockingResponseWriter struct {
+	header       http.Header
+	writeStarted chan struct{}
+	unblock      chan struct{}
+	startOnce    sync.Once
+	unblockOnce  sync.Once
+}
+
+func newUnsupportedBlockingResponseWriter() *unsupportedBlockingResponseWriter {
+	return &unsupportedBlockingResponseWriter{header: make(http.Header), writeStarted: make(chan struct{}), unblock: make(chan struct{})}
+}
+
+func (w *unsupportedBlockingResponseWriter) Header() http.Header { return w.header }
+func (*unsupportedBlockingResponseWriter) WriteHeader(int)       {}
+func (*unsupportedBlockingResponseWriter) Flush()                {}
+func (w *unsupportedBlockingResponseWriter) Write([]byte) (int, error) {
+	w.startOnce.Do(func() { close(w.writeStarted) })
+	<-w.unblock
+	return 0, context.Canceled
+}
+
+func (w *unsupportedBlockingResponseWriter) unblockWrite() {
+	w.unblockOnce.Do(func() { close(w.unblock) })
+}
+
+func newDeadlineBlockingResponseWriter() *deadlineBlockingResponseWriter {
+	return &deadlineBlockingResponseWriter{
+		header:  make(http.Header),
+		started: make(chan struct{}),
+		wake:    make(chan struct{}),
+	}
+}
+
+func (w *deadlineBlockingResponseWriter) Header() http.Header { return w.header }
+func (*deadlineBlockingResponseWriter) WriteHeader(int)       {}
+func (*deadlineBlockingResponseWriter) Flush()                {}
+
+func (w *deadlineBlockingResponseWriter) SetWriteDeadline(deadline time.Time) error {
+	w.mu.Lock()
+	w.deadline = deadline
+	close(w.wake)
+	w.wake = make(chan struct{})
+	w.mu.Unlock()
+	return nil
+}
+
+func (w *deadlineBlockingResponseWriter) Write([]byte) (int, error) {
+	w.startOnce.Do(func() { close(w.started) })
+	for {
+		w.mu.Lock()
+		deadline := w.deadline
+		wake := w.wake
+		w.mu.Unlock()
+		if deadline.IsZero() {
+			<-wake
+			continue
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return 0, context.DeadlineExceeded
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case <-timer.C:
+			return 0, context.DeadlineExceeded
+		case <-wake:
+			if !timer.Stop() {
+				<-timer.C
+			}
+		}
+	}
 }

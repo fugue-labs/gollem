@@ -289,6 +289,12 @@ func (s *Server) hasPendingResponse(raw *json.RawMessage) bool {
 	return ok
 }
 
+func (s *Server) hasPendingRequests() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.pending) > 0
+}
+
 // deliverPendingResponse atomically claims and delivers a nested response. It
 // returns false for malformed, canceled, duplicate, or cross-session IDs.
 func (s *Server) deliverPendingResponse(msg *jsonRPCMessage) bool {
