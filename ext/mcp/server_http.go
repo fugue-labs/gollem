@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -22,14 +23,17 @@ const (
 )
 
 var (
-	errHTTPTransportClosed = errors.New("mcp: HTTP server transport is closed")
-	errHTTPSessionLimit    = errors.New("mcp: HTTP session capacity exhausted")
-	errHTTPPrincipalLimit  = errors.New("mcp: HTTP principal session capacity exhausted")
-	errHTTPSessionInactive = errors.New("mcp: HTTP session is not active")
-	errHTTPMessageLimit    = errors.New("mcp: HTTP message concurrency exhausted")
-	errHTTPSSEAlreadyOpen  = errors.New("mcp: HTTP session already has an SSE stream")
-	errHTTPOutboxOverflow  = errors.New("mcp: HTTP session outbox capacity exhausted")
-	errHTTPRequestContext  = errors.New("mcp: HTTP request context refresh failed")
+	errHTTPTransportClosed  = errors.New("mcp: HTTP server transport is closed")
+	errHTTPSessionLimit     = errors.New("mcp: HTTP session capacity exhausted")
+	errHTTPPrincipalLimit   = errors.New("mcp: HTTP principal session capacity exhausted")
+	errHTTPSessionInactive  = errors.New("mcp: HTTP session is not active")
+	errHTTPMessageLimit     = errors.New("mcp: HTTP message concurrency exhausted")
+	errHTTPSSEAlreadyOpen   = errors.New("mcp: HTTP session already has an SSE stream")
+	errHTTPOutboxOverflow   = errors.New("mcp: HTTP session outbox capacity exhausted")
+	errHTTPResponseReserve  = errors.New("mcp: HTTP response reservation capacity exhausted")
+	errHTTPResponseTooLarge = errors.New("mcp: encoded HTTP response exceeds its reservation")
+	errHTTPDuplicateID      = errors.New("mcp: duplicate outstanding HTTP request ID")
+	errHTTPRequestContext   = errors.New("mcp: HTTP request context refresh failed")
 )
 
 // HTTPSessionAuthorizer authorizes a follow-up HTTP request against the
@@ -169,6 +173,12 @@ const (
 	httpSessionClosed
 )
 
+type httpOutboxEntry struct {
+	sequence   uint64
+	data       []byte
+	responseID string
+}
+
 type httpServerSession struct {
 	mu sync.Mutex
 
@@ -191,9 +201,20 @@ type httpServerSession struct {
 	controlInFlight         int
 	sseOpen                 bool
 
-	outbox      [][]byte
-	outboxBytes int64
-	outboxWake  chan struct{}
+	outbox             []httpOutboxEntry
+	outboxBytes        int64
+	outboxWake         chan struct{}
+	nextOutboxSequence uint64
+	// responseIDs retains incoming IDs through dequeue, not merely handler
+	// completion. This prevents duplicate state-changing calls from producing
+	// two owner responses that a conforming JSON-RPC client cannot correlate.
+	responseIDs map[string]struct{}
+
+	// Response capacity is admitted before a request handler runs. Ordinary
+	// nested requests and notifications may use only the unreserved remainder,
+	// so they cannot make a completed state-changing response undeliverable.
+	responseReservedMessages int
+	responseReservedBytes    int64
 }
 
 // NewHTTPServerTransport binds a reusable Server template using bounded
@@ -370,7 +391,7 @@ func (t *HTTPServerTransport) handleStream(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	lease, err := t.acquireSessionLease(session, r, requestHook, leaseSSE)
+	lease, err := t.acquireSessionLease(session, r, requestHook, leaseSSE, "")
 	if err != nil {
 		t.writeLeaseError(w, err)
 		return
@@ -391,13 +412,18 @@ func (t *HTTPServerTransport) handleStream(w http.ResponseWriter, r *http.Reques
 	// Commit headers immediately so an empty outbox still establishes the
 	// stream and competing GETs can receive a prompt one-stream rejection.
 	if err := streamWriter.flush(); err != nil {
-		t.closeExpectedSession(session, false)
 		return
 	}
 
 	for {
-		if payload, found := session.dequeue(); found {
+		if sequence, payload, found := session.peekOutbox(); found {
 			if err := streamWriter.write(payload); err != nil {
+				return
+			}
+			if !session.ackOutbox(sequence) {
+				// The only legitimate removal while this one-per-session SSE
+				// writer is active is session shutdown. Treat any accounting drift
+				// as terminal instead of risking duplicate delivery.
 				t.closeExpectedSession(session, false)
 				return
 			}
@@ -543,6 +569,9 @@ func (t *HTTPServerTransport) handlePost(w http.ResponseWriter, r *http.Request)
 			t.writeDecodeError(w, decodeErr, decodeLease.ctx)
 			return
 		}
+		if _, rejected := t.validateRequestID(w, msg); rejected {
+			return
+		}
 		if msg.Method != "initialize" {
 			http.Error(w, "missing Mcp-Session-Id", http.StatusBadRequest)
 			return
@@ -561,6 +590,10 @@ func (t *HTTPServerTransport) handlePost(w http.ResponseWriter, r *http.Request)
 		t.writeDecodeError(w, decodeErr, decodeLease.ctx)
 		return
 	}
+	requestIDKey, rejected := t.validateRequestID(w, msg)
+	if rejected {
+		return
+	}
 	if decodeLease.protected && (msg.Method != "" || !hasJSONRPCID(msg.ID) || !session.server.hasPendingResponse(msg.ID)) {
 		t.mu.Lock()
 		t.stats.RejectedMessages++
@@ -577,7 +610,7 @@ func (t *HTTPServerTransport) handlePost(w http.ResponseWriter, r *http.Request)
 			http.Error(w, "unmatched JSON-RPC response", http.StatusBadRequest)
 			return
 		}
-		controlLease, err := t.acquireSessionLease(session, r, requestHook, leaseControl)
+		controlLease, err := t.acquireSessionLease(session, r, requestHook, leaseControl, "")
 		if err != nil {
 			t.writeLeaseError(w, err)
 			return
@@ -615,7 +648,7 @@ func (t *HTTPServerTransport) handlePost(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	lease, err := t.acquireSessionLease(session, r, requestHook, leaseMessage)
+	lease, err := t.acquireSessionLease(session, r, requestHook, leaseMessage, requestIDKey)
 	if err != nil {
 		t.writeLeaseError(w, err)
 		return
@@ -646,6 +679,52 @@ func nestedResponsePayloadBytes(msg *jsonRPCMessage) int64 {
 	return total
 }
 
+func (t *HTTPServerTransport) validateRequestID(w http.ResponseWriter, msg *jsonRPCMessage) (string, bool) {
+	if msg == nil || msg.ID == nil {
+		return "", false
+	}
+	raw := bytes.TrimSpace(*msg.ID)
+	if len(raw) > t.config.MaxRequestIDBytes {
+		t.mu.Lock()
+		t.stats.RejectedMessages++
+		t.stats.RejectedOversizeRequestIDs++
+		t.mu.Unlock()
+		http.Error(w, "JSON-RPC request ID too large", http.StatusRequestEntityTooLarge)
+		return "", true
+	}
+	if bytes.Equal(raw, []byte("null")) {
+		return "", false
+	}
+	validType := false
+	requestIDKey := ""
+	if len(raw) > 0 && raw[0] == '"' {
+		var value string
+		validType = json.Unmarshal(raw, &value) == nil
+		if validType {
+			requestIDKey = "s:" + value
+		}
+	} else if len(raw) > 0 && (raw[0] == '-' || raw[0] >= '0' && raw[0] <= '9') {
+		// Restrict numeric request IDs to signed integers that round-trip
+		// exactly. normalizeID intentionally supports legacy float responses in
+		// other transports, but a rounded/fractional owner-token response would
+		// be uncorrelatable after a state-changing HTTP request.
+		var value int64
+		validType = json.Unmarshal(raw, &value) == nil
+		if validType {
+			requestIDKey = "i:" + strconv.FormatInt(value, 10)
+		}
+	}
+	if validType {
+		return requestIDKey, false
+	}
+	t.mu.Lock()
+	t.stats.RejectedMessages++
+	t.stats.RejectedInvalidRequestIDs++
+	t.mu.Unlock()
+	http.Error(w, "invalid JSON-RPC request ID", http.StatusBadRequest)
+	return "", true
+}
+
 func (t *HTTPServerTransport) handleInitialize(w http.ResponseWriter, r *http.Request, msg *jsonRPCMessage, principal string, principalSet bool) {
 	session, err := t.newSessionWithPrincipal(r, principal, principalSet)
 	if err != nil {
@@ -662,7 +741,7 @@ func (t *HTTPServerTransport) handleInitialize(w http.ResponseWriter, r *http.Re
 	result, rpcErr := session.server.handleInitialize(msg.Params)
 	payload, marshalErr := json.Marshal(jsonRPCMessage{
 		JSONRPC: "2.0",
-		ID:      rawJSONID(normalizeID(msg.ID)),
+		ID:      rawJSONID(responseID(msg.ID)),
 		Result:  mustRawResult(result, rpcErr == nil),
 		Error:   rpcErr,
 	})
@@ -788,9 +867,11 @@ func (t *HTTPServerTransport) writeLeaseError(w http.ResponseWriter, err error) 
 	case errors.Is(err, errHTTPRequestContext):
 		t.setRetryAfter(w)
 		http.Error(w, "request policy unavailable", http.StatusServiceUnavailable)
-	case errors.Is(err, errHTTPMessageLimit):
+	case errors.Is(err, errHTTPMessageLimit), errors.Is(err, errHTTPResponseReserve):
 		t.setRetryAfter(w)
-		http.Error(w, "message capacity exhausted", http.StatusTooManyRequests)
+		http.Error(w, "message or response capacity exhausted", http.StatusTooManyRequests)
+	case errors.Is(err, errHTTPDuplicateID):
+		http.Error(w, "duplicate outstanding JSON-RPC request ID", http.StatusConflict)
 	case errors.Is(err, errHTTPSSEAlreadyOpen):
 		t.setRetryAfter(w)
 		http.Error(w, "SSE stream already open", http.StatusConflict)
@@ -888,6 +969,7 @@ func (t *HTTPServerTransport) newSessionWithPrincipal(r *http.Request, principal
 			lastActivity:   now,
 			state:          httpSessionProvisional,
 			outboxWake:     make(chan struct{}, 1),
+			responseIDs:    make(map[string]struct{}),
 		}
 		server.attachWriter(func(data []byte) error {
 			return t.enqueue(session, data)
@@ -1073,9 +1155,18 @@ type httpSessionLease struct {
 	stopFresh     func() bool
 	stopHTTP      func() bool
 	touchActivity bool
+
+	// responseReservationBytes is immutable after admission and accounts for
+	// one in-flight response until release. responseReservationPending is
+	// protected by session.mu and becomes false when the reservation is
+	// atomically converted into an outbox entry.
+	responseReservationBytes   int64
+	responseReservationPending bool
+	responseIDKey              string
 }
 
-func (t *HTTPServerTransport) acquireSessionLease(session *httpServerSession, r *http.Request, hook HTTPSessionRequestContextFunc, kind leaseKind) (*httpSessionLease, error) {
+func (t *HTTPServerTransport) acquireSessionLease(session *httpServerSession, r *http.Request, hook HTTPSessionRequestContextFunc, kind leaseKind, requestIDKey string) (*httpSessionLease, error) {
+	reserveResponse := requestIDKey != "" && kind == leaseMessage
 	var expired bool
 	t.mu.Lock()
 	session.mu.Lock()
@@ -1102,8 +1193,32 @@ func (t *HTTPServerTransport) acquireSessionLease(session *httpServerSession, r 
 				t.mu.Unlock()
 				return nil, errHTTPMessageLimit
 			}
+			if reserveResponse {
+				if _, duplicate := session.responseIDs[requestIDKey]; duplicate {
+					t.stats.RejectedMessages++
+					t.stats.RejectedDuplicateRequestIDs++
+					session.mu.Unlock()
+					t.mu.Unlock()
+					return nil, errHTTPDuplicateID
+				}
+			}
+			if reserveResponse && (len(session.outbox)+session.responseReservedMessages >= t.config.OutboxMaxMessages ||
+				t.config.ResponseReservationBytes > t.config.OutboxMaxBytes-session.outboxBytes-session.responseReservedBytes) {
+				t.stats.RejectedMessages++
+				t.stats.RejectedResponseReservations++
+				session.mu.Unlock()
+				t.mu.Unlock()
+				return nil, errHTTPResponseReserve
+			}
 			t.stats.InFlightMessages++
 			session.inFlightMessages++
+			if reserveResponse {
+				session.responseReservedMessages++
+				session.responseReservedBytes += t.config.ResponseReservationBytes
+				session.responseIDs[requestIDKey] = struct{}{}
+				t.stats.InFlightResponseReservations++
+				t.stats.ReservedResponseBytes += t.config.ResponseReservationBytes
+			}
 		case leaseSSE:
 			if session.sseOpen {
 				session.mu.Unlock()
@@ -1139,10 +1254,17 @@ func (t *HTTPServerTransport) acquireSessionLease(session *httpServerSession, r 
 
 	// Admission is deliberately complete before current-policy work. A
 	// saturated/revoked/closing session never reaches a host database hook.
+	var responseReservationBytes int64
+	if reserveResponse {
+		responseReservationBytes = t.config.ResponseReservationBytes
+	}
 	lease := &httpSessionLease{
-		transport: t,
-		session:   session,
-		kind:      kind,
+		transport:                  t,
+		session:                    session,
+		kind:                       kind,
+		responseReservationBytes:   responseReservationBytes,
+		responseReservationPending: reserveResponse,
+		responseIDKey:              requestIDKey,
 	}
 	fresh := r.Context()
 	if hook != nil {
@@ -1179,6 +1301,9 @@ func (t *HTTPServerTransport) acquireSessionLease(session *httpServerSession, r 
 	}
 	operationCtx, cancel := context.WithCancel(base)
 	lease.ctx = operationCtx
+	if reserveResponse {
+		lease.ctx = context.WithValue(operationCtx, reservedResponseWriterContextKey{}, reservedResponseWriter(lease))
+	}
 	lease.cancel = cancel
 	if kind == leaseSSE || kind == leaseControl {
 		lease.stopFresh = context.AfterFunc(fresh, cancel)
@@ -1206,6 +1331,26 @@ func (l *httpSessionLease) release() {
 		session := l.session
 		t.mu.Lock()
 		session.mu.Lock()
+		if l.responseReservationBytes > 0 {
+			if t.stats.InFlightResponseReservations <= 0 || t.stats.ReservedResponseBytes < l.responseReservationBytes {
+				session.mu.Unlock()
+				t.mu.Unlock()
+				panic("mcp: HTTP response reservation accounting underflow")
+			}
+			t.stats.InFlightResponseReservations--
+			t.stats.ReservedResponseBytes -= l.responseReservationBytes
+			if l.responseReservationPending {
+				if session.responseReservedMessages <= 0 || session.responseReservedBytes < l.responseReservationBytes {
+					session.mu.Unlock()
+					t.mu.Unlock()
+					panic("mcp: HTTP session response reservation accounting underflow")
+				}
+				session.responseReservedMessages--
+				session.responseReservedBytes -= l.responseReservationBytes
+				delete(session.responseIDs, l.responseIDKey)
+				l.responseReservationPending = false
+			}
+		}
 		if session.operations <= 0 {
 			session.mu.Unlock()
 			t.mu.Unlock()
@@ -1244,6 +1389,54 @@ func (l *httpSessionLease) release() {
 		session.mu.Unlock()
 		t.mu.Unlock()
 	})
+}
+
+func (l *httpSessionLease) writeReservedResponse(data []byte) error {
+	if l == nil || l.transport == nil || l.session == nil || l.responseReservationBytes <= 0 {
+		return errHTTPResponseReserve
+	}
+	if int64(len(data)) > l.responseReservationBytes {
+		l.transport.mu.Lock()
+		l.transport.stats.OversizeResponses++
+		l.transport.mu.Unlock()
+		return errHTTPResponseTooLarge
+	}
+
+	session := l.session
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.state == httpSessionClosed || session.closed {
+		return errHTTPSessionInactive
+	}
+	if !l.responseReservationPending {
+		return errHTTPResponseReserve
+	}
+	if session.responseReservedMessages <= 0 || session.responseReservedBytes < l.responseReservationBytes {
+		panic("mcp: HTTP reserved response capacity disappeared")
+	}
+	// The admission reservation guarantees both checks. Keep them explicit so
+	// a future accounting change fails closed before allocating a snapshot.
+	if len(session.outbox)+session.responseReservedMessages > l.transport.config.OutboxMaxMessages ||
+		session.outboxBytes+session.responseReservedBytes > l.transport.config.OutboxMaxBytes {
+		return errHTTPOutboxOverflow
+	}
+
+	snapshot := append([]byte(nil), data...)
+	session.responseReservedMessages--
+	session.responseReservedBytes -= l.responseReservationBytes
+	l.responseReservationPending = false
+	session.nextOutboxSequence++
+	session.outbox = append(session.outbox, httpOutboxEntry{
+		sequence:   session.nextOutboxSequence,
+		data:       snapshot,
+		responseID: l.responseIDKey,
+	})
+	session.outboxBytes += int64(len(snapshot))
+	select {
+	case session.outboxWake <- struct{}{}:
+	default:
+	}
+	return nil
 }
 
 type httpDecodeLease struct {
@@ -1493,15 +1686,33 @@ func (t *HTTPServerTransport) enqueue(session *httpServerSession, data []byte) e
 		session.mu.Unlock()
 		return errHTTPSessionInactive
 	}
-	if len(session.outbox) >= t.config.OutboxMaxMessages || int64(len(data)) > t.config.OutboxMaxBytes-session.outboxBytes {
+	// A message that would fit the physical outbox but not its unreserved
+	// remainder is rejected without closing the session. This is expected when
+	// a nested sampling request is larger than the space left beside its
+	// handler's final response; the handler can still return a small error using
+	// the capacity admitted for it.
+	physicalOverflow := len(session.outbox) >= t.config.OutboxMaxMessages ||
+		int64(len(data)) > t.config.OutboxMaxBytes-session.outboxBytes
+	reservedOverflow := len(session.outbox)+session.responseReservedMessages >= t.config.OutboxMaxMessages ||
+		int64(len(data)) > t.config.OutboxMaxBytes-session.outboxBytes-session.responseReservedBytes
+	if !physicalOverflow && reservedOverflow {
 		session.mu.Unlock()
-		t.closeOutboxOverflow(session)
+		t.recordRejectedOutboxWrite()
+		return errHTTPResponseReserve
+	}
+	if physicalOverflow {
+		session.mu.Unlock()
+		t.recordRejectedOutboxWrite()
 		return errHTTPOutboxOverflow
 	}
 	// Copy only after capacity admission. Oversize model/tool output is already
 	// present in the caller, but must not trigger an additional unbounded copy.
 	snapshot := append([]byte(nil), data...)
-	session.outbox = append(session.outbox, snapshot)
+	session.nextOutboxSequence++
+	session.outbox = append(session.outbox, httpOutboxEntry{
+		sequence: session.nextOutboxSequence,
+		data:     snapshot,
+	})
 	session.outboxBytes += int64(len(snapshot))
 	select {
 	case session.outboxWake <- struct{}{}:
@@ -1511,35 +1722,49 @@ func (t *HTTPServerTransport) enqueue(session *httpServerSession, data []byte) e
 	return nil
 }
 
-func (s *httpServerSession) dequeue() ([]byte, bool) {
+func (t *HTTPServerTransport) recordRejectedOutboxWrite() {
+	t.mu.Lock()
+	t.stats.RejectedOutboxWrites++
+	t.mu.Unlock()
+}
+
+func (s *httpServerSession) peekOutbox() (uint64, []byte, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.outbox) == 0 {
-		return nil, false
+		return 0, nil, false
 	}
-	payload := s.outbox[0]
-	s.outbox[0] = nil
+	entry := s.outbox[0]
+	return entry.sequence, entry.data, true
+}
+
+func (s *httpServerSession) ackOutbox(sequence uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.outbox) == 0 || s.outbox[0].sequence != sequence {
+		return false
+	}
+	entry := s.outbox[0]
+	s.outbox[0] = httpOutboxEntry{}
 	s.outbox = s.outbox[1:]
-	s.outboxBytes -= int64(len(payload))
+	s.outboxBytes -= int64(len(entry.data))
+	if entry.responseID != "" {
+		delete(s.responseIDs, entry.responseID)
+	}
 	if len(s.outbox) == 0 {
 		s.outbox = nil
 	}
-	return payload, true
+	return true
 }
 
-func (t *HTTPServerTransport) closeOutboxOverflow(session *httpServerSession) {
-	closed := false
-	t.mu.Lock()
-	session.mu.Lock()
-	if t.detachSessionLocked(session) {
-		t.stats.OutboxOverflowClosures++
-		closed = true
+// dequeue is a package-test helper that models a successful immediate write.
+// Production SSE delivery keeps the entry and request ID until write succeeds.
+func (s *httpServerSession) dequeue() ([]byte, bool) {
+	sequence, payload, ok := s.peekOutbox()
+	if !ok || !s.ackOutbox(sequence) {
+		return nil, false
 	}
-	session.mu.Unlock()
-	t.mu.Unlock()
-	if closed {
-		session.shutdown()
-	}
+	return payload, true
 }
 
 func (t *HTTPServerTransport) closeExpectedSession(session *httpServerSession, expired bool) bool {
@@ -1586,10 +1811,11 @@ func (t *HTTPServerTransport) detachSessionLocked(session *httpServerSession) bo
 	// Active writers hold their own snapshots and observe the closed state on
 	// any later enqueue attempt.
 	for i := range session.outbox {
-		session.outbox[i] = nil
+		session.outbox[i] = httpOutboxEntry{}
 	}
 	session.outbox = nil
 	session.outboxBytes = 0
+	clear(session.responseIDs)
 	return true
 }
 

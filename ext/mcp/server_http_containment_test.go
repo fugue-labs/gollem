@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -27,10 +28,12 @@ func containmentHTTPConfig() HTTPServerTransportConfig {
 	config.IdleTimeout = time.Minute
 	config.AbsoluteLifetime = time.Hour
 	config.MaxRequestBodyBytes = 1024
+	config.MaxRequestIDBytes = 32
 	config.MaxConcurrentMessages = 8
 	config.MaxConcurrentMessagesPerSession = 2
 	config.OutboxMaxMessages = 8
 	config.OutboxMaxBytes = 4096
+	config.ResponseReservationBytes = 512
 	config.RetryAfter = 1500 * time.Millisecond
 	return config
 }
@@ -62,6 +65,9 @@ func TestDefaultHTTPServerTransportConfigIsBounded(t *testing.T) {
 	if config.MaxNestedResponseBytes != 4<<20 {
 		t.Fatalf("MaxNestedResponseBytes = %d, want %d", config.MaxNestedResponseBytes, 4<<20)
 	}
+	if config.MaxRequestIDBytes != 128 {
+		t.Fatalf("MaxRequestIDBytes = %d, want 128", config.MaxRequestIDBytes)
+	}
 	if config.RequestBodyTimeout != 30*time.Second {
 		t.Fatalf("RequestBodyTimeout = %v, want 30s", config.RequestBodyTimeout)
 	}
@@ -70,6 +76,9 @@ func TestDefaultHTTPServerTransportConfigIsBounded(t *testing.T) {
 	}
 	if config.OutboxMaxMessages != 256 || config.OutboxMaxBytes != 8<<20 {
 		t.Fatalf("outbox defaults = %d/%d, want 256/%d", config.OutboxMaxMessages, config.OutboxMaxBytes, 8<<20)
+	}
+	if config.ResponseReservationBytes != 1<<20 {
+		t.Fatalf("ResponseReservationBytes = %d, want %d", config.ResponseReservationBytes, 1<<20)
 	}
 	if err := config.validate(); err != nil {
 		t.Fatalf("default config: %v", err)
@@ -91,12 +100,16 @@ func TestHTTPServerTransportConfigRejectsEveryUnboundedOrIncoherentLimit(t *test
 			c.MaxJSONStructuralTokens = 0
 		},
 		"nested response":       func(c *HTTPServerTransportConfig) { c.MaxNestedResponseBytes = 0 },
+		"request ID":            func(c *HTTPServerTransportConfig) { c.MaxRequestIDBytes = 0 },
 		"negative body timeout": func(c *HTTPServerTransportConfig) { c.RequestBodyTimeout = -1 },
 		"messages":              func(c *HTTPServerTransportConfig) { c.MaxConcurrentMessages = 0 },
 		"session messages":      func(c *HTTPServerTransportConfig) { c.MaxConcurrentMessagesPerSession = 0 },
 		"session over global":   func(c *HTTPServerTransportConfig) { c.MaxConcurrentMessagesPerSession = c.MaxConcurrentMessages + 1 },
 		"outbox messages":       func(c *HTTPServerTransportConfig) { c.OutboxMaxMessages = 0 },
 		"outbox bytes":          func(c *HTTPServerTransportConfig) { c.OutboxMaxBytes = 0 },
+		"response reservation":  func(c *HTTPServerTransportConfig) { c.ResponseReservationBytes = 0 },
+		"response over outbox":  func(c *HTTPServerTransportConfig) { c.ResponseReservationBytes = c.OutboxMaxBytes + 1 },
+		"ID over response":      func(c *HTTPServerTransportConfig) { c.MaxRequestIDBytes = int(c.ResponseReservationBytes) },
 		"retry":                 func(c *HTTPServerTransportConfig) { c.RetryAfter = 0 },
 	}
 	for name, mutate := range tests {
@@ -544,11 +557,13 @@ func TestHTTPServerTransportRequestContextHookErrorsReleaseEveryLeaseKind(t *tes
 	messages := session.inFlightMessages
 	controls := session.controlInFlight
 	sseOpen := session.sseOpen
+	responseIDs := len(session.responseIDs)
 	activityAfter := session.lastActivity
 	session.mu.Unlock()
-	if stats.InFlightMessages != 0 || decodeInFlight != 0 || controlInFlight != 0 || operations != 0 || messages != 0 || controls != 0 || sseOpen {
-		t.Fatalf("hook failures leaked counters: stats=%+v decode=%d control=%d ops=%d messages=%d controls=%d sse=%v",
-			stats, decodeInFlight, controlInFlight, operations, messages, controls, sseOpen)
+	if stats.InFlightMessages != 0 || stats.InFlightResponseReservations != 0 || stats.ReservedResponseBytes != 0 ||
+		decodeInFlight != 0 || controlInFlight != 0 || operations != 0 || messages != 0 || controls != 0 || sseOpen || responseIDs != 0 {
+		t.Fatalf("hook failures leaked counters: stats=%+v decode=%d control=%d ops=%d messages=%d controls=%d sse=%v response_ids=%d",
+			stats, decodeInFlight, controlInFlight, operations, messages, controls, sseOpen, responseIDs)
 	}
 	if !activityAfter.After(lastActivity) {
 		t.Fatalf("admitted decode did not refresh idle activity: before=%v after=%v", lastActivity, activityAfter)
@@ -1118,22 +1133,22 @@ func TestHTTPServerTransportControlLaneHasGlobalAndPerSessionBounds(t *testing.T
 		t.Fatalf("activate B: %v", err)
 	}
 	request := httptest.NewRequest(http.MethodPost, "/", nil)
-	leaseA1, err := transport.acquireSessionLease(sessionA, request, nil, leaseControl)
+	leaseA1, err := transport.acquireSessionLease(sessionA, request, nil, leaseControl, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	leaseA2, err := transport.acquireSessionLease(sessionA, request, nil, leaseControl)
+	leaseA2, err := transport.acquireSessionLease(sessionA, request, nil, leaseControl, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := transport.acquireSessionLease(sessionA, request, nil, leaseControl); !errors.Is(err, errHTTPMessageLimit) {
+	if _, err := transport.acquireSessionLease(sessionA, request, nil, leaseControl, ""); !errors.Is(err, errHTTPMessageLimit) {
 		t.Fatalf("per-session control limit = %v", err)
 	}
-	leaseB, err := transport.acquireSessionLease(sessionB, request, nil, leaseControl)
+	leaseB, err := transport.acquireSessionLease(sessionB, request, nil, leaseControl, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := transport.acquireSessionLease(sessionB, request, nil, leaseControl); !errors.Is(err, errHTTPMessageLimit) {
+	if _, err := transport.acquireSessionLease(sessionB, request, nil, leaseControl, ""); !errors.Is(err, errHTTPMessageLimit) {
 		t.Fatalf("global control limit = %v", err)
 	}
 	leaseA1.release()
@@ -1180,21 +1195,104 @@ func TestHTTPServerTransportAllowsExactlyOneSSEStreamPerSession(t *testing.T) {
 	})
 }
 
-func TestHTTPServerTransportOutboxIsFIFOAndOverflowClosesSession(t *testing.T) {
+func TestHTTPServerTransportFailedSSEWriteReplaysCommittedResponseOnReconnect(t *testing.T) {
+	server := NewServer()
+	server.AddTool(Tool{Name: "create", InputSchema: mustRawJSON([]byte(`{"type":"object"}`))}, func(context.Context, *RequestContext, map[string]any) (*ToolResult, error) {
+		return textToolResult("owner-token"), nil
+	})
+	transport := newContainmentTransport(t, server, containmentHTTPConfig())
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	sessionID := initializeContainmentSession(t, srv.Client(), srv.URL, nil)
+	call := `{"jsonrpc":"2.0","id":"create-1","method":"tools/call","params":{"name":"create","arguments":{}}}`
+	response := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, call)
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("tool status = %d, want 202", response.StatusCode)
+	}
+	session, ok := transport.getSession(sessionID)
+	if !ok {
+		t.Fatal("initialized session missing")
+	}
+	eventuallyContainment(t, time.Second, func() bool {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		_, retained := session.responseIDs["s:create-1"]
+		return len(session.outbox) == 1 && retained && session.inFlightMessages == 0
+	})
+
+	failed := newScriptedSSEResponseWriter(true)
+	failedRequest := httptest.NewRequest(http.MethodGet, "/", nil)
+	failedRequest.Header.Set("Mcp-Session-Id", sessionID)
+	transport.ServeHTTP(failed, failedRequest)
+	if _, _, ok := session.peekOutbox(); !ok {
+		t.Fatal("failed SSE write removed committed response")
+	}
+	session.mu.Lock()
+	_, retained := session.responseIDs["s:create-1"]
+	session.mu.Unlock()
+	if !retained {
+		t.Fatal("failed SSE write released response ID before delivery")
+	}
+	if _, ok := transport.getSession(sessionID); !ok {
+		t.Fatal("failed SSE write detached reusable session")
+	}
+
+	replayed := newScriptedSSEResponseWriter(false)
+	replayCtx, cancelReplay := context.WithCancel(context.Background())
+	replayRequest := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(replayCtx)
+	replayRequest.Header.Set("Mcp-Session-Id", sessionID)
+	done := make(chan struct{})
+	go func() {
+		transport.ServeHTTP(replayed, replayRequest)
+		close(done)
+	}()
+	select {
+	case <-replayed.wrote:
+	case <-time.After(time.Second):
+		t.Fatal("reconnected SSE did not replay response")
+	}
+	eventuallyContainment(t, time.Second, func() bool {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		return len(session.outbox) == 0
+	})
+	cancelReplay()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reconnected SSE did not release after cancellation")
+	}
+	if got := replayed.String(); !strings.Contains(got, "owner-token") {
+		t.Fatalf("replayed SSE payload = %q", got)
+	}
+	if _, _, ok := session.peekOutbox(); ok {
+		t.Fatal("successful replay did not acknowledge outbox entry")
+	}
+	session.mu.Lock()
+	_, retained = session.responseIDs["s:create-1"]
+	session.mu.Unlock()
+	if retained {
+		t.Fatal("successful replay retained delivered response ID")
+	}
+}
+
+func TestHTTPServerTransportOutboxIsFIFOAndOverflowRejectsWithoutDiscardingSession(t *testing.T) {
 	config := containmentHTTPConfig()
 	config.OutboxMaxMessages = 3
-	config.OutboxMaxBytes = 6
+	config.OutboxMaxBytes = 512
+	config.ResponseReservationBytes = 512
 	transport := newContainmentTransport(t, NewServer(), config)
 	session, err := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil))
 	if err != nil || !transport.activateSession(session) {
 		t.Fatalf("activate session: %v", err)
 	}
-	for _, payload := range [][]byte{[]byte("a"), []byte("bb"), []byte("ccc")} {
+	for _, payload := range [][]byte{[]byte("a"), []byte("bb"), bytes.Repeat([]byte{'c'}, 509)} {
 		if err := transport.enqueue(session, payload); err != nil {
 			t.Fatalf("enqueue %q: %v", payload, err)
 		}
 	}
-	for _, want := range []string{"a", "bb", "ccc"} {
+	for _, want := range []string{"a", "bb", strings.Repeat("c", 509)} {
 		got, ok := session.dequeue()
 		if !ok || string(got) != want {
 			t.Fatalf("dequeue = %q/%v, want %q", got, ok, want)
@@ -1204,24 +1302,25 @@ func TestHTTPServerTransportOutboxIsFIFOAndOverflowClosesSession(t *testing.T) {
 		t.Fatalf("FIFO accounting = %+v", stats)
 	}
 
-	if err := transport.enqueue(session, []byte("1234567")); !errors.Is(err, errHTTPOutboxOverflow) {
+	if err := transport.enqueue(session, bytes.Repeat([]byte{'x'}, 513)); !errors.Is(err, errHTTPOutboxOverflow) {
 		t.Fatalf("oversize enqueue error = %v", err)
 	}
 	stats := transport.Stats()
-	if stats.ActiveSessions != 0 || stats.OutboxOverflowClosures != 1 {
+	if stats.ActiveSessions != 1 || stats.RejectedOutboxWrites != 1 || stats.OutboxOverflowClosures != 0 {
 		t.Fatalf("overflow accounting = %+v", stats)
 	}
 	select {
 	case <-session.ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("overflow did not cancel session")
+		t.Fatal("overflow rejection canceled reusable session")
+	default:
 	}
 }
 
-func TestHTTPServerTransportOutboxMessageCountOverflowClosesSession(t *testing.T) {
+func TestHTTPServerTransportOutboxMessageCountOverflowPreservesQueuedResponse(t *testing.T) {
 	config := containmentHTTPConfig()
 	config.OutboxMaxMessages = 1
 	config.OutboxMaxBytes = 1024
+	config.ResponseReservationBytes = 512
 	transport := newContainmentTransport(t, NewServer(), config)
 	session, err := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil))
 	if err != nil || !transport.activateSession(session) {
@@ -1233,8 +1332,431 @@ func TestHTTPServerTransportOutboxMessageCountOverflowClosesSession(t *testing.T
 	if err := transport.enqueue(session, []byte("second")); !errors.Is(err, errHTTPOutboxOverflow) {
 		t.Fatalf("second enqueue = %v, want overflow", err)
 	}
-	if stats := transport.Stats(); stats.ActiveSessions != 0 || stats.OutboxOverflowClosures != 1 {
+	if stats := transport.Stats(); stats.ActiveSessions != 1 || stats.RejectedOutboxWrites != 1 || stats.OutboxOverflowClosures != 0 {
 		t.Fatalf("message overflow accounting = %+v", stats)
+	}
+	if payload, ok := session.dequeue(); !ok || string(payload) != "first" {
+		t.Fatalf("preserved queued payload = %q/%v", payload, ok)
+	}
+	if err := transport.enqueue(session, []byte("second")); err != nil {
+		t.Fatalf("session not reusable after draining: %v", err)
+	}
+}
+
+func TestHTTPServerTransportReservesResponseBeforeStateChangingDispatch(t *testing.T) {
+	var mutations atomic.Int64
+	server := NewServer()
+	server.AddTool(Tool{Name: "create", InputSchema: mustRawJSON([]byte(`{"type":"object"}`))}, func(context.Context, *RequestContext, map[string]any) (*ToolResult, error) {
+		mutations.Add(1)
+		return textToolResult("owner-token"), nil
+	})
+	config := containmentHTTPConfig()
+	config.OutboxMaxMessages = 4
+	config.OutboxMaxBytes = 1024
+	config.ResponseReservationBytes = 512
+	transport := newContainmentTransport(t, server, config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+
+	sessionID := initializeContainmentSession(t, srv.Client(), srv.URL, nil)
+	session, ok := transport.getSession(sessionID)
+	if !ok {
+		t.Fatal("initialized session missing")
+	}
+	// This stale entry fits physically, but leaves less than the configured
+	// response reservation. The request must be rejected before its handler can
+	// create owner-protected state.
+	if err := transport.enqueue(session, bytes.Repeat([]byte{'x'}, 600)); err != nil {
+		t.Fatal(err)
+	}
+	call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create","arguments":{}}}`
+	response := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, call)
+	response.Body.Close()
+	if response.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("reserved-capacity rejection = %d, want 429", response.StatusCode)
+	}
+	if got := mutations.Load(); got != 0 {
+		t.Fatalf("handler mutations = %d, want 0", got)
+	}
+	stats := transport.Stats()
+	if stats.RejectedResponseReservations != 1 || stats.InFlightResponseReservations != 0 || stats.ReservedResponseBytes != 0 {
+		t.Fatalf("reservation rejection accounting = %+v", stats)
+	}
+	session.mu.Lock()
+	active := session.state == httpSessionActive && !session.closed
+	session.mu.Unlock()
+	if !active {
+		t.Fatal("reservation rejection closed the reusable session")
+	}
+	if _, ok := session.dequeue(); !ok {
+		t.Fatal("stale outbox entry disappeared")
+	}
+
+	response = doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, call)
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("admitted call status = %d, want 202", response.StatusCode)
+	}
+	eventuallyContainment(t, time.Second, func() bool {
+		return mutations.Load() == 1 && transport.Stats().InFlightResponseReservations == 0
+	})
+	if err := transport.enqueue(session, bytes.Repeat([]byte{'z'}, 1025)); !errors.Is(err, errHTTPOutboxOverflow) {
+		t.Fatalf("post-response overflow = %v, want bounded rejection", err)
+	}
+	payload, ok := session.dequeue()
+	if !ok || !bytes.Contains(payload, []byte("owner-token")) {
+		t.Fatalf("reserved response = %q/%v", payload, ok)
+	}
+}
+
+func TestHTTPServerTransportRejectsOversizeRequestIDBeforeDispatch(t *testing.T) {
+	var calls atomic.Int64
+	server := NewServer()
+	server.AddTool(Tool{Name: "create", InputSchema: mustRawJSON([]byte(`{"type":"object"}`))}, func(context.Context, *RequestContext, map[string]any) (*ToolResult, error) {
+		calls.Add(1)
+		return textToolResult("owner-token"), nil
+	})
+	config := containmentHTTPConfig()
+	transport := newContainmentTransport(t, server, config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	sessionID := initializeContainmentSession(t, srv.Client(), srv.URL, nil)
+
+	body := `{"jsonrpc":"2.0","id":"` + strings.Repeat("x", config.MaxRequestIDBytes) + `","method":"tools/call","params":{"name":"create","arguments":{}}}`
+	response := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversize ID status = %d, want 413", response.StatusCode)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("handler calls = %d, want 0", got)
+	}
+	stats := transport.Stats()
+	if stats.RejectedOversizeRequestIDs != 1 || stats.InFlightMessages != 0 || stats.InFlightResponseReservations != 0 || stats.ActiveSessions != 1 {
+		t.Fatalf("oversize ID accounting = %+v", stats)
+	}
+
+	body = `{"jsonrpc":"2.0","id":{},"method":"tools/call","params":{"name":"create","arguments":{}}}`
+	response = doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid ID type status = %d, want 400", response.StatusCode)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("handler calls after invalid ID = %d, want 0", got)
+	}
+	if stats = transport.Stats(); stats.RejectedInvalidRequestIDs != 1 || stats.ActiveSessions != 1 {
+		t.Fatalf("invalid ID accounting = %+v", stats)
+	}
+	for _, invalidID := range []string{"99999999999999999999", "1.5", "1e3"} {
+		body = `{"jsonrpc":"2.0","id":` + invalidID + `,"method":"tools/call","params":{"name":"create","arguments":{}}}`
+		response = doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("unsupported numeric ID %q status = %d, want 400", invalidID, response.StatusCode)
+		}
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("handler calls after unsupported numeric IDs = %d, want 0", got)
+	}
+	if stats = transport.Stats(); stats.RejectedInvalidRequestIDs != 4 {
+		t.Fatalf("unsupported numeric ID accounting = %+v", stats)
+	}
+
+	const maxIntID = "9223372036854775807"
+	body = `{"jsonrpc":"2.0","id":` + maxIntID + `,"method":"tools/call","params":{"name":"create","arguments":{}}}`
+	response = doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("exact integer ID status = %d, want 202", response.StatusCode)
+	}
+	session, ok := transport.getSession(sessionID)
+	if !ok {
+		t.Fatal("session disappeared after exact integer ID")
+	}
+	eventuallyContainment(t, time.Second, func() bool {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		return calls.Load() == 1 && len(session.outbox) == 1
+	})
+	payload, ok := session.dequeue()
+	if !ok || !bytes.Contains(payload, []byte(`"id":`+maxIntID)) {
+		t.Fatalf("exact correlated response = %q/%v", payload, ok)
+	}
+
+	body = `{"jsonrpc":"2.0","id":"\ud800","method":"tools/call","params":{"name":"create","arguments":{}}}`
+	response = doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("surrogate ID status = %d, want 202", response.StatusCode)
+	}
+	eventuallyContainment(t, time.Second, func() bool {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		return calls.Load() == 2 && len(session.outbox) == 1
+	})
+	payload, ok = session.dequeue()
+	if !ok || !bytes.Contains(payload, []byte(`"id":"\ud800"`)) {
+		t.Fatalf("surrogate correlated response = %q/%v", payload, ok)
+	}
+}
+
+func TestHTTPServerTransportRejectsOversizeInitializeIDBeforeSessionCreation(t *testing.T) {
+	config := containmentHTTPConfig()
+	transport := newContainmentTransport(t, NewServer(), config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	body := `{"jsonrpc":"2.0","id":"` + strings.Repeat("x", config.MaxRequestIDBytes) + `","method":"initialize","params":{}}`
+	response := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, "", nil, body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversize initialize ID status = %d, want 413", response.StatusCode)
+	}
+	stats := transport.Stats()
+	if stats.ActiveSessions != 0 || stats.ProvisionalSessions != 0 || stats.RejectedOversizeRequestIDs != 1 {
+		t.Fatalf("oversize initialize accounting = %+v", stats)
+	}
+
+	body = `{"jsonrpc":"2.0","id":"\ud800","method":"initialize","params":{}}`
+	response = doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, "", nil, body)
+	payload, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || !bytes.Contains(payload, []byte(`"id":"\ud800"`)) {
+		t.Fatalf("surrogate initialize response = status %d payload %q", response.StatusCode, payload)
+	}
+}
+
+func TestHTTPServerTransportConcurrentRequestCannotStealReservedResponse(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var calls atomic.Int64
+	server := NewServer()
+	server.AddTool(Tool{Name: "create", InputSchema: mustRawJSON([]byte(`{"type":"object"}`))}, func(context.Context, *RequestContext, map[string]any) (*ToolResult, error) {
+		calls.Add(1)
+		started <- struct{}{}
+		<-release
+		return textToolResult("owner-token"), nil
+	})
+	config := containmentHTTPConfig()
+	config.MaxConcurrentMessages = 3
+	config.MaxConcurrentMessagesPerSession = 3
+	config.OutboxMaxMessages = 4
+	config.OutboxMaxBytes = 1536
+	config.ResponseReservationBytes = 1024
+	transport := newContainmentTransport(t, server, config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	sessionID := initializeContainmentSession(t, srv.Client(), srv.URL, nil)
+
+	call := func(id int) int {
+		body := `{"jsonrpc":"2.0","id":` + strconv.Itoa(id) + `,"method":"tools/call","params":{"name":"create","arguments":{}}}`
+		response := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, body)
+		defer response.Body.Close()
+		return response.StatusCode
+	}
+	if status := call(2); status != http.StatusAccepted {
+		t.Fatalf("first status = %d, want 202", status)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first handler did not start")
+	}
+	if status := call(3); status != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, want 429", status)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("handler calls = %d, want 1", got)
+	}
+	close(release)
+	eventuallyContainment(t, time.Second, func() bool {
+		stats := transport.Stats()
+		return stats.InFlightMessages == 0 && stats.InFlightResponseReservations == 0
+	})
+	session, ok := transport.getSession(sessionID)
+	if !ok {
+		t.Fatal("reservation pressure closed session")
+	}
+	payload, ok := session.dequeue()
+	if !ok || !bytes.Contains(payload, []byte("owner-token")) {
+		t.Fatalf("first reserved response = %q/%v", payload, ok)
+	}
+}
+
+func TestHTTPServerTransportRejectsDuplicateIDUntilResponseDelivered(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var calls atomic.Int64
+	server := NewServer()
+	server.AddTool(Tool{Name: "create", InputSchema: mustRawJSON([]byte(`{"type":"object"}`))}, func(context.Context, *RequestContext, map[string]any) (*ToolResult, error) {
+		calls.Add(1)
+		started <- struct{}{}
+		<-release
+		return textToolResult("owner-token"), nil
+	})
+	config := containmentHTTPConfig()
+	config.MaxConcurrentMessages = 3
+	config.MaxConcurrentMessagesPerSession = 3
+	transport := newContainmentTransport(t, server, config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	sessionID := initializeContainmentSession(t, srv.Client(), srv.URL, nil)
+	call := `{"jsonrpc":"2.0","id":"same","method":"tools/call","params":{"name":"create","arguments":{}}}`
+
+	request := func() int {
+		response := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, call)
+		defer response.Body.Close()
+		return response.StatusCode
+	}
+	if status := request(); status != http.StatusAccepted {
+		t.Fatalf("first request status = %d, want 202", status)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first handler did not start")
+	}
+	if status := request(); status != http.StatusConflict {
+		t.Fatalf("in-flight duplicate status = %d, want 409", status)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("calls after in-flight duplicate = %d, want 1", got)
+	}
+	close(release)
+	session, ok := transport.getSession(sessionID)
+	if !ok {
+		t.Fatal("session disappeared")
+	}
+	eventuallyContainment(t, time.Second, func() bool {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		return len(session.outbox) == 1 && session.inFlightMessages == 0
+	})
+	if status := request(); status != http.StatusConflict {
+		t.Fatalf("queued-response duplicate status = %d, want 409", status)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("calls before delivery = %d, want 1", got)
+	}
+	if payload, ok := session.dequeue(); !ok || !bytes.Contains(payload, []byte("owner-token")) {
+		t.Fatalf("first response = %q/%v", payload, ok)
+	}
+	if status := request(); status != http.StatusAccepted {
+		t.Fatalf("ID reuse after delivery status = %d, want 202", status)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("reused ID handler did not start")
+	}
+	eventuallyContainment(t, time.Second, func() bool { return calls.Load() == 2 })
+	if stats := transport.Stats(); stats.RejectedDuplicateRequestIDs != 2 || stats.ActiveSessions != 1 {
+		t.Fatalf("duplicate ID accounting = %+v", stats)
+	}
+}
+
+func TestHTTPServerTransportOversizeNestedWriteCannotDestroyReservedResponse(t *testing.T) {
+	var mutations atomic.Int64
+	server := NewServer()
+	server.AddTool(Tool{Name: "create", InputSchema: mustRawJSON([]byte(`{"type":"object"}`))}, func(ctx context.Context, rc *RequestContext, _ map[string]any) (*ToolResult, error) {
+		mutations.Add(1)
+		_, err := rc.CreateMessage(ctx, &CreateMessageParams{
+			Messages: []SamplingMessage{{
+				Role:    "user",
+				Content: MarshalSamplingContent(Content{Type: "text", Text: strings.Repeat("x", 2048)}),
+			}},
+			MaxTokens: 1,
+		})
+		if !errors.Is(err, errHTTPOutboxOverflow) {
+			return nil, fmt.Errorf("unexpected nested write result: %w", err)
+		}
+		return textToolResult("owner-token"), nil
+	})
+	config := containmentHTTPConfig()
+	config.OutboxMaxMessages = 4
+	config.OutboxMaxBytes = 1024
+	config.ResponseReservationBytes = 512
+	transport := newContainmentTransport(t, server, config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+
+	initializeBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{"sampling":{}},"clientInfo":{"name":"test-client","version":"1"}}}`
+	initializeResponse := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, "", nil, initializeBody)
+	io.Copy(io.Discard, initializeResponse.Body)
+	initializeResponse.Body.Close()
+	if initializeResponse.StatusCode != http.StatusOK {
+		t.Fatalf("initialize status = %d", initializeResponse.StatusCode)
+	}
+	sessionID := initializeResponse.Header.Get("Mcp-Session-Id")
+	session, ok := transport.getSession(sessionID)
+	if !ok {
+		t.Fatal("initialized session missing")
+	}
+
+	call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create","arguments":{}}}`
+	response := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, call)
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("tool status = %d, want 202", response.StatusCode)
+	}
+	eventuallyContainment(t, time.Second, func() bool {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		return mutations.Load() == 1 && len(session.outbox) == 1 && session.inFlightMessages == 0
+	})
+	payload, ok := session.dequeue()
+	if !ok || !bytes.Contains(payload, []byte("owner-token")) {
+		t.Fatalf("reserved response after nested overflow = %q/%v", payload, ok)
+	}
+	stats := transport.Stats()
+	if stats.ActiveSessions != 1 || stats.RejectedOutboxWrites != 1 || stats.OutboxOverflowClosures != 0 {
+		t.Fatalf("nested overflow accounting = %+v", stats)
+	}
+}
+
+func TestHTTPServerTransportOversizeResponseUsesReservationForProtocolError(t *testing.T) {
+	server := NewServer()
+	server.AddTool(Tool{Name: "large", InputSchema: mustRawJSON([]byte(`{"type":"object"}`))}, func(context.Context, *RequestContext, map[string]any) (*ToolResult, error) {
+		return textToolResult(strings.Repeat("x", 1024)), nil
+	})
+	config := containmentHTTPConfig()
+	config.OutboxMaxBytes = 1024
+	config.ResponseReservationBytes = 512
+	transport := newContainmentTransport(t, server, config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+	sessionID := initializeContainmentSession(t, srv.Client(), srv.URL, nil)
+	session, ok := transport.getSession(sessionID)
+	if !ok {
+		t.Fatal("initialized session missing")
+	}
+
+	call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"large","arguments":{}}}`
+	response := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, sessionID, nil, call)
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("tool status = %d, want 202", response.StatusCode)
+	}
+	eventuallyContainment(t, time.Second, func() bool {
+		return transport.Stats().InFlightResponseReservations == 0
+	})
+	payload, ok := session.dequeue()
+	if !ok {
+		t.Fatal("oversize response did not emit bounded protocol error")
+	}
+	var message jsonRPCMessage
+	if err := json.Unmarshal(payload, &message); err != nil {
+		t.Fatal(err)
+	}
+	if message.Error == nil || message.Error.Code != -32002 || bytes.Contains(payload, []byte(strings.Repeat("x", 64))) {
+		t.Fatalf("oversize fallback response = %s", payload)
+	}
+	stats := transport.Stats()
+	if stats.OversizeResponses != 1 || stats.OutboxOverflowClosures != 0 || stats.ActiveSessions != 1 {
+		t.Fatalf("oversize response accounting = %+v", stats)
 	}
 }
 
@@ -1308,7 +1830,7 @@ func TestHTTPServerTransportAbsoluteExpiryCancelsActiveLease(t *testing.T) {
 		t.Fatalf("activate: %v", err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
-	lease, err := transport.acquireSessionLease(session, request, nil, leaseSSE)
+	lease, err := transport.acquireSessionLease(session, request, nil, leaseSSE, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1733,17 +2255,18 @@ func TestHTTPServerTransportGlobalSSELimitAndStats(t *testing.T) {
 
 func TestHTTPServerTransportBlockedSSEWriteUnblocksOnRevocationExpiryAndDeadline(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		close func(*HTTPServerTransport, *httpServerSession)
+		name       string
+		close      func(*HTTPServerTransport, *httpServerSession)
+		wantClosed bool
 	}{
 		{name: "principal revocation", close: func(transport *HTTPServerTransport, session *httpServerSession) {
 			if got := transport.ClosePrincipal(session.principal); got != 1 {
 				t.Fatalf("ClosePrincipal = %d, want 1", got)
 			}
-		}},
+		}, wantClosed: true},
 		{name: "absolute expiry", close: func(transport *HTTPServerTransport, session *httpServerSession) {
 			transport.sweepOnce(session.createdAt.Add(transport.config.AbsoluteLifetime))
-		}},
+		}, wantClosed: true},
 		{name: "write deadline", close: func(*HTTPServerTransport, *httpServerSession) {}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1786,10 +2309,24 @@ func TestHTTPServerTransportBlockedSSEWriteUnblocksOnRevocationExpiryAndDeadline
 			if got := transport.Stats().InFlightSSEStreams; got != 0 {
 				t.Fatalf("InFlightSSEStreams after unblock = %d, want 0", got)
 			}
-			select {
-			case <-session.ctx.Done():
-			case <-time.After(time.Second):
-				t.Fatal("failed/closed SSE session was not canceled")
+			if tc.wantClosed {
+				select {
+				case <-session.ctx.Done():
+				case <-time.After(time.Second):
+					t.Fatal("revoked/expired SSE session was not canceled")
+				}
+			} else {
+				select {
+				case <-session.ctx.Done():
+					t.Fatal("transient SSE write failure canceled reusable session")
+				default:
+				}
+				if _, ok := transport.getSession(session.id); !ok {
+					t.Fatal("transient SSE write failure detached session")
+				}
+				if _, _, ok := session.peekOutbox(); !ok {
+					t.Fatal("transient SSE write failure discarded queued payload")
+				}
 			}
 		})
 	}
@@ -2094,6 +2631,43 @@ type deadlineBlockingResponseWriter struct {
 	mu       sync.Mutex
 	deadline time.Time
 	wake     chan struct{}
+}
+
+type scriptedSSEResponseWriter struct {
+	header    http.Header
+	failOnce  atomic.Bool
+	wrote     chan struct{}
+	wroteOnce sync.Once
+	mu        sync.Mutex
+	buf       bytes.Buffer
+}
+
+func newScriptedSSEResponseWriter(failOnce bool) *scriptedSSEResponseWriter {
+	w := &scriptedSSEResponseWriter{header: make(http.Header), wrote: make(chan struct{})}
+	w.failOnce.Store(failOnce)
+	return w
+}
+
+func (w *scriptedSSEResponseWriter) Header() http.Header            { return w.header }
+func (*scriptedSSEResponseWriter) WriteHeader(int)                  {}
+func (*scriptedSSEResponseWriter) Flush()                           {}
+func (*scriptedSSEResponseWriter) SetWriteDeadline(time.Time) error { return nil }
+
+func (w *scriptedSSEResponseWriter) Write(p []byte) (int, error) {
+	if w.failOnce.CompareAndSwap(true, false) {
+		return 0, errors.New("injected SSE write failure")
+	}
+	w.mu.Lock()
+	n, err := w.buf.Write(p)
+	w.mu.Unlock()
+	w.wroteOnce.Do(func() { close(w.wrote) })
+	return n, err
+}
+
+func (w *scriptedSSEResponseWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
 }
 
 type unsupportedBlockingResponseWriter struct {

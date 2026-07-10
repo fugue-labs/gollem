@@ -30,6 +30,16 @@ type RequestContext struct {
 	server *Server
 }
 
+// reservedResponseWriter is installed only by bounded transports that admit
+// response capacity before dispatch. Keeping it in the request context makes
+// nested server-to-client calls use the ordinary writer while the one final
+// response atomically consumes the capacity reserved for it.
+type reservedResponseWriter interface {
+	writeReservedResponse([]byte) error
+}
+
+type reservedResponseWriterContextKey struct{}
+
 // ClientCapabilities returns the capabilities advertised by the connected client.
 func (rc *RequestContext) ClientCapabilities() ClientCapabilities {
 	if rc == nil || rc.server == nil {
@@ -352,7 +362,7 @@ func (s *Server) handleNotification(msg *jsonRPCMessage) {
 }
 
 func (s *Server) handleRequest(ctx context.Context, msg *jsonRPCMessage) {
-	requestID := normalizeID(msg.ID)
+	requestID := responseID(msg.ID)
 
 	switch msg.Method {
 	case "initialize":
@@ -621,7 +631,11 @@ func (s *Server) notify(ctx context.Context, method string, params any) error {
 	return s.writeJSON(data)
 }
 
-func (s *Server) respond(_ context.Context, id any, result any, rpcErr *jsonRPCError) error {
+func (s *Server) respond(ctx context.Context, id any, result any, rpcErr *jsonRPCError) error {
+	var reservedWriter reservedResponseWriter
+	if ctx != nil {
+		reservedWriter, _ = ctx.Value(reservedResponseWriterContextKey{}).(reservedResponseWriter)
+	}
 	resp := jsonRPCResponse{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -630,9 +644,51 @@ func (s *Server) respond(_ context.Context, id any, result any, rpcErr *jsonRPCE
 	}
 	data, err := json.Marshal(resp)
 	if err != nil {
+		if reservedWriter != nil {
+			return s.writeReservedProtocolError(reservedWriter, id, -32003, "failed to encode response")
+		}
 		return err
 	}
+	if reservedWriter != nil {
+		err = s.writeReservedJSON(reservedWriter, data)
+		if !errors.Is(err, errHTTPResponseTooLarge) {
+			return err
+		}
+		// A response larger than the admitted reservation is an application
+		// bug, but it must not close the session or silently strand the
+		// caller. Replace it with a small, source-free protocol error while
+		// leaving the reservation available for this retry.
+		return s.writeReservedProtocolError(reservedWriter, id, -32002, "encoded response exceeds configured byte limit")
+	}
 	return s.writeJSON(data)
+}
+
+func (s *Server) writeReservedProtocolError(writer reservedResponseWriter, id any, code int, message string) error {
+	fallback, err := json.Marshal(jsonRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error: &jsonRPCError{
+			Code:    code,
+			Message: message,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	return s.writeReservedJSON(writer, fallback)
+}
+
+func (s *Server) writeReservedJSON(writer reservedResponseWriter, data []byte) error {
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return errors.New("mcp: server is closed")
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return writer.writeReservedResponse(data)
 }
 
 func (s *Server) writeJSON(data []byte) error {

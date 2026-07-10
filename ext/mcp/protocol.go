@@ -480,7 +480,7 @@ func (s *clientState) dispatchRequest(msg *jsonRPCMessage, respond rpcRespond) {
 	handler := s.requestHandlers[msg.Method]
 	s.mu.Unlock()
 
-	requestID := normalizeID(msg.ID)
+	requestID := responseID(msg.ID)
 	params := append(json.RawMessage(nil), msg.Params...)
 
 	go func() {
@@ -792,6 +792,18 @@ func normalizeID(raw *json.RawMessage) any {
 	var rawCopy json.RawMessage
 	rawCopy = append(rawCopy, (*raw)...)
 	return rawCopy
+}
+
+// responseID preserves the request ID's exact JSON representation. Decoding
+// through float64 can round large numbers, and Go's string decoder replaces
+// lone UTF-16 surrogate escapes. Either rewrite makes a state-changing reply
+// uncorrelatable to the original request. Transports may still reject ID forms
+// they do not support before dispatch.
+func responseID(raw *json.RawMessage) any {
+	if raw == nil {
+		return nil
+	}
+	return append(json.RawMessage(nil), (*raw)...)
 }
 
 func rawJSONID(value any) *json.RawMessage {

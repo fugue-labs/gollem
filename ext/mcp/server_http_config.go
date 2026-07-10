@@ -15,14 +15,16 @@ const (
 	// unmarshaled into map[string]any. They are deliberately generous enough
 	// for large batched tool arguments while keeping per-decode object counts
 	// finite and measurable.
-	defaultHTTPMaxJSONDepth                  = 64
-	defaultHTTPMaxJSONStructuralTokens       = 65_536
-	defaultHTTPMaxNestedResponseBytes  int64 = 4 << 20
-	defaultHTTPMaxConcurrentMessages         = 256
-	defaultHTTPMaxConcurrentPerSession       = 4
-	defaultHTTPOutboxMaxMessages             = 256
-	defaultHTTPOutboxMaxBytes          int64 = 8 << 20
-	defaultHTTPRequestBodyTimeout            = 30 * time.Second
+	defaultHTTPMaxJSONDepth                   = 64
+	defaultHTTPMaxJSONStructuralTokens        = 65_536
+	defaultHTTPMaxNestedResponseBytes   int64 = 4 << 20
+	defaultHTTPMaxRequestIDBytes              = 128
+	defaultHTTPMaxConcurrentMessages          = 256
+	defaultHTTPMaxConcurrentPerSession        = 4
+	defaultHTTPOutboxMaxMessages              = 256
+	defaultHTTPOutboxMaxBytes           int64 = 8 << 20
+	defaultHTTPResponseReservationBytes int64 = 1 << 20
+	defaultHTTPRequestBodyTimeout             = 30 * time.Second
 )
 
 // HTTPServerTransportConfig contains the hard resource limits for a
@@ -31,8 +33,14 @@ const (
 // graph independently of request bytes; structural tokens include containers,
 // object keys, and scalar values. MaxNestedResponseBytes separately bounds the
 // result/error payload of sampling, elicitation, and other server-initiated
-// requests before a second typed decode. RequestBodyTimeout zero normalizes to
-// the safe 30-second default; it never means unlimited.
+// requests before a second typed decode. MaxRequestIDBytes bounds the raw
+// encoded JSON-RPC ID so the correlated response itself cannot consume the
+// reservation. ResponseReservationBytes is reserved in the session outbox
+// before a JSON-RPC request handler is dispatched, so a
+// state-changing handler cannot lose its response merely because another
+// in-flight operation filled the queue. It is also the maximum encoded
+// JSON-RPC response size. RequestBodyTimeout zero normalizes to the safe
+// 30-second default; it never means unlimited.
 type HTTPServerTransportConfig struct {
 	MaxSessions                     int
 	MaxSessionsPerPrincipal         int
@@ -42,11 +50,13 @@ type HTTPServerTransportConfig struct {
 	MaxJSONDepth                    int
 	MaxJSONStructuralTokens         int
 	MaxNestedResponseBytes          int64
+	MaxRequestIDBytes               int
 	RequestBodyTimeout              time.Duration
 	MaxConcurrentMessages           int
 	MaxConcurrentMessagesPerSession int
 	OutboxMaxMessages               int
 	OutboxMaxBytes                  int64
+	ResponseReservationBytes        int64
 	RetryAfter                      time.Duration
 }
 
@@ -61,11 +71,13 @@ func DefaultHTTPServerTransportConfig() HTTPServerTransportConfig {
 		MaxJSONDepth:                    defaultHTTPMaxJSONDepth,
 		MaxJSONStructuralTokens:         defaultHTTPMaxJSONStructuralTokens,
 		MaxNestedResponseBytes:          defaultHTTPMaxNestedResponseBytes,
+		MaxRequestIDBytes:               defaultHTTPMaxRequestIDBytes,
 		RequestBodyTimeout:              defaultHTTPRequestBodyTimeout,
 		MaxConcurrentMessages:           defaultHTTPMaxConcurrentMessages,
 		MaxConcurrentMessagesPerSession: defaultHTTPMaxConcurrentPerSession,
 		OutboxMaxMessages:               defaultHTTPOutboxMaxMessages,
 		OutboxMaxBytes:                  defaultHTTPOutboxMaxBytes,
+		ResponseReservationBytes:        defaultHTTPResponseReservationBytes,
 		RetryAfter:                      time.Second,
 	}
 }
@@ -92,6 +104,8 @@ func (c HTTPServerTransportConfig) validate() error {
 		return fmt.Errorf("mcp: HTTP transport MaxJSONStructuralTokens must be positive")
 	case c.MaxNestedResponseBytes <= 0:
 		return fmt.Errorf("mcp: HTTP transport MaxNestedResponseBytes must be positive")
+	case c.MaxRequestIDBytes <= 0:
+		return fmt.Errorf("mcp: HTTP transport MaxRequestIDBytes must be positive")
 	case c.RequestBodyTimeout < 0:
 		return fmt.Errorf("mcp: HTTP transport RequestBodyTimeout cannot be negative")
 	case c.MaxConcurrentMessages <= 0:
@@ -104,6 +118,12 @@ func (c HTTPServerTransportConfig) validate() error {
 		return fmt.Errorf("mcp: HTTP transport OutboxMaxMessages must be positive")
 	case c.OutboxMaxBytes <= 0:
 		return fmt.Errorf("mcp: HTTP transport OutboxMaxBytes must be positive")
+	case c.ResponseReservationBytes <= 0:
+		return fmt.Errorf("mcp: HTTP transport ResponseReservationBytes must be positive")
+	case c.ResponseReservationBytes > c.OutboxMaxBytes:
+		return fmt.Errorf("mcp: HTTP transport ResponseReservationBytes cannot exceed OutboxMaxBytes")
+	case int64(c.MaxRequestIDBytes) > (c.ResponseReservationBytes-256)/6:
+		return fmt.Errorf("mcp: HTTP transport ResponseReservationBytes cannot encode the maximum request ID and a bounded error")
 	case c.RetryAfter <= 0:
 		return fmt.Errorf("mcp: HTTP transport RetryAfter must be positive")
 	default:
@@ -142,20 +162,32 @@ func (c HTTPServerTransportConfig) sweepInterval() time.Duration {
 // per session, and SSE is one per session. Thus aggregate decode work is
 // explicitly bounded at 2*MaxConcurrentMessages globally and
 // MaxConcurrentMessagesPerSession+1 for a session with pending nested requests.
-// RejectedMessages aggregates failures from every lane.
+// RejectedMessages aggregates failures from every lane. Response reservations
+// are logical capacity inside OutboxMaxBytes rather than additional buffers;
+// ReservedResponseBytes reports the currently admitted logical maximum.
 type HTTPServerTransportStats struct {
-	ActiveSessions           int
-	ProvisionalSessions      int
-	RejectedSessionCreations uint64
-	ExpiredSessions          uint64
-	InFlightMessages         int
-	InFlightDecodes          int
-	InFlightProtectedDecodes int
-	InFlightControlResponses int
-	InFlightSSEStreams       int
-	RejectedMessages         uint64
-	RejectedJSONComplexity   uint64
-	RejectedInvalidUTF8      uint64
-	RejectedNestedResponses  uint64
-	OutboxOverflowClosures   uint64
+	ActiveSessions               int
+	ProvisionalSessions          int
+	RejectedSessionCreations     uint64
+	ExpiredSessions              uint64
+	InFlightMessages             int
+	InFlightDecodes              int
+	InFlightProtectedDecodes     int
+	InFlightControlResponses     int
+	InFlightSSEStreams           int
+	InFlightResponseReservations int
+	ReservedResponseBytes        int64
+	RejectedMessages             uint64
+	RejectedResponseReservations uint64
+	OversizeResponses            uint64
+	RejectedJSONComplexity       uint64
+	RejectedInvalidUTF8          uint64
+	RejectedNestedResponses      uint64
+	RejectedOversizeRequestIDs   uint64
+	RejectedInvalidRequestIDs    uint64
+	RejectedDuplicateRequestIDs  uint64
+	RejectedOutboxWrites         uint64
+	// OutboxOverflowClosures is retained for source compatibility. Capacity
+	// overflow is now a bounded rejection and never discards admitted replies.
+	OutboxOverflowClosures uint64
 }
