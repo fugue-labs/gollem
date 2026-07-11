@@ -83,6 +83,11 @@ type HTTPSessionRequestContextFunc func(sessionCtx context.Context, r *http.Requ
 // session gets its own cloned Server instance and bounded resource accounting.
 type HTTPServerTransport struct {
 	mu sync.Mutex
+	// messageWG covers every admitted asynchronous message lease, including
+	// handlers whose session is detached by expiry, revocation, or DELETE before
+	// transport shutdown. Add is serialized with shutdown by mu: Close marks the
+	// transport closed under that mutex before it waits, so no Add can race Wait.
+	messageWG sync.WaitGroup
 
 	template *Server
 	config   HTTPServerTransportConfig
@@ -338,6 +343,12 @@ func (t *HTTPServerTransport) Close() error {
 	for _, session := range sessions {
 		session.shutdown()
 	}
+	// Request dispatch is asynchronous. Join every admitted message before Close
+	// returns so callers may safely tear down databases and other dependencies
+	// used by tool handlers. A transport-wide lease wait is required here: a
+	// session may have been detached by expiry, revocation, or DELETE while one
+	// of its canceled handlers was still unwinding.
+	t.messageWG.Wait()
 	<-t.sweepDone
 	close(t.closeDone)
 	return nil
@@ -1291,6 +1302,7 @@ func (t *HTTPServerTransport) acquireSessionLease(session *httpServerSession, r 
 			}
 			t.stats.InFlightMessages++
 			session.inFlightMessages++
+			t.messageWG.Add(1)
 			if reserveResponse {
 				session.responseReservedMessages++
 				session.responseReservedBytes += t.config.ResponseReservationBytes
@@ -1396,6 +1408,9 @@ func (l *httpSessionLease) release() {
 		return
 	}
 	l.once.Do(func() {
+		if l.kind == leaseMessage {
+			defer l.transport.messageWG.Done()
+		}
 		if l.cancel != nil {
 			l.cancel()
 		}

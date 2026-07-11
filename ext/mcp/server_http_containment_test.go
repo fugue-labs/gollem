@@ -2742,6 +2742,73 @@ func TestHTTPServerTransportCloseIsConcurrentAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestHTTPServerTransportCloseJoinsPreviouslyDetachedAsyncToolHandlers(t *testing.T) {
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	release := make(chan struct{})
+	server := NewServer()
+	server.AddTool(Tool{Name: "block", InputSchema: mustRawJSON([]byte(`{"type":"object"}`))}, func(ctx context.Context, _ *RequestContext, _ map[string]any) (*ToolResult, error) {
+		close(started)
+		<-ctx.Done()
+		close(canceled)
+		<-release
+		return nil, ctx.Err()
+	})
+	transport, err := NewHTTPServerTransportWithConfig(server, containmentHTTPConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil))
+	if err != nil || !transport.activateSession(session) {
+		t.Fatalf("activate session: %v", err)
+	}
+	message := &jsonRPCMessage{
+		JSONRPC: "2.0",
+		ID:      rawJSONID(1),
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"block","arguments":{}}`),
+	}
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	lease, err := transport.acquireSessionLease(session, request, nil, leaseMessage, "")
+	if err != nil {
+		t.Fatalf("acquire message lease: %v", err)
+	}
+	session.server.handleMessageWithCompletion(lease.ctx, message, lease.release)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("asynchronous tool handler did not start")
+	}
+
+	// Session expiry, revocation, and DELETE all detach before the host later
+	// closes the transport. Close must still join a handler from that detached
+	// session before the host tears down shared dependencies.
+	if !transport.closeExpectedSession(session, false) {
+		t.Fatal("failed to detach active session")
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("session shutdown did not cancel the tool-handler context")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- transport.Close() }()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("transport Close returned before handler exit: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("transport Close: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("transport Close did not join the released tool handler")
+	}
+}
+
 func initializeContainmentSession(t *testing.T, client *http.Client, endpoint string, headers map[string]string) string {
 	t.Helper()
 	response := doContainmentRequest(t, client, endpoint, http.MethodPost, "", headers,
