@@ -10,6 +10,11 @@ import (
 	"sync/atomic"
 )
 
+const (
+	maxInitializeProtocolVersionBytes = 64
+	maxInitializeClientInfoFieldBytes = 256
+)
+
 // ServerToolHandler handles an MCP tools/call request.
 type ServerToolHandler func(context.Context, *RequestContext, map[string]any) (*ToolResult, error)
 
@@ -403,6 +408,16 @@ func (s *Server) handleInitialize(raw json.RawMessage) (*InitializeResult, *json
 			}
 		}
 	}
+	if len(params.ProtocolVersion) > maxInitializeProtocolVersionBytes {
+		return nil, &jsonRPCError{Code: jsonRPCCodeInvalidParams, Message: "initialize protocolVersion is too long"}
+	}
+	if len(params.ClientInfo.Name) > maxInitializeClientInfoFieldBytes || len(params.ClientInfo.Version) > maxInitializeClientInfoFieldBytes {
+		return nil, &jsonRPCError{Code: jsonRPCCodeInvalidParams, Message: "initialize clientInfo field is too long"}
+	}
+	// Experimental capability graphs are protocol extensions with no server
+	// behavior in Gollem. Never clone them into long-lived session state: even a
+	// byte-bounded initialize body can expand into thousands of interface maps.
+	params.Capabilities.Experimental = nil
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

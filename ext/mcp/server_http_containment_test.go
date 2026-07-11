@@ -25,9 +25,13 @@ func containmentHTTPConfig() HTTPServerTransportConfig {
 	config := DefaultHTTPServerTransportConfig()
 	config.MaxSessions = 8
 	config.MaxSessionsPerPrincipal = 4
+	config.MaxSessionsPerQuotaKey = 4
 	config.IdleTimeout = time.Minute
 	config.AbsoluteLifetime = time.Hour
 	config.MaxRequestBodyBytes = 1024
+	config.MaxInitializeRequestBodyBytes = 1024
+	config.MaxNestedResponseBytes = 512
+	config.MaxProtectedResponseBodyBytes = 768
 	config.MaxRequestIDBytes = 32
 	config.MaxConcurrentMessages = 8
 	config.MaxConcurrentMessagesPerSession = 2
@@ -50,8 +54,8 @@ func newContainmentTransport(t *testing.T, server *Server, config HTTPServerTran
 
 func TestDefaultHTTPServerTransportConfigIsBounded(t *testing.T) {
 	config := DefaultHTTPServerTransportConfig()
-	if config.MaxSessions != 1024 || config.MaxSessionsPerPrincipal != 64 {
-		t.Fatalf("session defaults = %d/%d, want 1024/64", config.MaxSessions, config.MaxSessionsPerPrincipal)
+	if config.MaxSessions != 1024 || config.MaxSessionsPerPrincipal != 64 || config.MaxSessionsPerQuotaKey != 64 {
+		t.Fatalf("session defaults = %d/%d/%d, want 1024/64/64", config.MaxSessions, config.MaxSessionsPerPrincipal, config.MaxSessionsPerQuotaKey)
 	}
 	if config.IdleTimeout != 30*time.Minute || config.AbsoluteLifetime != 24*time.Hour {
 		t.Fatalf("lifetime defaults = %v/%v", config.IdleTimeout, config.AbsoluteLifetime)
@@ -59,11 +63,17 @@ func TestDefaultHTTPServerTransportConfigIsBounded(t *testing.T) {
 	if config.MaxRequestBodyBytes != 8<<20 {
 		t.Fatalf("MaxRequestBodyBytes = %d, want %d", config.MaxRequestBodyBytes, 8<<20)
 	}
+	if config.MaxInitializeRequestBodyBytes != 64<<10 {
+		t.Fatalf("MaxInitializeRequestBodyBytes = %d, want %d", config.MaxInitializeRequestBodyBytes, 64<<10)
+	}
 	if config.MaxJSONDepth != 64 || config.MaxJSONStructuralTokens != 65_536 {
 		t.Fatalf("JSON complexity defaults = %d/%d, want 64/65536", config.MaxJSONDepth, config.MaxJSONStructuralTokens)
 	}
 	if config.MaxNestedResponseBytes != 4<<20 {
 		t.Fatalf("MaxNestedResponseBytes = %d, want %d", config.MaxNestedResponseBytes, 4<<20)
+	}
+	if config.MaxProtectedResponseBodyBytes != (4<<20)+(64<<10) {
+		t.Fatalf("MaxProtectedResponseBodyBytes = %d, want %d", config.MaxProtectedResponseBodyBytes, (4<<20)+(64<<10))
 	}
 	if config.MaxRequestIDBytes != 128 {
 		t.Fatalf("MaxRequestIDBytes = %d, want 128", config.MaxRequestIDBytes)
@@ -91,15 +101,27 @@ func TestHTTPServerTransportConfigRejectsEveryUnboundedOrIncoherentLimit(t *test
 		"sessions":              func(c *HTTPServerTransportConfig) { c.MaxSessions = 0 },
 		"principal sessions":    func(c *HTTPServerTransportConfig) { c.MaxSessionsPerPrincipal = 0 },
 		"principal over global": func(c *HTTPServerTransportConfig) { c.MaxSessionsPerPrincipal = c.MaxSessions + 1 },
+		"quota sessions":        func(c *HTTPServerTransportConfig) { c.MaxSessionsPerQuotaKey = 0 },
+		"quota over global":     func(c *HTTPServerTransportConfig) { c.MaxSessionsPerQuotaKey = c.MaxSessions + 1 },
 		"idle":                  func(c *HTTPServerTransportConfig) { c.IdleTimeout = 0 },
 		"absolute":              func(c *HTTPServerTransportConfig) { c.AbsoluteLifetime = 0 },
 		"idle over absolute":    func(c *HTTPServerTransportConfig) { c.IdleTimeout = c.AbsoluteLifetime + 1 },
 		"body":                  func(c *HTTPServerTransportConfig) { c.MaxRequestBodyBytes = 0 },
-		"JSON depth":            func(c *HTTPServerTransportConfig) { c.MaxJSONDepth = 0 },
+		"initialize body":       func(c *HTTPServerTransportConfig) { c.MaxInitializeRequestBodyBytes = 0 },
+		"initialize over body": func(c *HTTPServerTransportConfig) {
+			c.MaxInitializeRequestBodyBytes = c.MaxRequestBodyBytes + 1
+		},
+		"JSON depth": func(c *HTTPServerTransportConfig) { c.MaxJSONDepth = 0 },
 		"JSON structural tokens": func(c *HTTPServerTransportConfig) {
 			c.MaxJSONStructuralTokens = 0
 		},
-		"nested response":       func(c *HTTPServerTransportConfig) { c.MaxNestedResponseBytes = 0 },
+		"nested response": func(c *HTTPServerTransportConfig) { c.MaxNestedResponseBytes = 0 },
+		"protected body": func(c *HTTPServerTransportConfig) {
+			c.MaxProtectedResponseBodyBytes = c.MaxNestedResponseBytes
+		},
+		"protected over body": func(c *HTTPServerTransportConfig) {
+			c.MaxProtectedResponseBodyBytes = c.MaxRequestBodyBytes + 1
+		},
 		"request ID":            func(c *HTTPServerTransportConfig) { c.MaxRequestIDBytes = 0 },
 		"negative body timeout": func(c *HTTPServerTransportConfig) { c.RequestBodyTimeout = -1 },
 		"messages":              func(c *HTTPServerTransportConfig) { c.MaxConcurrentMessages = 0 },
@@ -327,7 +349,7 @@ func TestHTTPServerTransportRejectsExcessJSONDepthBeforeDispatch(t *testing.T) {
 
 func TestHTTPServerTransportInitializationIsTransactional(t *testing.T) {
 	config := containmentHTTPConfig()
-	config.MaxRequestBodyBytes = 128
+	config.MaxInitializeRequestBodyBytes = 128
 	transport := newContainmentTransport(t, NewServer(), config)
 
 	for _, tc := range []struct {
@@ -354,6 +376,138 @@ func TestHTTPServerTransportInitializationIsTransactional(t *testing.T) {
 				t.Fatalf("failed initialize retained accounting: %+v", stats)
 			}
 		})
+	}
+}
+
+func TestInitializeDropsExperimentalCapabilitiesBeforeRetention(t *testing.T) {
+	server := NewServer()
+	raw, err := json.Marshal(InitializeParams{
+		ProtocolVersion: ProtocolVersion,
+		ClientInfo:      ImplementationInfo{Name: "bounded-client", Version: "1.2.3"},
+		Capabilities: ClientCapabilities{
+			Sampling: &ClientSamplingCapability{},
+			Experimental: map[string]map[string]any{
+				"large-extension": {"nested": strings.Repeat("x", 32<<10)},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, rpcErr := server.handleInitialize(raw); rpcErr != nil {
+		t.Fatalf("handleInitialize: %+v", rpcErr)
+	}
+	if experimental := server.ClientCapabilities().Experimental; experimental != nil {
+		t.Fatalf("experimental capabilities retained: %#v", experimental)
+	}
+	info := server.ClientInfo()
+	if info == nil || info.Name != "bounded-client" || info.Version != "1.2.3" {
+		t.Fatalf("bounded client info not retained correctly: %#v", info)
+	}
+}
+
+func TestInitializeRejectsOversizeRetainedIdentityFields(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		params InitializeParams
+	}{
+		{
+			name: "protocol version",
+			params: InitializeParams{
+				ProtocolVersion: strings.Repeat("v", maxInitializeProtocolVersionBytes+1),
+			},
+		},
+		{
+			name: "client name",
+			params: InitializeParams{
+				ClientInfo: ImplementationInfo{Name: strings.Repeat("n", maxInitializeClientInfoFieldBytes+1)},
+			},
+		},
+		{
+			name: "client version",
+			params: InitializeParams{
+				ClientInfo: ImplementationInfo{Version: strings.Repeat("v", maxInitializeClientInfoFieldBytes+1)},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := NewServer()
+			if _, rpcErr := server.handleInitialize(raw); rpcErr == nil || rpcErr.Code != jsonRPCCodeInvalidParams {
+				t.Fatalf("oversize initialize field error = %+v", rpcErr)
+			}
+			if server.ClientInfo() != nil {
+				t.Fatal("rejected initialize mutated retained client state")
+			}
+		})
+	}
+}
+
+func TestEightRetainedSessionsStayBoundedAtFullDecodeSaturation(t *testing.T) {
+	config := containmentHTTPConfig()
+	config.MaxSessions = 8
+	config.MaxSessionsPerPrincipal = 8
+	config.MaxSessionsPerQuotaKey = 8
+	config.MaxConcurrentMessages = 4
+	config.MaxConcurrentMessagesPerSession = 2
+	config.MaxRequestBodyBytes = 64 << 10
+	config.MaxInitializeRequestBodyBytes = 64 << 10
+	transport := newContainmentTransport(t, NewServer(), config)
+	srv := httptest.NewServer(transport)
+	t.Cleanup(srv.Close)
+
+	initializeBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{"experimental":{"large":{"payload":"` + strings.Repeat("x", 32<<10) + `"}}},"clientInfo":{"name":"bounded-client","version":"1"}}}`
+	sessions := make([]*httpServerSession, 0, config.MaxSessions)
+	for i := 0; i < config.MaxSessions; i++ {
+		response := doContainmentRequest(t, srv.Client(), srv.URL, http.MethodPost, "", nil, initializeBody)
+		io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("initialize %d status = %d", i, response.StatusCode)
+		}
+		session, ok := transport.getSession(response.Header.Get("Mcp-Session-Id"))
+		if !ok {
+			t.Fatalf("initialize %d did not retain session", i)
+		}
+		if session.server.ClientCapabilities().Experimental != nil {
+			t.Fatalf("initialize %d retained experimental graph", i)
+		}
+		sessions = append(sessions, session)
+	}
+
+	regular := make([]*httpDecodeLease, 0, config.MaxConcurrentMessages)
+	protected := make([]*httpDecodeLease, 0, config.MaxConcurrentMessages)
+	for i := 0; i < config.MaxConcurrentMessages; i++ {
+		request := httptest.NewRequest(http.MethodPost, "/", nil)
+		lease, err := transport.acquireDecode(sessions[i], "", httptest.NewRecorder(), request)
+		if err != nil || lease.protected {
+			t.Fatalf("regular decode %d = protected:%v err:%v", i, lease != nil && lease.protected, err)
+		}
+		regular = append(regular, lease)
+		sessions[i].server.mu.Lock()
+		sessions[i].server.pending[1] = make(chan *jsonRPCMessage, 1)
+		sessions[i].server.mu.Unlock()
+	}
+	for i := 0; i < config.MaxConcurrentMessages; i++ {
+		request := httptest.NewRequest(http.MethodPost, "/", nil)
+		lease, err := transport.acquireDecode(sessions[i], "", httptest.NewRecorder(), request)
+		if err != nil || !lease.protected {
+			t.Fatalf("protected decode %d = protected:%v err:%v", i, lease != nil && lease.protected, err)
+		}
+		protected = append(protected, lease)
+	}
+	stats := transport.Stats()
+	if stats.ActiveSessions != 8 || stats.InFlightDecodes != 4 || stats.InFlightProtectedDecodes != 4 {
+		t.Fatalf("combined retained/decode saturation = %+v", stats)
+	}
+	for _, lease := range protected {
+		lease.release()
+	}
+	for _, lease := range regular {
+		lease.release()
 	}
 }
 
@@ -387,6 +541,7 @@ func TestHTTPServerTransportIndexesProvisionalSessionsForPrincipalQuota(t *testi
 	config := containmentHTTPConfig()
 	config.MaxSessions = 2
 	config.MaxSessionsPerPrincipal = 1
+	config.MaxSessionsPerQuotaKey = 2
 	transport := newContainmentTransport(t, NewServer(), config)
 	transport.SetSessionPrincipalFunc(func(r *http.Request) (string, error) {
 		return r.Header.Get("X-Principal"), nil
@@ -415,10 +570,56 @@ func TestHTTPServerTransportIndexesProvisionalSessionsForPrincipalQuota(t *testi
 	}
 }
 
+func TestHTTPServerTransportAggregateQuotaDoesNotMergeAuthorizationPrincipals(t *testing.T) {
+	config := containmentHTTPConfig()
+	config.MaxSessions = 4
+	config.MaxSessionsPerPrincipal = 2
+	config.MaxSessionsPerQuotaKey = 2
+	transport := newContainmentTransport(t, NewServer(), config)
+	transport.SetSessionPrincipalFunc(func(r *http.Request) (string, error) {
+		return r.Header.Get("X-Principal"), nil
+	})
+	transport.SetSessionQuotaKeyFunc(func(r *http.Request) (string, error) {
+		return r.Header.Get("X-Quota-Key"), nil
+	})
+
+	request := func(principal, quota string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/", nil)
+		r.Header.Set("X-Principal", principal)
+		r.Header.Set("X-Quota-Key", quota)
+		return r
+	}
+	first, err := transport.newSession(request("token-a", "workspace-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := transport.newSession(request("token-b", "workspace-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.principal == second.principal || first.quotaKey != second.quotaKey {
+		t.Fatalf("authorization/quota identities collapsed: first=%q/%q second=%q/%q", first.principal, first.quotaKey, second.principal, second.quotaKey)
+	}
+	if _, err := transport.newSession(request("token-c", "workspace-a")); !errors.Is(err, errHTTPQuotaKeyLimit) {
+		t.Fatalf("third workspace-a session error = %v, want aggregate quota", err)
+	}
+	other, err := transport.newSession(request("token-d", "workspace-b"))
+	if err != nil {
+		t.Fatalf("workspace-a exhausted workspace-b capacity: %v", err)
+	}
+	first.close()
+	second.close()
+	other.close()
+	if len(transport.quotaSessions) != 0 {
+		t.Fatalf("closed sessions retained quota indexes: %#v", transport.quotaSessions)
+	}
+}
+
 func TestHTTPServerTransportGlobalSessionQuotaIncludesProvisionalSessions(t *testing.T) {
 	config := containmentHTTPConfig()
 	config.MaxSessions = 1
 	config.MaxSessionsPerPrincipal = 1
+	config.MaxSessionsPerQuotaKey = 1
 	transport := newContainmentTransport(t, NewServer(), config)
 	first, err := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil))
 	if err != nil {
@@ -1056,6 +1257,97 @@ func TestHTTPServerTransportRejectsOversizedNestedResponseAndReleasesCaller(t *t
 	response.Body.Close()
 	if response.StatusCode != http.StatusAccepted {
 		t.Fatalf("valid retry status = %d, want %d", response.StatusCode, http.StatusAccepted)
+	}
+}
+
+func TestHTTPServerTransportProtectedBodyCeilingCancelsPendingSession(t *testing.T) {
+	config := containmentHTTPConfig()
+	config.MaxNestedResponseBytes = 64
+	config.MaxProtectedResponseBodyBytes = 128
+	transport := newContainmentTransport(t, NewServer(), config)
+	session, err := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil))
+	if err != nil || !transport.activateSession(session) {
+		t.Fatalf("activate session: %v", err)
+	}
+	pending := make(chan *jsonRPCMessage, 1)
+	session.server.mu.Lock()
+	session.server.pending[1] = pending
+	session.server.mu.Unlock()
+	// Force this matched response through the protected reserve rather than an
+	// available ordinary decode lane.
+	transport.mu.Lock()
+	transport.decodeInFlight = config.MaxConcurrentMessages
+	transport.mu.Unlock()
+
+	body := `{"jsonrpc":"2.0","id":1,"result":{"padding":"` + strings.Repeat("x", 256) + `"}}`
+	request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	request.Header.Set("Mcp-Session-Id", session.id)
+	recorder := httptest.NewRecorder()
+	transport.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("protected oversize status = %d, want 413", recorder.Code)
+	}
+	select {
+	case _, ok := <-pending:
+		if ok {
+			t.Fatal("oversize protected body delivered a response")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("oversize protected body stranded pending caller")
+	}
+	if _, ok := transport.getSession(session.id); ok {
+		t.Fatal("uncorrelatable oversize protected body retained session")
+	}
+	transport.mu.Lock()
+	transport.decodeInFlight = 0
+	transport.mu.Unlock()
+	if stats := transport.Stats(); stats.RejectedNestedResponses != 1 || stats.InFlightProtectedDecodes != 0 {
+		t.Fatalf("protected body rejection stats = %+v", stats)
+	}
+}
+
+func TestHTTPServerTransportProtectedDecodeCancellationCancelsPendingSession(t *testing.T) {
+	config := containmentHTTPConfig()
+	transport := newContainmentTransport(t, NewServer(), config)
+	session, err := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil))
+	if err != nil || !transport.activateSession(session) {
+		t.Fatalf("activate session: %v", err)
+	}
+	pending := make(chan *jsonRPCMessage, 1)
+	session.server.mu.Lock()
+	session.server.pending[1] = pending
+	session.server.mu.Unlock()
+	// Occupy the ordinary lanes so the pending response receives the protected
+	// reserve, then cancel in the post-decode admission window represented by
+	// releaseDecodedMessage.
+	transport.mu.Lock()
+	transport.decodeInFlight = config.MaxConcurrentMessages
+	transport.mu.Unlock()
+	request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	lease, err := transport.acquireDecode(session, "", httptest.NewRecorder(), request)
+	if err != nil || !lease.protected {
+		t.Fatalf("protected decode lease = protected:%v err:%v", lease != nil && lease.protected, err)
+	}
+	lease.cancel()
+	if err := transport.releaseDecodedMessage(session, lease); !errors.Is(err, context.Canceled) {
+		t.Fatalf("release decoded message error = %v, want context cancellation", err)
+	}
+	select {
+	case _, ok := <-pending:
+		if ok {
+			t.Fatal("canceled protected decode delivered a response")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled protected decode stranded pending caller")
+	}
+	if _, ok := transport.getSession(session.id); ok {
+		t.Fatal("canceled protected decode retained session")
+	}
+	transport.mu.Lock()
+	transport.decodeInFlight = 0
+	transport.mu.Unlock()
+	if stats := transport.Stats(); stats.RejectedNestedResponses != 1 || stats.InFlightProtectedDecodes != 0 {
+		t.Fatalf("protected cancellation stats = %+v", stats)
 	}
 }
 
@@ -2208,6 +2500,7 @@ func TestHTTPServerTransportGlobalSSELimitAndStats(t *testing.T) {
 	config.MaxConcurrentMessagesPerSession = 2
 	config.MaxSessions = 4
 	config.MaxSessionsPerPrincipal = 2
+	config.MaxSessionsPerQuotaKey = 4
 	transport := newContainmentTransport(t, NewServer(), config)
 	srv := httptest.NewServer(transport)
 	t.Cleanup(srv.Close)
@@ -2367,6 +2660,7 @@ func TestHTTPServerTransportReapsExpiredSessionsAtExactCapacity(t *testing.T) {
 		config := containmentHTTPConfig()
 		config.MaxSessions = 1
 		config.MaxSessionsPerPrincipal = 1
+		config.MaxSessionsPerQuotaKey = 1
 		transport := newContainmentTransport(t, NewServer(), config)
 		old, err := transport.newSession(httptest.NewRequest(http.MethodPost, "/", nil))
 		if err != nil || !transport.activateSession(old) {
@@ -2393,6 +2687,7 @@ func TestHTTPServerTransportReapsExpiredSessionsAtExactCapacity(t *testing.T) {
 		config := containmentHTTPConfig()
 		config.MaxSessions = 3
 		config.MaxSessionsPerPrincipal = 1
+		config.MaxSessionsPerQuotaKey = 3
 		transport := newContainmentTransport(t, NewServer(), config)
 		transport.SetSessionPrincipalFunc(func(r *http.Request) (string, error) { return r.Header.Get("X-Principal"), nil })
 		request := func(principal string) *http.Request {

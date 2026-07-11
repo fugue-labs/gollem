@@ -26,6 +26,7 @@ var (
 	errHTTPTransportClosed  = errors.New("mcp: HTTP server transport is closed")
 	errHTTPSessionLimit     = errors.New("mcp: HTTP session capacity exhausted")
 	errHTTPPrincipalLimit   = errors.New("mcp: HTTP principal session capacity exhausted")
+	errHTTPQuotaKeyLimit    = errors.New("mcp: HTTP aggregate session quota exhausted")
 	errHTTPSessionInactive  = errors.New("mcp: HTTP session is not active")
 	errHTTPMessageLimit     = errors.New("mcp: HTTP message concurrency exhausted")
 	errHTTPSSEAlreadyOpen   = errors.New("mcp: HTTP session already has an SSE stream")
@@ -57,6 +58,12 @@ type HTTPSessionAuthorizer func(sessionCtx context.Context, r *http.Request) (bo
 // credentials are not.
 type HTTPSessionPrincipalFunc func(r *http.Request) (string, error)
 
+// HTTPSessionQuotaKeyFunc extracts a stable non-secret aggregate quota key
+// independently of the immutable authorization principal. Multi-key tenants
+// can therefore share a workspace session cap without allowing one credential
+// to authorize, validate, or revoke another credential's session.
+type HTTPSessionQuotaKeyFunc func(r *http.Request) (string, error)
+
 // HTTPSessionPrincipalValidator reports whether a previously captured
 // principal remains valid. It is called on follow-up requests and by the
 // expiration sweeper. Sweep cadence is IdleTimeout/2, clamped to 10ms..1m.
@@ -83,10 +90,14 @@ type HTTPServerTransport struct {
 	// principalSessions includes both provisional and active sessions so a
 	// burst of slow initializations cannot bypass per-principal admission.
 	principalSessions map[string]map[string]*httpServerSession
+	// quotaSessions provides a second aggregate cap (for example, workspace)
+	// while principalSessions remains token-specific for authorization/revocation.
+	quotaSessions map[string]map[string]*httpServerSession
 
 	sessionCtx         func(*http.Request) context.Context
 	sessionAuth        HTTPSessionAuthorizer
 	principalFunc      HTTPSessionPrincipalFunc
+	quotaKeyFunc       HTTPSessionQuotaKeyFunc
 	principalValidator HTTPSessionPrincipalValidator
 	requestCtx         HTTPSessionRequestContextFunc
 
@@ -147,6 +158,14 @@ func (t *HTTPServerTransport) SetSessionPrincipalFunc(f HTTPSessionPrincipalFunc
 	t.principalFunc = f
 }
 
+// SetSessionQuotaKeyFunc installs the aggregate quota-key extractor. Configure
+// it before accepting requests; existing session quota ownership is immutable.
+func (t *HTTPServerTransport) SetSessionQuotaKeyFunc(f HTTPSessionQuotaKeyFunc) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.quotaKeyFunc = f
+}
+
 // SetSessionPrincipalValidator installs a current-state validator used on
 // follow-up requests and during each expiration sweep.
 func (t *HTTPServerTransport) SetSessionPrincipalValidator(f HTTPSessionPrincipalValidator) {
@@ -184,6 +203,7 @@ type httpServerSession struct {
 
 	id             string
 	principal      string
+	quotaKey       string
 	principalBound bool
 	transport      *HTTPServerTransport
 	server         *Server
@@ -261,6 +281,7 @@ func newHTTPServerTransportWithConfig(server *Server, config HTTPServerTransport
 		config:                  config,
 		sessions:                make(map[string]*httpServerSession),
 		principalSessions:       make(map[string]map[string]*httpServerSession),
+		quotaSessions:           make(map[string]map[string]*httpServerSession),
 		sessionIDEntropy:        entropy,
 		sweepStop:               make(chan struct{}),
 		sweepDone:               make(chan struct{}),
@@ -559,7 +580,7 @@ func (t *HTTPServerTransport) handlePost(w http.ResponseWriter, r *http.Request)
 	}()
 
 	if sessionID == "" {
-		msg, ok := t.decodeOneMessage(w, r, decodeLease.ctx)
+		msg, ok := t.decodeOneMessage(w, r, decodeLease.ctx, t.config.MaxInitializeRequestBodyBytes)
 		if !ok {
 			return
 		}
@@ -580,11 +601,16 @@ func (t *HTTPServerTransport) handlePost(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	msg, ok := t.decodeOneMessage(w, r, decodeLease.ctx)
+	bodyLimit := t.config.MaxRequestBodyBytes
+	if decodeLease.protected {
+		bodyLimit = t.config.MaxProtectedResponseBodyBytes
+	}
+	msg, ok := t.decodeOneMessage(w, r, decodeLease.ctx, bodyLimit)
 	if !ok {
+		t.closeAfterProtectedDecodeFailure(session, decodeLease)
 		return
 	}
-	decodeErr := decodeLease.release()
+	decodeErr := t.releaseDecodedMessage(session, decodeLease)
 	releaseDecodeHere = false
 	if decodeErr != nil {
 		t.writeDecodeError(w, decodeErr, decodeLease.ctx)
@@ -770,6 +796,32 @@ func (t *HTTPServerTransport) handleInitialize(w http.ResponseWriter, r *http.Re
 	rollback = false
 }
 
+// releaseDecodedMessage closes a protected session whenever the decode lease
+// was canceled after JSON parsing succeeded but before the decoded message
+// could be admitted. Protected lanes exist only to release server-initiated
+// calls; returning without closing would strand an uncorrelatable pending call
+// until its outer timeout. Ordinary decode cancellation remains request-local.
+func (t *HTTPServerTransport) releaseDecodedMessage(session *httpServerSession, lease *httpDecodeLease) error {
+	err := lease.release()
+	if err != nil {
+		t.closeAfterProtectedDecodeFailure(session, lease)
+	}
+	return err
+}
+
+func (t *HTTPServerTransport) closeAfterProtectedDecodeFailure(session *httpServerSession, lease *httpDecodeLease) {
+	if lease == nil || !lease.protected {
+		return
+	}
+	// The body could not be safely correlated with a pending ID. Close the
+	// session and cancel every pending caller instead of retaining ambiguous
+	// control state.
+	t.mu.Lock()
+	t.stats.RejectedNestedResponses++
+	t.mu.Unlock()
+	t.closeExpectedSession(session, false)
+}
+
 func (t *HTTPServerTransport) handleDelete(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.Header.Get("Mcp-Session-Id")
 	if sessionID == "" {
@@ -788,8 +840,8 @@ func (t *HTTPServerTransport) handleDelete(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (t *HTTPServerTransport) decodeOneMessage(w http.ResponseWriter, r *http.Request, decodeCtx context.Context) (*jsonRPCMessage, bool) {
-	reader := http.MaxBytesReader(w, r.Body, t.config.MaxRequestBodyBytes)
+func (t *HTTPServerTransport) decodeOneMessage(w http.ResponseWriter, r *http.Request, decodeCtx context.Context, maxBodyBytes int64) (*jsonRPCMessage, bool) {
+	reader := http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	boundedJSON := newJSONComplexityReader(reader, t.config.MaxJSONDepth, t.config.MaxJSONStructuralTokens)
 	decoder := json.NewDecoder(boundedJSON)
 	var msg jsonRPCMessage
@@ -851,7 +903,7 @@ func (t *HTTPServerTransport) writeDecodeError(w http.ResponseWriter, err error,
 
 func (t *HTTPServerTransport) writeSessionCreationError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, errHTTPSessionLimit), errors.Is(err, errHTTPPrincipalLimit):
+	case errors.Is(err, errHTTPSessionLimit), errors.Is(err, errHTTPPrincipalLimit), errors.Is(err, errHTTPQuotaKeyLimit):
 		t.setRetryAfter(w)
 		http.Error(w, "session capacity exhausted", http.StatusTooManyRequests)
 	case errors.Is(err, errHTTPTransportClosed):
@@ -902,8 +954,9 @@ func (t *HTTPServerTransport) newSessionWithPrincipal(r *http.Request, principal
 	t.mu.Lock()
 	hook := t.sessionCtx
 	principalFunc := t.principalFunc
-	expired := t.reapExpiredAtCapacityLocked("", time.Now())
-	capacityErr := t.checkSessionCapacityLocked("")
+	quotaKeyFunc := t.quotaKeyFunc
+	expired := t.reapExpiredAtCapacityLocked("", "", time.Now())
+	capacityErr := t.checkSessionCapacityLocked("", "")
 	if capacityErr != nil {
 		t.stats.RejectedSessionCreations++
 	}
@@ -931,6 +984,19 @@ func (t *HTTPServerTransport) newSessionWithPrincipal(r *http.Request, principal
 			return nil, fmt.Errorf("mcp: deriving HTTP session principal: %w", err)
 		}
 	}
+	quotaKey := ""
+	if quotaKeyFunc != nil {
+		var err error
+		quotaKey, err = quotaKeyFunc(r)
+		if err != nil {
+			t.recordRejectedSessionCreation()
+			return nil, fmt.Errorf("mcp: deriving HTTP session quota key: %w", err)
+		}
+		if quotaKey == "" {
+			t.recordRejectedSessionCreation()
+			return nil, fmt.Errorf("mcp: deriving HTTP session quota key: empty key")
+		}
+	}
 
 	for attempt := 0; attempt < httpSessionCollisionRetries; attempt++ {
 		sessionID, err := t.generateHTTPSessionID()
@@ -940,8 +1006,8 @@ func (t *HTTPServerTransport) newSessionWithPrincipal(r *http.Request, principal
 		}
 
 		t.mu.Lock()
-		expired = t.reapExpiredAtCapacityLocked(principal, time.Now())
-		capacityErr = t.checkSessionCapacityLocked(principal)
+		expired = t.reapExpiredAtCapacityLocked(principal, quotaKey, time.Now())
+		capacityErr = t.checkSessionCapacityLocked(principal, quotaKey)
 		if capacityErr != nil {
 			t.stats.RejectedSessionCreations++
 			t.mu.Unlock()
@@ -960,6 +1026,7 @@ func (t *HTTPServerTransport) newSessionWithPrincipal(r *http.Request, principal
 		session := &httpServerSession{
 			id:             sessionID,
 			principal:      principal,
+			quotaKey:       quotaKey,
 			principalBound: principalBound,
 			transport:      t,
 			server:         server,
@@ -984,6 +1051,14 @@ func (t *HTTPServerTransport) newSessionWithPrincipal(r *http.Request, principal
 			}
 			byPrincipal[sessionID] = session
 		}
+		if quotaKey != "" {
+			byQuota := t.quotaSessions[quotaKey]
+			if byQuota == nil {
+				byQuota = make(map[string]*httpServerSession)
+				t.quotaSessions[quotaKey] = byQuota
+			}
+			byQuota[sessionID] = session
+		}
 		t.stats.ProvisionalSessions++
 		t.mu.Unlock()
 		shutdownHTTPSessions(expired)
@@ -994,10 +1069,11 @@ func (t *HTTPServerTransport) newSessionWithPrincipal(r *http.Request, principal
 	return nil, fmt.Errorf("mcp: exhausted %d HTTP session ID collision attempts", httpSessionCollisionRetries)
 }
 
-func (t *HTTPServerTransport) reapExpiredAtCapacityLocked(principal string, now time.Time) []*httpServerSession {
+func (t *HTTPServerTransport) reapExpiredAtCapacityLocked(principal, quotaKey string, now time.Time) []*httpServerSession {
 	globalFull := len(t.sessions) >= t.config.MaxSessions
 	principalFull := principal != "" && len(t.principalSessions[principal]) >= t.config.MaxSessionsPerPrincipal
-	if !globalFull && !principalFull {
+	quotaFull := quotaKey != "" && len(t.quotaSessions[quotaKey]) >= t.config.MaxSessionsPerQuotaKey
+	if !globalFull && !principalFull && !quotaFull {
 		return nil
 	}
 	return t.reapExpiredSessionsLocked(now)
@@ -1024,7 +1100,7 @@ func shutdownHTTPSessions(sessions []*httpServerSession) {
 	}
 }
 
-func (t *HTTPServerTransport) checkSessionCapacityLocked(principal string) error {
+func (t *HTTPServerTransport) checkSessionCapacityLocked(principal, quotaKey string) error {
 	if t.closed {
 		return errHTTPTransportClosed
 	}
@@ -1033,6 +1109,9 @@ func (t *HTTPServerTransport) checkSessionCapacityLocked(principal string) error
 	}
 	if principal != "" && len(t.principalSessions[principal]) >= t.config.MaxSessionsPerPrincipal {
 		return errHTTPPrincipalLimit
+	}
+	if quotaKey != "" && len(t.quotaSessions[quotaKey]) >= t.config.MaxSessionsPerQuotaKey {
+		return errHTTPQuotaKeyLimit
 	}
 	return nil
 }
@@ -1796,6 +1875,14 @@ func (t *HTTPServerTransport) detachSessionLocked(session *httpServerSession) bo
 			delete(indexed, session.id)
 			if len(indexed) == 0 {
 				delete(t.principalSessions, session.principal)
+			}
+		}
+	}
+	if session.quotaKey != "" {
+		if indexed := t.quotaSessions[session.quotaKey]; indexed != nil {
+			delete(indexed, session.id)
+			if len(indexed) == 0 {
+				delete(t.quotaSessions, session.quotaKey)
 			}
 		}
 	}

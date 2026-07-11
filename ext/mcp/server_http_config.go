@@ -8,7 +8,9 @@ import (
 const (
 	defaultHTTPMaxSessions                   = 1024
 	defaultHTTPMaxSessionsPerPrincipal       = 64
+	defaultHTTPMaxSessionsPerQuotaKey        = 64
 	defaultHTTPMaxRequestBodyBytes     int64 = 8 << 20
+	defaultHTTPMaxInitializeBodyBytes  int64 = 64 << 10
 	// A byte limit alone does not bound encoding/json's heap use: a compact
 	// array of empty objects can expand into hundreds of thousands of Go maps.
 	// These limits cap that structural multiplier before nested MCP params are
@@ -18,6 +20,7 @@ const (
 	defaultHTTPMaxJSONDepth                   = 64
 	defaultHTTPMaxJSONStructuralTokens        = 65_536
 	defaultHTTPMaxNestedResponseBytes   int64 = 4 << 20
+	defaultHTTPMaxProtectedBodyBytes    int64 = defaultHTTPMaxNestedResponseBytes + 64<<10
 	defaultHTTPMaxRequestIDBytes              = 128
 	defaultHTTPMaxConcurrentMessages          = 256
 	defaultHTTPMaxConcurrentPerSession        = 4
@@ -29,7 +32,14 @@ const (
 
 // HTTPServerTransportConfig contains the hard resource limits for a
 // streamable HTTP MCP transport. Capacity/size limits are mandatory and
-// positive. MaxJSONDepth and MaxJSONStructuralTokens bound the decoded object
+// positive. MaxInitializeRequestBodyBytes applies to sessionless POSTs, which
+// can only be initialize, and may not exceed MaxRequestBodyBytes. Keeping it
+// small bounds both transient initialize decoding and the client capability
+// state that can become session-resident. MaxProtectedResponseBodyBytes is the
+// full HTTP ceiling for a matched nested response admitted through the
+// protected decode lane. It may not exceed the ordinary body limit and must
+// leave framing headroom above MaxNestedResponseBytes. MaxJSONDepth and
+// MaxJSONStructuralTokens bound the decoded object
 // graph independently of request bytes; structural tokens include containers,
 // object keys, and scalar values. MaxNestedResponseBytes separately bounds the
 // result/error payload of sampling, elicitation, and other server-initiated
@@ -44,12 +54,15 @@ const (
 type HTTPServerTransportConfig struct {
 	MaxSessions                     int
 	MaxSessionsPerPrincipal         int
+	MaxSessionsPerQuotaKey          int
 	IdleTimeout                     time.Duration
 	AbsoluteLifetime                time.Duration
 	MaxRequestBodyBytes             int64
+	MaxInitializeRequestBodyBytes   int64
 	MaxJSONDepth                    int
 	MaxJSONStructuralTokens         int
 	MaxNestedResponseBytes          int64
+	MaxProtectedResponseBodyBytes   int64
 	MaxRequestIDBytes               int
 	RequestBodyTimeout              time.Duration
 	MaxConcurrentMessages           int
@@ -65,12 +78,15 @@ func DefaultHTTPServerTransportConfig() HTTPServerTransportConfig {
 	return HTTPServerTransportConfig{
 		MaxSessions:                     defaultHTTPMaxSessions,
 		MaxSessionsPerPrincipal:         defaultHTTPMaxSessionsPerPrincipal,
+		MaxSessionsPerQuotaKey:          defaultHTTPMaxSessionsPerQuotaKey,
 		IdleTimeout:                     30 * time.Minute,
 		AbsoluteLifetime:                24 * time.Hour,
 		MaxRequestBodyBytes:             defaultHTTPMaxRequestBodyBytes,
+		MaxInitializeRequestBodyBytes:   defaultHTTPMaxInitializeBodyBytes,
 		MaxJSONDepth:                    defaultHTTPMaxJSONDepth,
 		MaxJSONStructuralTokens:         defaultHTTPMaxJSONStructuralTokens,
 		MaxNestedResponseBytes:          defaultHTTPMaxNestedResponseBytes,
+		MaxProtectedResponseBodyBytes:   defaultHTTPMaxProtectedBodyBytes,
 		MaxRequestIDBytes:               defaultHTTPMaxRequestIDBytes,
 		RequestBodyTimeout:              defaultHTTPRequestBodyTimeout,
 		MaxConcurrentMessages:           defaultHTTPMaxConcurrentMessages,
@@ -90,6 +106,10 @@ func (c HTTPServerTransportConfig) validate() error {
 		return fmt.Errorf("mcp: HTTP transport MaxSessionsPerPrincipal must be positive")
 	case c.MaxSessionsPerPrincipal > c.MaxSessions:
 		return fmt.Errorf("mcp: HTTP transport MaxSessionsPerPrincipal cannot exceed MaxSessions")
+	case c.MaxSessionsPerQuotaKey <= 0:
+		return fmt.Errorf("mcp: HTTP transport MaxSessionsPerQuotaKey must be positive")
+	case c.MaxSessionsPerQuotaKey > c.MaxSessions:
+		return fmt.Errorf("mcp: HTTP transport MaxSessionsPerQuotaKey cannot exceed MaxSessions")
 	case c.IdleTimeout <= 0:
 		return fmt.Errorf("mcp: HTTP transport IdleTimeout must be positive")
 	case c.AbsoluteLifetime <= 0:
@@ -98,12 +118,20 @@ func (c HTTPServerTransportConfig) validate() error {
 		return fmt.Errorf("mcp: HTTP transport IdleTimeout cannot exceed AbsoluteLifetime")
 	case c.MaxRequestBodyBytes <= 0:
 		return fmt.Errorf("mcp: HTTP transport MaxRequestBodyBytes must be positive")
+	case c.MaxInitializeRequestBodyBytes <= 0:
+		return fmt.Errorf("mcp: HTTP transport MaxInitializeRequestBodyBytes must be positive")
+	case c.MaxInitializeRequestBodyBytes > c.MaxRequestBodyBytes:
+		return fmt.Errorf("mcp: HTTP transport MaxInitializeRequestBodyBytes cannot exceed MaxRequestBodyBytes")
 	case c.MaxJSONDepth <= 0:
 		return fmt.Errorf("mcp: HTTP transport MaxJSONDepth must be positive")
 	case c.MaxJSONStructuralTokens <= 0:
 		return fmt.Errorf("mcp: HTTP transport MaxJSONStructuralTokens must be positive")
 	case c.MaxNestedResponseBytes <= 0:
 		return fmt.Errorf("mcp: HTTP transport MaxNestedResponseBytes must be positive")
+	case c.MaxProtectedResponseBodyBytes <= c.MaxNestedResponseBytes:
+		return fmt.Errorf("mcp: HTTP transport MaxProtectedResponseBodyBytes must exceed MaxNestedResponseBytes for JSON-RPC framing")
+	case c.MaxProtectedResponseBodyBytes > c.MaxRequestBodyBytes:
+		return fmt.Errorf("mcp: HTTP transport MaxProtectedResponseBodyBytes cannot exceed MaxRequestBodyBytes")
 	case c.MaxRequestIDBytes <= 0:
 		return fmt.Errorf("mcp: HTTP transport MaxRequestIDBytes must be positive")
 	case c.RequestBodyTimeout < 0:
