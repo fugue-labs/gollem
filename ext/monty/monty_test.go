@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	montygo "github.com/fugue-labs/monty-go"
@@ -12,15 +14,45 @@ import (
 	"github.com/fugue-labs/gollem/core"
 )
 
-// newRunner creates a monty-go Runner for tests.
+var (
+	sharedRunnerOnce sync.Once
+	sharedRunner     *montygo.Runner
+	sharedRunnerErr  error
+)
+
+// newRunner reuses one compiled Monty WASM runtime across the package's
+// tests. Runner.Execute still instantiates a fresh isolated WASM module for
+// every execution.
 func newRunner(t *testing.T) *montygo.Runner {
 	t.Helper()
-	runner, err := montygo.New()
-	if err != nil {
-		t.Fatal(err)
+	sharedRunnerOnce.Do(func() {
+		sharedRunner, sharedRunnerErr = montygo.New()
+	})
+	if sharedRunnerErr != nil {
+		t.Fatal(sharedRunnerErr)
 	}
-	t.Cleanup(func() { runner.Close() })
-	return runner
+	return sharedRunner
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if sharedRunner != nil {
+		if err := sharedRunner.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "close shared Monty test runner: %v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}
+	os.Exit(code)
+}
+
+func TestNewRunnerReusesCompiledSandbox(t *testing.T) {
+	first := newRunner(t)
+	second := newRunner(t)
+	if first != second {
+		t.Fatal("newRunner compiled a second Monty sandbox")
+	}
 }
 
 type searchParams struct {
