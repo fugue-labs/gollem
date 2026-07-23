@@ -227,10 +227,14 @@ func (p *Provider) requestStreamViaResponses(ctx context.Context, messages []cor
 		if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
 			return nil, fmt.Errorf("openai: failed to decode responses API response: %w", err)
 		}
-		return newPrebuiltResponsesStream(parseResponsesResponse(&apiResp, p.model)), nil
+		bound, bindErr := p.parseBoundResponsesResponse(&apiResp)
+		if bindErr != nil {
+			return nil, bindErr
+		}
+		return newPrebuiltResponsesStream(bound), nil
 	}
 
-	return newResponsesStreamedResponse(resp.Body, p.model), nil
+	return newBoundResponsesStreamedResponse(resp.Body, p.model, p.resolveResponseModel), nil
 }
 
 // applyChatGPTRequirements modifies a request for the ChatGPT backend:
@@ -382,7 +386,7 @@ func (p *Provider) requestViaResponsesHTTP(ctx context.Context, req *responsesRe
 		return nil, fmt.Errorf("openai: failed to decode responses API response: %w", err)
 	}
 
-	return parseResponsesResponse(&apiResp, p.model), nil
+	return p.parseBoundResponsesResponse(&apiResp)
 }
 
 // parseSSEResponses reads an SSE stream and returns the final response.
@@ -448,7 +452,7 @@ func (p *Provider) parseSSEResponses(resp *http.Response) (*core.ModelResponse, 
 	if len(finalResp.Output) == 0 && len(streamedItems) > 0 {
 		finalResp.Output = streamedItems
 	}
-	return parseResponsesResponse(finalResp, p.model), nil
+	return p.parseBoundResponsesResponse(finalResp)
 }
 
 func buildResponsesRequest(messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters, model string, defaultMaxTokens int, disableToolSearch bool) (*responsesRequest, error) {

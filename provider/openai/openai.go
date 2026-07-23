@@ -84,7 +84,9 @@ type Provider struct {
 	wsHTTPFallbackSet       bool
 	useResponses            bool
 	disableToolSearch       bool
+	strictModelBinding      bool
 	wsConn                  *responsesWebSocketConn
+	wsAuthToken             string
 	wsPrevResponseID        string
 	wsLastInputSigs         []string
 	wsMu                    sync.Mutex
@@ -224,6 +226,16 @@ func WithChatGPTAuth(accessToken, accountID string) Option {
 func WithTokenRefresher(refresher TokenRefresher) Option {
 	return func(p *Provider) {
 		p.tokenRefresher = refresher
+	}
+}
+
+// WithStrictModelBinding requires every successful response to identify the
+// requested model (or a dated/tagged snapshot of that exact model family).
+// Missing or conflicting provider model identity fails the request. This is
+// intended for provenance-sensitive source-bearing workloads.
+func WithStrictModelBinding() Option {
+	return func(p *Provider) {
+		p.strictModelBinding = true
 	}
 }
 
@@ -409,6 +421,7 @@ func (p *Provider) NewSession() core.Model {
 		wsHTTPFallbackSet:       p.wsHTTPFallbackSet,
 		useResponses:            p.useResponses,
 		disableToolSearch:       p.disableToolSearch,
+		strictModelBinding:      p.strictModelBinding,
 		reasoningSummary:        p.reasoningSummary,
 		textVerbosity:           p.textVerbosity,
 		chatgptAccountID:        p.chatgptAccountID,
@@ -424,12 +437,14 @@ func (p *Provider) Close() error {
 	defer p.wsMu.Unlock()
 	if p.wsConn == nil || p.wsConn.conn == nil {
 		p.wsConn = nil
+		p.wsAuthToken = ""
 		p.wsPrevResponseID = ""
 		p.wsLastInputSigs = nil
 		return nil
 	}
 	err := p.wsConn.conn.Close()
 	p.wsConn = nil
+	p.wsAuthToken = ""
 	p.wsPrevResponseID = ""
 	p.wsLastInputSigs = nil
 	return err
@@ -474,8 +489,11 @@ func (p *Provider) Request(ctx context.Context, messages []core.ModelMessage, se
 	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
 		return nil, fmt.Errorf("openai: failed to decode response: %w", err)
 	}
-
-	return parseResponse(&apiResp, p.model), nil
+	responseModel, err := p.resolveResponseModel(apiResp.Model)
+	if err != nil {
+		return nil, err
+	}
+	return parseResponse(&apiResp, responseModel), nil
 }
 
 // RequestStream sends messages and returns a streaming response.
@@ -506,7 +524,7 @@ func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessa
 		return nil, err
 	}
 
-	return newStreamedResponse(resp.Body, p.model), nil
+	return newBoundStreamedResponse(resp.Body, p.model, p.resolveResponseModel), nil
 }
 
 // responsesEP returns the Responses API endpoint path. ChatGPT subscription
@@ -527,7 +545,9 @@ func (p *Provider) doRequest(ctx context.Context, endpoint string, body []byte) 
 	if err != nil {
 		return nil, fmt.Errorf("openai: failed to create HTTP request: %w", err)
 	}
-	p.setHeaders(httpReq)
+	if err := p.setHeaders(httpReq); err != nil {
+		return nil, err
+	}
 
 	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
@@ -561,16 +581,80 @@ func (p *Provider) doRequest(ctx context.Context, endpoint string, body []byte) 
 	return nil, httpErr
 }
 
-func (p *Provider) setHeaders(req *http.Request) {
-	token := p.apiKey
-	if p.tokenRefresher != nil {
-		// On error, fall back to the current apiKey. The caller's refresher
-		// is expected to handle transient failures (e.g., return the existing
-		// token). We intentionally do not propagate errors here because
-		// setHeaders is called from many paths that cannot return errors.
-		if refreshed, err := p.tokenRefresher(); err == nil && refreshed != "" {
-			token = refreshed
+func (p *Provider) authorizationToken() (string, error) {
+	if p.tokenRefresher == nil {
+		return p.apiKey, nil
+	}
+	token, err := p.tokenRefresher()
+	if err != nil {
+		return "", fmt.Errorf("openai: refreshing access token: %w", err)
+	}
+	if strings.TrimSpace(token) == "" {
+		return "", errors.New("openai: refreshing access token: empty token")
+	}
+	return token, nil
+}
+
+// ModelIdentityError means the provider answered with a model identity that
+// cannot be bound to the requested route.
+type ModelIdentityError struct {
+	Requested string
+	Actual    string
+}
+
+func (e *ModelIdentityError) Error() string {
+	if strings.TrimSpace(e.Actual) == "" {
+		return fmt.Sprintf("openai: response omitted model identity for requested model %q", e.Requested)
+	}
+	return fmt.Sprintf("openai: response model identity %q does not match requested model %q", e.Actual, e.Requested)
+}
+
+func compatibleResponseModel(requested, actual string) bool {
+	requested = strings.TrimSpace(requested)
+	actual = strings.TrimSpace(actual)
+	if requested == "" || actual == "" {
+		return false
+	}
+	if actual == requested {
+		return true
+	}
+	// OpenAI aliases commonly resolve to dated snapshots (model-YYYY-MM-DD).
+	// OpenAI-compatible local runtimes commonly report an explicit tag
+	// (model:latest). Neither rule admits a different model family.
+	if snapshot, ok := strings.CutPrefix(actual, requested+"-"); ok {
+		if _, err := time.Parse("2006-01-02", snapshot); err == nil {
+			return true
 		}
+	}
+	if tag, ok := strings.CutPrefix(actual, requested+":"); ok {
+		return tag != "" && !strings.ContainsAny(tag, " \t\r\n")
+	}
+	return false
+}
+
+func (p *Provider) resolveResponseModel(actual string) (string, error) {
+	actual = strings.TrimSpace(actual)
+	if p.strictModelBinding && !compatibleResponseModel(p.model, actual) {
+		return "", &ModelIdentityError{Requested: p.model, Actual: actual}
+	}
+	if actual != "" {
+		return actual, nil
+	}
+	return p.model, nil
+}
+
+func (p *Provider) parseBoundResponsesResponse(resp *responsesAPIResponse) (*core.ModelResponse, error) {
+	responseModel, err := p.resolveResponseModel(resp.Model)
+	if err != nil {
+		return nil, err
+	}
+	return parseResponsesResponse(resp, responseModel), nil
+}
+
+func (p *Provider) setHeaders(req *http.Request) error {
+	token, err := p.authorizationToken()
+	if err != nil {
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -586,6 +670,7 @@ func (p *Provider) setHeaders(req *http.Request) {
 			req.Header.Set(chatgptResponsesLiteHdr, "true")
 		}
 	}
+	return nil
 }
 
 func (p *Provider) shouldUseResponsesAPI() bool {

@@ -290,6 +290,126 @@ func TestRequestViaResponsesWebSocketAcceptsResponseCompletedEvent(t *testing.T)
 	}
 }
 
+func TestResponsesWebSocketReconnectsWhenTokenRotates(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		authHeaders []string
+		token       = "token-1"
+	)
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(*http.Request) bool { return true },
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("websocket upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		mu.Lock()
+		authHeaders = append(authHeaders, r.Header.Get("Authorization"))
+		mu.Unlock()
+
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+			if err := conn.WriteJSON(responsesWSEvent{
+				Type: "response.completed",
+				Response: &responsesAPIResponse{
+					ID:    "response",
+					Model: "gpt-5.3-codex",
+					Output: []responsesOutputItem{{
+						Type:    "message",
+						Content: []responsesContentItem{{Type: "output_text", Text: "ok"}},
+					}},
+				},
+			}); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	p := New(
+		WithChatGPTAuth("initial", "acct"),
+		WithBaseURL(server.URL),
+		WithTransport(transportWebSocket),
+		WithTokenRefresher(func() (string, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return token, nil
+		}),
+	)
+	messages := []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "hi"}}},
+	}
+	if _, err := p.Request(context.Background(), messages, nil, nil); err != nil {
+		t.Fatalf("first Request: %v", err)
+	}
+	mu.Lock()
+	token = "token-2"
+	mu.Unlock()
+	if _, err := p.Request(context.Background(), messages, nil, nil); err != nil {
+		t.Fatalf("second Request: %v", err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"Bearer token-1", "Bearer token-2"}
+	if !reflect.DeepEqual(authHeaders, want) {
+		t.Fatalf("websocket Authorization headers = %v, want %v", authHeaders, want)
+	}
+}
+
+func TestStrictModelBindingWebSocketRejectsMismatch(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(*http.Request) bool { return true },
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("websocket upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		_ = conn.WriteJSON(responsesWSEvent{
+			Type: "response.completed",
+			Response: &responsesAPIResponse{
+				ID:    "response",
+				Model: "gpt-5.1",
+				Output: []responsesOutputItem{{
+					Type:    "message",
+					Content: []responsesContentItem{{Type: "output_text", Text: "wrong route"}},
+				}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	p := New(
+		WithAPIKey("key"),
+		WithBaseURL(server.URL),
+		WithModel("gpt-5"),
+		WithTransport(transportWebSocket),
+		WithStrictModelBinding(),
+	)
+	_, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "hi"}}},
+	}, nil, nil)
+	var identityErr *ModelIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("Request() error = %v, want ModelIdentityError", err)
+	}
+}
+
 func TestRequestViaResponsesWebSocketFallsBackToHTTP(t *testing.T) {
 	var (
 		getHits  int

@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -2728,13 +2729,365 @@ func TestTokenRefresher(t *testing.T) {
 	}
 }
 
+func TestTokenRefresherFailsClosedBeforeTransport(t *testing.T) {
+	messages := []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "hi"}}},
+	}
+	tests := []struct {
+		name      string
+		transport string
+		refresher TokenRefresher
+		want      string
+	}{
+		{
+			name:      "http error",
+			transport: transportHTTP,
+			refresher: func() (string, error) { return "", fmt.Errorf("refresh failed") },
+			want:      "refresh failed",
+		},
+		{
+			name:      "http empty token",
+			transport: transportHTTP,
+			refresher: func() (string, error) { return "", nil },
+			want:      "empty token",
+		},
+		{
+			name:      "websocket error",
+			transport: transportWebSocket,
+			refresher: func() (string, error) { return "", fmt.Errorf("refresh failed") },
+			want:      "refresh failed",
+		},
+		{
+			name:      "websocket empty token",
+			transport: transportWebSocket,
+			refresher: func() (string, error) { return "", nil },
+			want:      "empty token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hits := 0
+			server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				hits++
+			}))
+			defer server.Close()
+
+			p := New(
+				WithChatGPTAuth("stale-token", "acct"),
+				WithBaseURL(server.URL),
+				WithTransport(tt.transport),
+				WithTokenRefresher(tt.refresher),
+			)
+			_, err := p.Request(context.Background(), messages, nil, nil)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Request() error = %v, want containing %q", err, tt.want)
+			}
+			if hits != 0 {
+				t.Fatalf("transport received %d requests after auth preflight failed", hits)
+			}
+		})
+	}
+}
+
+func TestStrictModelBinding(t *testing.T) {
+	tests := []struct {
+		name      string
+		actual    string
+		wantModel string
+		wantErr   bool
+	}{
+		{name: "exact", actual: "gpt-5", wantModel: "gpt-5"},
+		{name: "dated snapshot", actual: "gpt-5-2026-07-23", wantModel: "gpt-5-2026-07-23"},
+		{name: "tagged local model", actual: "gpt-5:latest", wantModel: "gpt-5:latest"},
+		{name: "prefix collision", actual: "gpt-5-mini", wantErr: true},
+		{name: "non-date suffix", actual: "gpt-5-preview", wantErr: true},
+		{name: "different family", actual: "gpt-5.1", wantErr: true},
+		{name: "missing identity", actual: "", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != responsesEndpoint {
+					t.Fatalf("request path = %q, want %q", r.URL.Path, responsesEndpoint)
+				}
+				_ = json.NewEncoder(w).Encode(responsesAPIResponse{
+					ID:    "response",
+					Model: tt.actual,
+					Output: []responsesOutputItem{{
+						Type:    "message",
+						Content: []responsesContentItem{{Type: "output_text", Text: "ok"}},
+					}},
+				})
+			}))
+			defer server.Close()
+
+			p := New(
+				WithAPIKey("key"),
+				WithBaseURL(server.URL),
+				WithModel("gpt-5"),
+				WithStrictModelBinding(),
+			)
+			resp, err := p.Request(context.Background(), []core.ModelMessage{
+				core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "hi"}}},
+			}, nil, nil)
+			if tt.wantErr {
+				var identityErr *ModelIdentityError
+				if !errors.As(err, &identityErr) {
+					t.Fatalf("Request() error = %v, want ModelIdentityError", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Request: %v", err)
+			}
+			if resp.ModelName != tt.wantModel {
+				t.Fatalf("ModelName = %q, want %q", resp.ModelName, tt.wantModel)
+			}
+		})
+	}
+}
+
+func TestModelIdentityErrorMessages(t *testing.T) {
+	missing := (&ModelIdentityError{Requested: "gpt-5"}).Error()
+	if !strings.Contains(missing, "omitted model identity") || !strings.Contains(missing, "gpt-5") {
+		t.Fatalf("missing identity message = %q", missing)
+	}
+	mismatch := (&ModelIdentityError{Requested: "gpt-5", Actual: "gpt-5-mini"}).Error()
+	if !strings.Contains(mismatch, "gpt-5-mini") || !strings.Contains(mismatch, "does not match") {
+		t.Fatalf("mismatch identity message = %q", mismatch)
+	}
+}
+
+func TestStrictModelBindingChatCompletionsJSONRejectsMismatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != chatCompletionsEndpoint {
+			t.Fatalf("request path = %q, want %q", r.URL.Path, chatCompletionsEndpoint)
+		}
+		_, _ = io.WriteString(w, `{"id":"chatcmpl","model":"gpt-4o-mini","choices":[{"message":{"role":"assistant","content":"wrong route"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	p := New(
+		WithAPIKey("key"),
+		WithBaseURL(server.URL),
+		WithModel("gpt-4o"),
+		WithStrictModelBinding(),
+	)
+	_, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "hi"}}},
+	}, nil, nil)
+	var identityErr *ModelIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("Request() error = %v, want ModelIdentityError", err)
+	}
+}
+
+func TestStrictModelBindingChatGPTSSERejectsMismatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"response","model":"gpt-5.1","output":[{"type":"message","content":[{"type":"output_text","text":"wrong route"}]}]}}
+
+data: [DONE]
+
+`)
+	}))
+	defer server.Close()
+
+	p := New(
+		WithChatGPTAuth("token", "acct"),
+		WithBaseURL(server.URL+"/chatgpt.com"),
+		WithModel("gpt-5"),
+		WithStrictModelBinding(),
+	)
+	_, err := p.Request(context.Background(), []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "hi"}}},
+	}, nil, nil)
+	var identityErr *ModelIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("Request() error = %v, want ModelIdentityError", err)
+	}
+}
+
+func TestStrictModelBindingStreamingRejectsMismatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"wrong route"}
+
+data: {"type":"response.completed","response":{"id":"response","model":"gpt-5.1","output":[]}}
+
+`)
+	}))
+	defer server.Close()
+
+	p := New(
+		WithAPIKey("key"),
+		WithBaseURL(server.URL),
+		WithModel("gpt-5"),
+		WithStrictModelBinding(),
+	)
+	stream, err := p.RequestStream(context.Background(), []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "hi"}}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("RequestStream: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		_, err = stream.Next()
+		if err != nil {
+			break
+		}
+	}
+	var identityErr *ModelIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("stream error = %v, want ModelIdentityError", err)
+	}
+}
+
+func TestStrictModelBindingStreamingRejectsMissingTerminalIdentity(t *testing.T) {
+	tests := []struct {
+		name     string
+		terminal string
+	}{
+		{
+			name:     "completed",
+			terminal: `{"type":"response.completed","response":{"id":"response","output":[]}}`,
+		},
+		{
+			name:     "incomplete",
+			terminal: `{"type":"response.incomplete","response":{"id":"response","output":[]}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", tt.terminal)
+			}))
+			defer server.Close()
+
+			p := New(
+				WithAPIKey("key"),
+				WithBaseURL(server.URL),
+				WithModel("gpt-5"),
+				WithStrictModelBinding(),
+			)
+			stream, err := p.RequestStream(context.Background(), []core.ModelMessage{
+				core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "hi"}}},
+			}, nil, nil)
+			if err != nil {
+				t.Fatalf("RequestStream: %v", err)
+			}
+			defer stream.Close()
+
+			for {
+				_, err = stream.Next()
+				if err != nil {
+					break
+				}
+			}
+			var identityErr *ModelIdentityError
+			if !errors.As(err, &identityErr) {
+				t.Fatalf("stream error = %v, want ModelIdentityError", err)
+			}
+		})
+	}
+}
+
+func TestStrictModelBindingResponsesJSONStreamFallbackRejectsMismatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"response","model":"gpt-5-mini","output":[]}`)
+	}))
+	defer server.Close()
+
+	p := New(
+		WithAPIKey("key"),
+		WithBaseURL(server.URL),
+		WithModel("gpt-5"),
+		WithStrictModelBinding(),
+	)
+	_, err := p.RequestStream(context.Background(), []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "hi"}}},
+	}, nil, nil)
+	var identityErr *ModelIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("RequestStream() error = %v, want ModelIdentityError", err)
+	}
+}
+
+func TestStrictModelBindingChatCompletionStreamTerminalPaths(t *testing.T) {
+	p := New(WithModel("gpt-4o"), WithStrictModelBinding())
+	tests := []struct {
+		name string
+		sse  string
+	}{
+		{
+			name: "mismatch",
+			sse:  "data: {\"id\":\"chatcmpl\",\"model\":\"gpt-4o-mini\",\"choices\":[]}\n\n",
+		},
+		{
+			name: "missing at done",
+			sse:  "data: [DONE]\n\n",
+		},
+		{
+			name: "missing at eof",
+			sse:  "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stream := newBoundStreamedResponse(
+				io.NopCloser(strings.NewReader(tt.sse)),
+				"gpt-4o",
+				p.resolveResponseModel,
+			)
+			defer stream.Close()
+			_, err := stream.Next()
+			var identityErr *ModelIdentityError
+			if !errors.As(err, &identityErr) {
+				t.Fatalf("Next() error = %v, want ModelIdentityError", err)
+			}
+		})
+	}
+}
+
+func TestStrictModelBindingResponsesStreamBareTerminalPaths(t *testing.T) {
+	p := New(WithModel("gpt-5"), WithStrictModelBinding())
+	for _, tt := range []struct {
+		name string
+		sse  string
+	}{
+		{name: "done", sse: "data: [DONE]\n\n"},
+		{name: "eof"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stream := newBoundResponsesStreamedResponse(
+				io.NopCloser(strings.NewReader(tt.sse)),
+				"gpt-5",
+				p.resolveResponseModel,
+			)
+			defer stream.Close()
+			_, err := stream.Next()
+			var identityErr *ModelIdentityError
+			if !errors.As(err, &identityErr) {
+				t.Fatalf("Next() error = %v, want ModelIdentityError", err)
+			}
+		})
+	}
+}
+
 func TestNewSession_PreservesChatGPTAuth(t *testing.T) {
-	p := New(WithChatGPTAuth("token", "acct-123"))
+	p := New(WithChatGPTAuth("token", "acct-123"), WithStrictModelBinding())
 	session := p.NewSession().(*Provider)
 	if session.chatgptAccountID != "acct-123" {
 		t.Errorf("expected chatgptAccountID preserved, got %q", session.chatgptAccountID)
 	}
 	if session.tokenRefresher != nil {
 		t.Error("expected nil tokenRefresher when none was set")
+	}
+	if session.strictModelBinding != p.strictModelBinding {
+		t.Error("strict model binding was not preserved")
 	}
 }

@@ -28,10 +28,12 @@ type responsesStreamEvent struct {
 // response.output_item.done, and terminal response events, yielding PartStartEvent
 // and PartDeltaEvent as they arrive.
 type responsesStreamedResponse struct {
-	scanner *bufio.Scanner
-	body    io.ReadCloser
-	model   string
-	usage   core.Usage
+	scanner      *bufio.Scanner
+	body         io.ReadCloser
+	model        string
+	resolveModel func(string) (string, error)
+	modelSeen    bool
+	usage        core.Usage
 
 	stopReason core.FinishReason
 	done       bool
@@ -61,12 +63,21 @@ type responsesStreamedResponse struct {
 }
 
 func newResponsesStreamedResponse(body io.ReadCloser, model string) *responsesStreamedResponse {
+	return newBoundResponsesStreamedResponse(body, model, nil)
+}
+
+func newBoundResponsesStreamedResponse(
+	body io.ReadCloser,
+	model string,
+	resolveModel func(string) (string, error),
+) *responsesStreamedResponse {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	return &responsesStreamedResponse{
 		scanner:              scanner,
 		body:                 body,
 		model:                model,
+		resolveModel:         resolveModel,
 		stopReason:           core.FinishReasonStop,
 		partsByIndex:         make(map[int]core.ModelResponsePart),
 		toolCallByOutputIdx:  make(map[int]int),
@@ -103,6 +114,10 @@ func (s *responsesStreamedResponse) Next() (core.ModelResponseStreamEvent, error
 			}
 			// Scanner exhausted without a terminal response event.
 			s.done = true
+			if err := s.finalizeModelIdentity(); err != nil {
+				s.streamErr = err
+				return nil, err
+			}
 			s.finalize()
 			return nil, io.EOF
 		}
@@ -115,6 +130,10 @@ func (s *responsesStreamedResponse) Next() (core.ModelResponseStreamEvent, error
 		data = strings.TrimPrefix(data, " ")
 		if data == "[DONE]" {
 			s.done = true
+			if err := s.finalizeModelIdentity(); err != nil {
+				s.streamErr = err
+				return nil, err
+			}
 			s.finalize()
 			return nil, io.EOF
 		}
@@ -185,7 +204,13 @@ func (s *responsesStreamedResponse) processEvent(event *responsesStreamEvent) []
 			var resp responsesAPIResponse
 			if json.Unmarshal(event.Response, &resp) == nil {
 				s.usage = mapResponsesUsage(resp.Usage)
+				if err := s.bindResponseModel(resp.Model); err != nil {
+					s.streamErr = err
+				}
 			}
+		}
+		if err := s.finalizeModelIdentity(); err != nil {
+			s.streamErr = err
 		}
 		s.finalize()
 		return nil
@@ -424,14 +449,43 @@ func (s *responsesStreamedResponse) handleCompleted(respJSON json.RawMessage) {
 	if respJSON != nil {
 		var resp responsesAPIResponse
 		if json.Unmarshal(respJSON, &resp) == nil {
+			if err := s.bindResponseModel(resp.Model); err != nil {
+				s.streamErr = err
+			}
 			s.usage = mapResponsesUsage(resp.Usage)
 			if resp.IncompleteDetails != nil && strings.Contains(resp.IncompleteDetails.Reason, "max_output_tokens") {
 				s.stopReason = core.FinishReasonLength
 			}
 		}
 	}
+	if err := s.finalizeModelIdentity(); err != nil {
+		s.streamErr = err
+	}
 	s.done = true
 	s.finalize()
+}
+
+func (s *responsesStreamedResponse) bindResponseModel(actual string) error {
+	resolved := strings.TrimSpace(actual)
+	if s.resolveModel != nil {
+		var err error
+		resolved, err = s.resolveModel(actual)
+		if err != nil {
+			return err
+		}
+	}
+	if resolved != "" {
+		s.model = resolved
+	}
+	s.modelSeen = strings.TrimSpace(actual) != ""
+	return nil
+}
+
+func (s *responsesStreamedResponse) finalizeModelIdentity() error {
+	if s.resolveModel == nil || s.modelSeen {
+		return nil
+	}
+	return s.bindResponseModel("")
 }
 
 func (s *responsesStreamedResponse) finalize() {

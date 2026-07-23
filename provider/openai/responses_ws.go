@@ -151,12 +151,21 @@ func (p *Provider) requestViaResponsesWebSocket(ctx context.Context, req *respon
 		}
 	}
 
-	return parseResponsesResponse(apiResp, p.model), nil
+	return p.parseBoundResponsesResponse(apiResp)
 }
 
 func (p *Provider) ensureResponsesWebSocketLocked(ctx context.Context) (*responsesWebSocketConn, error) {
-	if p.wsConn != nil {
+	token, err := p.authorizationToken()
+	if err != nil {
+		return nil, err
+	}
+	if p.wsConn != nil && token == p.wsAuthToken {
 		return p.wsConn, nil
+	}
+	if p.wsConn != nil {
+		// A rotated OAuth token must not leave a long-lived connection bound
+		// to stale authentication.
+		p.resetResponsesWebSocketLocked()
 	}
 
 	wsURL, err := responsesWebSocketURL(p.baseURL, p.responsesEP())
@@ -164,12 +173,6 @@ func (p *Provider) ensureResponsesWebSocketLocked(ctx context.Context) (*respons
 		return nil, err
 	}
 
-	token := p.apiKey
-	if p.tokenRefresher != nil {
-		if refreshed, err := p.tokenRefresher(); err == nil && refreshed != "" {
-			token = refreshed
-		}
-	}
 	headers := make(http.Header)
 	headers.Set("Authorization", "Bearer "+token)
 	if p.hasChatGPTAuth() {
@@ -210,6 +213,7 @@ func (p *Provider) ensureResponsesWebSocketLocked(ctx context.Context) (*respons
 	}
 
 	p.wsConn = &responsesWebSocketConn{conn: conn}
+	p.wsAuthToken = token
 	return p.wsConn, nil
 }
 
@@ -218,6 +222,7 @@ func (p *Provider) resetResponsesWebSocketLocked() {
 		_ = p.wsConn.conn.Close()
 	}
 	p.wsConn = nil
+	p.wsAuthToken = ""
 	p.wsPrevResponseID = ""
 	p.wsLastInputSigs = nil
 }

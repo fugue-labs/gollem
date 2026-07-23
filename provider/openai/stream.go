@@ -3,6 +3,7 @@ package openai
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -14,14 +15,16 @@ import (
 
 // streamedResponse implements core.StreamedResponse for OpenAI SSE streams.
 type streamedResponse struct {
-	reader     *bufio.Reader
-	body       io.ReadCloser
-	model      string
-	usage      core.Usage
-	parts      []core.ModelResponsePart
-	stopReason core.FinishReason
-	done       bool
-	streamErr  error // non-nil if server sent an error mid-stream
+	reader       *bufio.Reader
+	body         io.ReadCloser
+	model        string
+	resolveModel func(string) (string, error)
+	modelSeen    bool
+	usage        core.Usage
+	parts        []core.ModelResponsePart
+	stopReason   core.FinishReason
+	done         bool
+	streamErr    error // non-nil if server sent an error mid-stream
 
 	// State for tracking tool calls being built across deltas.
 	currentParts map[int]core.ModelResponsePart
@@ -33,10 +36,19 @@ type streamedResponse struct {
 }
 
 func newStreamedResponse(body io.ReadCloser, model string) *streamedResponse {
+	return newBoundStreamedResponse(body, model, nil)
+}
+
+func newBoundStreamedResponse(
+	body io.ReadCloser,
+	model string,
+	resolveModel func(string) (string, error),
+) *streamedResponse {
 	return &streamedResponse{
 		reader:            bufio.NewReader(body),
 		body:              body,
 		model:             model,
+		resolveModel:      resolveModel,
 		currentParts:      make(map[int]core.ModelResponsePart),
 		argsBuffers:       make(map[int]*strings.Builder),
 		toolCallPartIndex: make(map[int]int),
@@ -48,6 +60,7 @@ func newStreamedResponse(body io.ReadCloser, model string) *streamedResponse {
 type apiChunk struct {
 	ID      string           `json:"id"`
 	Object  string           `json:"object"`
+	Model   string           `json:"model,omitempty"`
 	Choices []apiChunkChoice `json:"choices"`
 	Usage   *apiUsage        `json:"usage,omitempty"`
 	Error   *apiStreamError  `json:"error,omitempty"`
@@ -103,9 +116,13 @@ func (s *streamedResponse) Next() (core.ModelResponseStreamEvent, error) {
 
 		line, err := s.reader.ReadString('\n')
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				if strings.TrimSpace(line) == "" {
 					s.done = true
+					if modelErr := s.finalizeModelIdentity(); modelErr != nil {
+						s.streamErr = modelErr
+						return nil, modelErr
+					}
 					s.finalizeAll()
 					return nil, io.EOF
 				}
@@ -129,6 +146,10 @@ func (s *streamedResponse) Next() (core.ModelResponseStreamEvent, error) {
 		// Check for stream termination.
 		if data == "[DONE]" {
 			s.done = true
+			if err := s.finalizeModelIdentity(); err != nil {
+				s.streamErr = err
+				return nil, err
+			}
 			s.finalizeAll()
 			return nil, io.EOF
 		}
@@ -136,6 +157,19 @@ func (s *streamedResponse) Next() (core.ModelResponseStreamEvent, error) {
 		var chunk apiChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
+		}
+		if chunk.Model != "" {
+			resolved := chunk.Model
+			if s.resolveModel != nil {
+				resolved, err = s.resolveModel(chunk.Model)
+				if err != nil {
+					s.done = true
+					s.streamErr = err
+					return nil, err
+				}
+			}
+			s.model = resolved
+			s.modelSeen = true
 		}
 
 		// Check for error in stream data (sent by some OpenAI-compatible APIs).
@@ -184,6 +218,18 @@ func (s *streamedResponse) Next() (core.ModelResponseStreamEvent, error) {
 			return events[0], nil
 		}
 	}
+}
+
+func (s *streamedResponse) finalizeModelIdentity() error {
+	if s.resolveModel == nil || s.modelSeen {
+		return nil
+	}
+	resolved, err := s.resolveModel("")
+	if err != nil {
+		return err
+	}
+	s.model = resolved
+	return nil
 }
 
 // handleTextDelta processes a text content delta.

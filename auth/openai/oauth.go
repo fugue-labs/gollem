@@ -43,6 +43,11 @@ const (
 
 	// OAuth scopes.
 	oauthScopes = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+
+	// OAuth endpoints are not expected to return large payloads. Bounding the
+	// body prevents a failed or compromised endpoint from turning token
+	// refresh into an unbounded allocation.
+	maxOAuthResponseBytes = 1 << 20
 )
 
 // Credentials stores OAuth tokens for ChatGPT subscription access.
@@ -212,9 +217,12 @@ func loginDeviceCode(ctx context.Context) (*Credentials, error) {
 	}
 	defer resp.Body.Close()
 
+	body, err := readOAuthResponse(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading device code response: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("device code request failed (HTTP %d): %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("device code request failed (HTTP %d)", resp.StatusCode)
 	}
 
 	var deviceResp struct {
@@ -222,7 +230,7 @@ func loginDeviceCode(ctx context.Context) (*Credentials, error) {
 		UserCode     string `json:"user_code"`
 		Interval     string `json:"interval"` // seconds, sent as a string
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&deviceResp); err != nil {
+	if err := json.Unmarshal(body, &deviceResp); err != nil {
 		return nil, fmt.Errorf("decoding device code response: %w", err)
 	}
 	if deviceResp.DeviceAuthID == "" || deviceResp.UserCode == "" {
@@ -262,8 +270,11 @@ func loginDeviceCode(ctx context.Context) (*Credentials, error) {
 		if err != nil {
 			continue
 		}
-		body, _ := io.ReadAll(tokenResp.Body)
+		body, readErr := readOAuthResponse(tokenResp.Body)
 		tokenResp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("reading device authorization response: %w", readErr)
+		}
 
 		// Pending authorization is signaled by status, not body:
 		// 403/404 until the user enters the code.
@@ -271,7 +282,7 @@ func loginDeviceCode(ctx context.Context) (*Credentials, error) {
 			continue
 		}
 		if tokenResp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("device authorization failed (HTTP %d): %s", tokenResp.StatusCode, body)
+			return nil, fmt.Errorf("device authorization failed (HTTP %d)", tokenResp.StatusCode)
 		}
 
 		var result struct {
@@ -282,8 +293,8 @@ func loginDeviceCode(ctx context.Context) (*Credentials, error) {
 		if err := json.Unmarshal(body, &result); err != nil {
 			return nil, fmt.Errorf("decoding device token response: %w", err)
 		}
-		if result.AuthorizationCode == "" {
-			return nil, fmt.Errorf("device token response missing authorization_code: %s", body)
+		if result.AuthorizationCode == "" || result.CodeVerifier == "" {
+			return nil, errors.New("device token response missing authorization_code or code_verifier")
 		}
 		return exchangeCode(ctx, result.AuthorizationCode, "https://auth.openai.com/deviceauth/callback", result.CodeVerifier)
 	}
@@ -313,13 +324,13 @@ func exchangeCode(ctx context.Context, code, redirectURI, codeVerifier string) (
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readOAuthResponse(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("reading token response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token exchange failed (HTTP %d): %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("token exchange failed (HTTP %d)", resp.StatusCode)
 	}
 
 	var tokenResp struct {
@@ -331,8 +342,19 @@ func exchangeCode(ctx context.Context, code, redirectURI, codeVerifier string) (
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
 		return nil, fmt.Errorf("decoding token response: %w", err)
 	}
+	if strings.TrimSpace(tokenResp.AccessToken) == "" ||
+		strings.TrimSpace(tokenResp.RefreshToken) == "" ||
+		strings.TrimSpace(tokenResp.IDToken) == "" {
+		return nil, errors.New("decoding token response: required token is empty")
+	}
+	if tokenResp.ExpiresIn < 0 {
+		return nil, errors.New("decoding token response: expires_in is negative")
+	}
 
 	accountID := extractAccountID(tokenResp.IDToken)
+	if accountID == "" {
+		return nil, errors.New("decoding token response: account identity is missing")
+	}
 
 	expiresAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	if tokenResp.ExpiresIn == 0 {
@@ -352,9 +374,25 @@ func exchangeCode(ctx context.Context, code, redirectURI, codeVerifier string) (
 // RefreshIfNeeded refreshes the access token if expired or near-expiry.
 // Returns the same credentials if still valid, or new credentials if refreshed.
 func RefreshIfNeeded(creds *Credentials) (*Credentials, error) {
+	return refreshIfNeeded(creds, time.Now(), http.DefaultClient, tokenEndpoint)
+}
+
+func refreshIfNeeded(creds *Credentials, now time.Time, client *http.Client, endpoint string) (*Credentials, error) {
+	if creds == nil {
+		return nil, errors.New("refreshing token: credentials are nil")
+	}
+	if strings.TrimSpace(creds.AccessToken) == "" {
+		return nil, errors.New("refreshing token: access token is empty")
+	}
 	// Refresh if within 5 minutes of expiry.
-	if time.Until(creds.ExpiresAt) > 5*time.Minute {
+	if !creds.ExpiresAt.IsZero() && creds.ExpiresAt.Sub(now) > 5*time.Minute {
 		return creds, nil
+	}
+	if strings.TrimSpace(creds.RefreshToken) == "" {
+		return nil, errors.New("refreshing token: refresh token is empty")
+	}
+	if client == nil || strings.TrimSpace(endpoint) == "" {
+		return nil, errors.New("refreshing token: OAuth transport is unavailable")
 	}
 
 	data := url.Values{
@@ -367,25 +405,25 @@ func RefreshIfNeeded(creds *Credentials) (*Credentials, error) {
 	// indefinitely if the auth server is unresponsive.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("creating refresh request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("refreshing token: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readOAuthResponse(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("reading refresh response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token refresh failed (HTTP %d): %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("token refresh failed (HTTP %d)", resp.StatusCode)
 	}
 
 	var tokenResp struct {
@@ -397,20 +435,61 @@ func RefreshIfNeeded(creds *Credentials) (*Credentials, error) {
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
 		return nil, fmt.Errorf("decoding refresh response: %w", err)
 	}
+	if strings.TrimSpace(tokenResp.AccessToken) == "" {
+		return nil, errors.New("decoding refresh response: access token is empty")
+	}
+	if tokenResp.ExpiresIn < 0 {
+		return nil, errors.New("decoding refresh response: expires_in is negative")
+	}
 
-	expiresAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	expiresAt := now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	if tokenResp.ExpiresIn == 0 {
-		expiresAt = time.Now().Add(1 * time.Hour)
+		expiresAt = now.Add(1 * time.Hour)
+	}
+	refreshToken := tokenResp.RefreshToken
+	if strings.TrimSpace(refreshToken) == "" {
+		// OAuth refresh responses may omit refresh_token. Retain the previous
+		// token instead of destroying the next refresh path.
+		refreshToken = creds.RefreshToken
+	}
+	idToken := tokenResp.IDToken
+	if strings.TrimSpace(idToken) == "" {
+		idToken = creds.IDToken
+	}
+	accountID := creds.AccountID
+	if refreshedAccountID := extractAccountID(idToken); refreshedAccountID != "" {
+		if accountID != "" && refreshedAccountID != accountID {
+			return nil, errors.New("decoding refresh response: account identity changed")
+		}
+		accountID = refreshedAccountID
+	}
+	authMode := creds.AuthMode
+	if authMode == "" {
+		authMode = "chatgpt"
 	}
 
 	return &Credentials{
 		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		IDToken:      tokenResp.IDToken,
-		AccountID:    creds.AccountID,
-		AuthMode:     "chatgpt",
+		RefreshToken: refreshToken,
+		IDToken:      idToken,
+		AccountID:    accountID,
+		AuthMode:     authMode,
 		ExpiresAt:    expiresAt,
 	}, nil
+}
+
+func readOAuthResponse(reader io.Reader) ([]byte, error) {
+	if reader == nil {
+		return nil, errors.New("response body is nil")
+	}
+	body, err := io.ReadAll(io.LimitReader(reader, maxOAuthResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxOAuthResponseBytes {
+		return nil, errors.New("response exceeds limit")
+	}
+	return body, nil
 }
 
 // credentialsPath returns the path to the credentials file.
