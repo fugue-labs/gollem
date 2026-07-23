@@ -176,7 +176,8 @@ func (s *streamedResponse) Next() (core.ModelResponseStreamEvent, error) {
 		if chunk.Error != nil {
 			s.done = true
 			s.finalizeAll()
-			s.streamErr = fmt.Errorf("openai stream error (%s): %s", chunk.Error.Type, chunk.Error.Message)
+			classification := classifyProviderError(chunk.Error.Type, chunk.Error.Message)
+			s.streamErr = fmt.Errorf("openai stream error (%s)", classification)
 			return nil, s.streamErr
 		}
 

@@ -152,8 +152,11 @@ data: [DONE]
 	if err == nil {
 		t.Fatal("expected error from response.failed, got nil")
 	}
-	if !strings.Contains(err.Error(), "context length exceeded") {
-		t.Errorf("expected error to contain failure reason, got: %v", err)
+	if strings.Contains(err.Error(), "context length exceeded") {
+		t.Errorf("response failure leaked provider message: %v", err)
+	}
+	if !strings.Contains(err.Error(), "context_length_exceeded") {
+		t.Errorf("expected source-free failure classification, got: %v", err)
 	}
 }
 

@@ -185,8 +185,9 @@ func (s *responsesStreamedResponse) processEvent(event *responsesStreamEvent) []
 					Code    string `json:"code"`
 				} `json:"error"`
 			}
-			if json.Unmarshal(event.Response, &failedResp) == nil && failedResp.Error.Message != "" {
-				s.streamErr = fmt.Errorf("openai: response failed (%s): %s", failedResp.Error.Code, failedResp.Error.Message)
+			if json.Unmarshal(event.Response, &failedResp) == nil {
+				classification := classifyProviderError("response.failed", failedResp.Error.Code, failedResp.Error.Message)
+				s.streamErr = fmt.Errorf("openai: response failed (%s)", classification)
 			} else {
 				s.streamErr = errors.New("openai: response failed")
 			}

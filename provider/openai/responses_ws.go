@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -197,17 +196,11 @@ func (p *Provider) ensureResponsesWebSocketLocked(ctx context.Context) (*respons
 		body := ""
 		if resp != nil {
 			statusCode = resp.StatusCode
-			respBody, _ := io.ReadAll(resp.Body)
+			body = readProviderErrorClassification(resp.Body)
 			resp.Body.Close()
-			body = string(respBody)
 		}
 		if statusCode != 0 {
-			return nil, &core.ModelHTTPError{
-				Message:    "openai websocket connect error: " + body,
-				StatusCode: statusCode,
-				Body:       body,
-				ModelName:  p.model,
-			}
+			return nil, sanitizedProviderHTTPError("openai websocket connect error", statusCode, body, p.model)
 		}
 		return nil, fmt.Errorf("openai websocket connect failed: %w", err)
 	}
@@ -414,13 +407,8 @@ func responsesWebSocketError(event responsesWSEvent, model string) error {
 	if status == 0 {
 		status = inferResponsesWSErrorStatus(code, typ, msg)
 	}
-	raw, _ := json.Marshal(event)
-	return &core.ModelHTTPError{
-		Message:    "openai websocket error: " + msg,
-		StatusCode: status,
-		Body:       string(raw),
-		ModelName:  model,
-	}
+	classification := classifyProviderError(code, typ, msg)
+	return sanitizedProviderHTTPError("openai websocket error", status, classification, model)
 }
 
 func responsesIncompleteError(event responsesWSEvent, model string) error {
@@ -431,13 +419,8 @@ func responsesIncompleteError(event responsesWSEvent, model string) error {
 	if reason == "" {
 		reason = "response.incomplete"
 	}
-	raw, _ := json.Marshal(event)
-	return &core.ModelHTTPError{
-		Message:    "openai websocket response incomplete: " + reason,
-		StatusCode: http.StatusBadRequest,
-		Body:       string(raw),
-		ModelName:  model,
-	}
+	classification := classifyProviderError("response.incomplete", reason)
+	return sanitizedProviderHTTPError("openai websocket response incomplete", http.StatusBadRequest, classification, model)
 }
 
 func responsesFailedError(event responsesWSEvent, model string) error {
@@ -448,13 +431,8 @@ func responsesFailedError(event responsesWSEvent, model string) error {
 	if reason == "" {
 		reason = "response.failed"
 	}
-	raw, _ := json.Marshal(event)
-	return &core.ModelHTTPError{
-		Message:    "openai websocket response failed: " + reason,
-		StatusCode: http.StatusBadRequest,
-		Body:       string(raw),
-		ModelName:  model,
-	}
+	classification := classifyProviderError("response.failed", reason)
+	return sanitizedProviderHTTPError("openai websocket response failed", http.StatusBadRequest, classification, model)
 }
 
 func inferResponsesWSErrorStatus(code, typ, message string) int {

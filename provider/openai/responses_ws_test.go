@@ -1165,7 +1165,8 @@ func TestRequestViaResponsesWebSocketResponseFailed(t *testing.T) {
 	if httpErr.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected status 400, got %d", httpErr.StatusCode)
 	}
-	if !strings.Contains(httpErr.Message, "response failed: max_output_tokens") {
+	if !strings.Contains(httpErr.Message, "max_output_tokens") ||
+		!strings.Contains(httpErr.Message, "response_failed") {
 		t.Fatalf("unexpected error message: %q", httpErr.Message)
 	}
 }

@@ -1574,11 +1574,11 @@ data: [DONE]
 	if err == nil {
 		t.Fatal("expected error from stream")
 	}
-	if !strings.Contains(err.Error(), "Rate limit exceeded") {
-		t.Errorf("expected error to contain 'Rate limit exceeded', got: %v", err)
+	if strings.Contains(err.Error(), "Rate limit exceeded") {
+		t.Errorf("stream error leaked provider message: %v", err)
 	}
-	if !strings.Contains(err.Error(), "rate_limit_error") {
-		t.Errorf("expected error to contain 'rate_limit_error', got: %v", err)
+	if !strings.Contains(err.Error(), "rate_limited") {
+		t.Errorf("expected source-free rate classification, got: %v", err)
 	}
 }
 
@@ -1595,8 +1595,11 @@ func TestParseSSEStreamErrorOnly(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from stream")
 	}
-	if !strings.Contains(err.Error(), "Server overloaded") {
-		t.Errorf("expected error to contain 'Server overloaded', got: %v", err)
+	if strings.Contains(err.Error(), "Server overloaded") {
+		t.Errorf("stream error leaked provider message: %v", err)
+	}
+	if !strings.Contains(err.Error(), "server_error") {
+		t.Errorf("expected source-free server classification, got: %v", err)
 	}
 }
 

@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -558,15 +557,10 @@ func (p *Provider) doRequest(ctx context.Context, endpoint string, body []byte) 
 		return resp, nil
 	}
 
-	respBody, _ := io.ReadAll(resp.Body)
+	classification := readProviderErrorClassification(resp.Body)
 	resp.Body.Close()
 
-	httpErr := &core.ModelHTTPError{
-		Message:    "openai API error: " + string(respBody),
-		StatusCode: resp.StatusCode,
-		Body:       string(respBody),
-		ModelName:  p.model,
-	}
+	httpErr := sanitizedProviderHTTPError("openai API error", resp.StatusCode, classification, p.model)
 
 	// Parse Retry-After header for 429 responses so the model-level
 	// retry (modelutil.RetryModel) can use appropriate backoff.
@@ -768,14 +762,12 @@ func isChatCompletionsMismatch(err error) bool {
 	if !errors.As(err, &httpErr) {
 		return false
 	}
-	body := strings.ToLower(httpErr.Body)
-	msg := strings.ToLower(httpErr.Message)
-	combined := body + " " + msg
+	combined := strings.ToLower(httpErr.Body + " " + httpErr.Message)
 	if httpErr.StatusCode == http.StatusNotFound {
-		return strings.Contains(combined, "not a chat model")
+		return strings.Contains(combined, "not_chat_model")
 	}
 	if httpErr.StatusCode == http.StatusBadRequest {
-		return strings.Contains(combined, "please use /v1/responses")
+		return strings.Contains(combined, "use_responses")
 	}
 	return false
 }
