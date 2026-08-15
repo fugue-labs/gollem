@@ -104,6 +104,177 @@ func assertResponsesStreamTextOnly(t *testing.T, s *responsesStreamedResponse) {
 	}
 }
 
+func TestStrictResponsesStreamRequiresIdentityBeforeEmittingDeltas(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		event string
+	}{
+		{
+			name:  "text",
+			event: `{"type":"response.output_text.delta","delta":"untrusted text"}`,
+		},
+		{
+			name:  "tool",
+			event: `{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","name":"shell","call_id":"untrusted-call"}}`,
+		},
+		{
+			name:  "reasoning",
+			event: `{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"untrusted reasoning"}`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newStrictResponsesStream(t, `data: {"type":"response.created","response":{"id":"resp-1"}}
+
+data: `+tt.event+`
+
+data: {"type":"response.completed","response":{"id":"resp-1","model":"gpt-5","output":[]}}
+
+data: [DONE]
+`)
+			defer s.Close()
+
+			_, err := s.Next()
+			assertModelIdentityError(t, err)
+			if response := s.Response(); len(response.Parts) != 0 || response.TextContent() != "" {
+				t.Fatalf("unbound stream emitted response %#v", response)
+			}
+		})
+	}
+}
+
+func TestStrictResponsesStreamRejectsInitialAndLaterModelIdentityConflicts(t *testing.T) {
+	t.Run("initial mismatch", func(t *testing.T) {
+		s := newStrictResponsesStream(t, `data: {"type":"response.created","response":{"id":"resp-1","model":"gpt-5-mini"}}
+
+data: {"type":"response.output_text.delta","delta":"untrusted text"}
+
+data: [DONE]
+`)
+		defer s.Close()
+
+		_, err := s.Next()
+		assertModelIdentityError(t, err)
+		if response := s.Response(); len(response.Parts) != 0 || response.TextContent() != "" {
+			t.Fatalf("mismatched stream emitted response %#v", response)
+		}
+	})
+
+	t.Run("later compatible snapshot conflicts", func(t *testing.T) {
+		s := newStrictResponsesStream(t, `data: {"type":"response.created","response":{"id":"resp-1","model":"gpt-5-2026-08-15"}}
+
+data: {"type":"response.output_text.delta","delta":"trusted text"}
+
+data: {"type":"response.in_progress","response":{"id":"resp-1","model":"gpt-5-2026-08-16"}}
+
+data: {"type":"response.output_text.delta","delta":" untrusted text"}
+
+data: [DONE]
+`)
+		defer s.Close()
+
+		event, err := s.Next()
+		if err != nil {
+			t.Fatalf("trusted delta: %v", err)
+		}
+		if start, ok := event.(core.PartStartEvent); !ok || start.Part.(core.TextPart).Content != "trusted text" {
+			t.Fatalf("trusted delta = %#v", event)
+		}
+		_, err = s.Next()
+		assertModelIdentityError(t, err)
+		if got := s.Response().TextContent(); got != "trusted text" {
+			t.Fatalf("conflicting stream text = %q, want only trusted prefix", got)
+		}
+	})
+}
+
+func TestStrictResponsesStreamAcceptsConsistentInitialIdentity(t *testing.T) {
+	const actual = "gpt-5-2026-08-15"
+	s := newStrictResponsesStream(t, `data: {"type":"response.created","response":{"id":"resp-1","model":"`+actual+`"}}
+
+data: {"type":"response.in_progress","response":{"id":"resp-1","model":"`+actual+`"}}
+
+data: {"type":"response.output_text.delta","delta":"trusted text"}
+
+data: {"type":"response.completed","response":{"id":"resp-1","model":"`+actual+`","output":[]}}
+
+data: [DONE]
+`)
+	defer s.Close()
+
+	event, err := s.Next()
+	if err != nil {
+		t.Fatalf("Next(): %v", err)
+	}
+	if start, ok := event.(core.PartStartEvent); !ok || start.Part.(core.TextPart).Content != "trusted text" {
+		t.Fatalf("trusted delta = %#v", event)
+	}
+	if _, err := s.Next(); err != io.EOF {
+		t.Fatalf("completion error = %v, want EOF", err)
+	}
+	if got := s.Response().ModelName; got != actual {
+		t.Fatalf("response model = %q, want %q", got, actual)
+	}
+}
+
+func TestResponsesStreamNonStrictBindingRemainsPermissive(t *testing.T) {
+	provider := New(WithModel("gpt-5"))
+	s := newBoundResponsesStreamedResponse(
+		io.NopCloser(strings.NewReader(`data: {"type":"response.created","response":{"id":"resp-1","model":"gpt-5-2026-08-15"}}
+
+data: {"type":"response.output_text.delta","delta":"first"}
+
+data: {"type":"response.in_progress","response":{"id":"resp-1","model":"gpt-5-2026-08-16"}}
+
+data: {"type":"response.output_text.delta","delta":" second"}
+
+data: {"type":"response.completed","response":{"id":"resp-1","model":"gpt-5-2026-08-16","output":[]}}
+
+data: [DONE]
+`)),
+		"gpt-5",
+		provider.resolveResponseModel,
+		provider.strictModelBinding,
+		nil,
+	)
+	defer s.Close()
+
+	for {
+		_, err := s.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next(): %v", err)
+		}
+	}
+	if got := s.Response().TextContent(); got != "first second" {
+		t.Fatalf("response text = %q", got)
+	}
+	if got := s.Response().ModelName; got != "gpt-5-2026-08-16" {
+		t.Fatalf("response model = %q, want final provider model", got)
+	}
+}
+
+func newStrictResponsesStream(t *testing.T, sse string) *responsesStreamedResponse {
+	t.Helper()
+	provider := New(WithModel("gpt-5"), WithStrictModelBinding())
+	return newBoundResponsesStreamedResponse(
+		io.NopCloser(strings.NewReader(sse)),
+		"gpt-5",
+		provider.resolveResponseModel,
+		provider.strictModelBinding,
+		nil,
+	)
+}
+
+func assertModelIdentityError(t *testing.T, err error) {
+	t.Helper()
+	var identityErr *ModelIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("error = %v, want ModelIdentityError", err)
+	}
+}
+
 func TestResponsesStreamedResponse_ToolCall(t *testing.T) {
 	sse := `data: {"type":"response.output_item.done","item":{"type":"function_call","name":"bash","call_id":"call_abc","arguments":"{\"cmd\":\"ls\"}"}}
 

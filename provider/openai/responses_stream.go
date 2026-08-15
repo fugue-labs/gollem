@@ -28,12 +28,14 @@ type responsesStreamEvent struct {
 // response.output_item.done, and terminal response events, yielding PartStartEvent
 // and PartDeltaEvent as they arrive.
 type responsesStreamedResponse struct {
-	scanner      *bufio.Scanner
-	body         io.ReadCloser
-	model        string
-	resolveModel func(string) (string, error)
-	modelSeen    bool
-	usage        core.Usage
+	scanner            *bufio.Scanner
+	body               io.ReadCloser
+	model              string
+	resolveModel       func(string) (string, error)
+	strictModelBinding bool
+	boundProviderModel string
+	modelSeen          bool
+	usage              core.Usage
 
 	stopReason core.FinishReason
 	done       bool
@@ -68,13 +70,14 @@ type responsesStreamedResponse struct {
 }
 
 func newResponsesStreamedResponse(body io.ReadCloser, model string) *responsesStreamedResponse {
-	return newBoundResponsesStreamedResponse(body, model, nil, nil)
+	return newBoundResponsesStreamedResponse(body, model, nil, false, nil)
 }
 
 func newBoundResponsesStreamedResponse(
 	body io.ReadCloser,
 	model string,
 	resolveModel func(string) (string, error),
+	strictModelBinding bool,
 	ri *requestInstrumentation,
 ) *responsesStreamedResponse {
 	scanner := bufio.NewScanner(body)
@@ -84,6 +87,7 @@ func newBoundResponsesStreamedResponse(
 		body:                 body,
 		model:                model,
 		resolveModel:         resolveModel,
+		strictModelBinding:   strictModelBinding,
 		stopReason:           core.FinishReasonStop,
 		instrumentation:      ri,
 		partsByIndex:         make(map[int]core.ModelResponsePart),
@@ -143,6 +147,12 @@ func (s *responsesStreamedResponse) Next() (core.ModelResponseStreamEvent, error
 			continue
 		}
 		s.instrumentation.recordFirstEvent()
+		if err := s.validateEventModelIdentity(&event); err != nil {
+			return s.failStream(err)
+		}
+		if s.strictModelBinding && responseEventCanEmitOutput(event.Type) && !s.modelSeen {
+			return s.failStream(&ModelIdentityError{Requested: s.model})
+		}
 
 		events := s.processEvent(&event)
 		if len(events) > 0 {
@@ -152,6 +162,35 @@ func (s *responsesStreamedResponse) Next() (core.ModelResponseStreamEvent, error
 			s.instrumentation.recordFirstToken()
 			return events[0], nil
 		}
+	}
+}
+
+func responseEventCanEmitOutput(eventType string) bool {
+	switch eventType {
+	case "response.output_text.delta",
+		"response.output_item.added",
+		"response.function_call_arguments.delta",
+		"response.reasoning_summary_text.delta",
+		"response.output_item.done":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *responsesStreamedResponse) validateEventModelIdentity(event *responsesStreamEvent) error {
+	if !s.strictModelBinding {
+		return nil
+	}
+	switch event.Type {
+	case "response.created", "response.in_progress", "response.completed", "response.done", "response.incomplete":
+		var response responsesAPIResponse
+		if len(event.Response) == 0 || json.Unmarshal(event.Response, &response) != nil {
+			return s.bindResponseModel("")
+		}
+		return s.bindResponseModel(response.Model)
+	default:
+		return nil
 	}
 }
 
@@ -499,7 +538,11 @@ func (s *responsesStreamedResponse) handleCompleted(respJSON json.RawMessage) {
 }
 
 func (s *responsesStreamedResponse) bindResponseModel(actual string) error {
-	resolved := strings.TrimSpace(actual)
+	actual = strings.TrimSpace(actual)
+	if s.strictModelBinding && s.modelSeen && actual != s.boundProviderModel {
+		return &ModelIdentityError{Requested: s.boundProviderModel, Actual: actual}
+	}
+	resolved := actual
 	if s.resolveModel != nil {
 		var err error
 		resolved, err = s.resolveModel(actual)
@@ -510,7 +553,10 @@ func (s *responsesStreamedResponse) bindResponseModel(actual string) error {
 	if resolved != "" {
 		s.model = resolved
 	}
-	s.modelSeen = strings.TrimSpace(actual) != ""
+	if actual != "" {
+		s.modelSeen = true
+		s.boundProviderModel = actual
+	}
 	return nil
 }
 

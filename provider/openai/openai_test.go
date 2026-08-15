@@ -3132,6 +3132,7 @@ func TestStrictModelBindingResponsesStreamBareTerminalPaths(t *testing.T) {
 				io.NopCloser(strings.NewReader(tt.sse)),
 				"gpt-5",
 				p.resolveResponseModel,
+				p.strictModelBinding,
 				nil,
 			)
 			defer stream.Close()

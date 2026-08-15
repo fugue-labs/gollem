@@ -253,7 +253,7 @@ func (p *Provider) requestStreamViaResponses(ctx context.Context, messages []cor
 		return &prebuiltResponsesStream{response: bound, instrumentation: ri}, nil
 	}
 
-	return newBoundResponsesStreamedResponse(resp.Body, p.model, p.resolveResponseModel, ri), nil
+	return newBoundResponsesStreamedResponse(resp.Body, p.model, p.resolveResponseModel, p.strictModelBinding, ri), nil
 }
 
 // applyChatGPTRequirements modifies a request for the ChatGPT backend:
