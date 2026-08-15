@@ -1363,7 +1363,7 @@ func (s *Server) handleBackgroundTerminalTerminate(ctx context.Context, raw json
 	}
 	approvalCtx := withRuntimeApprovalItemID(
 		ctx,
-		operationalTerminalTerminateApprovalItemID(processID),
+		operationalTerminalTerminateApprovalItemID(id),
 	)
 	if err := processSvc.Terminate(approvalCtx, processID); err != nil {
 		return nil, mapError("thread/backgroundTerminals/terminate", err)
@@ -1414,7 +1414,7 @@ func (s *Server) handleBackgroundTerminalWrite(ctx context.Context, raw json.Raw
 	if snapshot.Status != toolprocess.StatusRunning {
 		return nil, invalidParams("background terminal is not running", nil)
 	}
-	approvalCtx := withRuntimeApprovalItemID(ctx, operationalTerminalWriteApprovalItemID(processID))
+	approvalCtx := withRuntimeApprovalItemID(ctx, operationalTerminalWriteApprovalItemID(id))
 	if err := processSvc.WriteStdin(approvalCtx, processID, []byte(params.Input)); err != nil {
 		return nil, mapError("thread/backgroundTerminals/write", err)
 	}

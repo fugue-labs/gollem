@@ -47,7 +47,13 @@ func TestBackgroundTerminalOwnerLostAfterProcessServiceRestart(t *testing.T) {
 		t.Fatalf("reopen store: %v", err)
 	}
 
-	restartedProcess, err := toolprocess.NewService(root)
+	approvalItemIDs := make([]string, 0, 2)
+	restartedProcess, err := toolprocess.NewService(root, toolprocess.WithApproval(func(ctx context.Context, operation toolprocess.Operation) error {
+		if operation.Kind == toolprocess.OperationWriteStdin || operation.Kind == toolprocess.OperationTerminate {
+			approvalItemIDs = append(approvalItemIDs, runtimeApprovalItemIDFrom(ctx))
+		}
+		return nil
+	}))
 	if err != nil {
 		t.Fatalf("NewService restarted: %v", err)
 	}
@@ -88,8 +94,7 @@ func TestBackgroundTerminalOwnerLostAfterProcessServiceRestart(t *testing.T) {
 	// must still be distinct so controls cannot target the owner-lost record.
 	current, err := restartedProcess.Start(ctx, toolprocess.StartRequest{
 		ID:      first.ID,
-		Command: "sh",
-		Args:    []string{"-c", "sleep 30"},
+		Command: "cat",
 	})
 	if err != nil {
 		t.Fatalf("Start current: %v", err)
@@ -116,9 +121,24 @@ func TestBackgroundTerminalOwnerLostAfterProcessServiceRestart(t *testing.T) {
 	if currentTerminal.ID == "" || currentTerminal.ID == lost.ID || currentTerminal.PID == 0 {
 		t.Fatalf("current terminal identity = %#v", currentTerminal)
 	}
+	writeResponse := restartedServer.HandleRequest(ctx, request("thread/backgroundTerminals/write", map[string]any{
+		"id":    currentTerminal.ID,
+		"input": "public identity only\n",
+	}))
+	if writeResponse.Error != nil {
+		t.Fatalf("write current terminal: %v", writeResponse.Error)
+	}
+	if len(approvalItemIDs) != 1 || approvalItemIDs[0] != operationalTerminalWriteApprovalItemID(currentTerminal.ID) ||
+		approvalItemIDs[0] == operationalTerminalWriteApprovalItemID(current.ID) {
+		t.Fatalf("write approval item IDs = %#v", approvalItemIDs)
+	}
 	terminateResponse := restartedServer.HandleRequest(ctx, request("thread/backgroundTerminals/terminate", map[string]any{"id": currentTerminal.ID}))
 	if terminateResponse.Error != nil {
 		t.Fatalf("terminate current terminal: %v", terminateResponse.Error)
+	}
+	if len(approvalItemIDs) != 2 || approvalItemIDs[1] != operationalTerminalTerminateApprovalItemID(currentTerminal.ID) ||
+		approvalItemIDs[1] == operationalTerminalTerminateApprovalItemID(current.ID) {
+		t.Fatalf("terminate approval item IDs = %#v", approvalItemIDs)
 	}
 
 	cleanResponse := restartedServer.HandleRequest(ctx, request("thread/backgroundTerminals/clean", nil))
