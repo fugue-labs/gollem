@@ -2221,6 +2221,20 @@ func TestServerProcessPTYHandlers(t *testing.T) {
 	if writeResp.Error != nil {
 		t.Fatalf("process/writeStdin PTY error: %v", writeResp.Error)
 	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		snapshot, err := processSvc.Snapshot(ctx, started.Process.ID)
+		if err != nil {
+			t.Fatalf("snapshot after PTY write: %v", err)
+		}
+		if strings.Contains(string(snapshot.Stdout), "hello") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("PTY process did not echo input before kill; stdout = %q", snapshot.Stdout)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err := processSvc.Kill(ctx, started.Process.ID); err != nil {
 		t.Fatalf("Kill PTY process: %v", err)
 	}
