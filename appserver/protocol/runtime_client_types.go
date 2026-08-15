@@ -176,18 +176,19 @@ type ModelCatalogListResponse struct {
 }
 
 type RuntimeModelParams struct {
-	ProviderID       string          `json:"providerId,omitempty"`
-	Provider         string          `json:"provider,omitempty"`
-	Model            string          `json:"model,omitempty"`
-	MaxTokens        *int            `json:"maxTokens,omitempty"`
-	Temperature      *float64        `json:"temperature,omitempty"`
-	TopP             *float64        `json:"topP,omitempty"`
-	ThinkingBudget   *int            `json:"thinkingBudget,omitempty"`
-	AdaptiveThinking *bool           `json:"adaptiveThinking,omitempty"`
-	ReasoningEffort  *string         `json:"reasoningEffort,omitempty"`
-	StopSequences    []string        `json:"stopSequences,omitempty"`
-	Settings         map[string]any  `json:"settings,omitempty"`
-	Input            json.RawMessage `json:"input,omitempty"`
+	ProviderID         string          `json:"providerId,omitempty"`
+	Provider           string          `json:"provider,omitempty"`
+	Model              string          `json:"model,omitempty"`
+	MaxTokens          *int            `json:"maxTokens,omitempty"`
+	Temperature        *float64        `json:"temperature,omitempty"`
+	TopP               *float64        `json:"topP,omitempty"`
+	ThinkingBudget     *int            `json:"thinkingBudget,omitempty"`
+	AdaptiveThinking   *bool           `json:"adaptiveThinking,omitempty"`
+	ReasoningEffort    *string         `json:"reasoningEffort,omitempty"`
+	PromptCacheEnabled *bool           `json:"promptCacheEnabled,omitempty"`
+	StopSequences      []string        `json:"stopSequences,omitempty"`
+	Settings           map[string]any  `json:"settings,omitempty"`
+	Input              json.RawMessage `json:"input,omitempty"`
 }
 
 type ThreadRunStartParams struct {

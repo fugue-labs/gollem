@@ -117,13 +117,14 @@ func runtimeSelectionWithThreadDefaults(selection RuntimeModelSelection, setting
 
 func runtimeModelSettingsFromParams(params RuntimeModelParams) core.ModelSettings {
 	settings := core.ModelSettings{
-		MaxTokens:        params.MaxTokens,
-		Temperature:      params.Temperature,
-		TopP:             params.TopP,
-		ThinkingBudget:   params.ThinkingBudget,
-		AdaptiveThinking: params.AdaptiveThinking,
-		ReasoningEffort:  params.ReasoningEffort,
-		StopSequences:    append([]string(nil), params.StopSequences...),
+		MaxTokens:          params.MaxTokens,
+		Temperature:        params.Temperature,
+		TopP:               params.TopP,
+		ThinkingBudget:     params.ThinkingBudget,
+		AdaptiveThinking:   params.AdaptiveThinking,
+		ReasoningEffort:    params.ReasoningEffort,
+		PromptCacheEnabled: params.PromptCacheEnabled,
+		StopSequences:      append([]string(nil), params.StopSequences...),
 	}
 	if settings.ReasoningEffort == nil {
 		if effort := stringSetting(params.Settings, "reasoningEffort"); effort != "" {
@@ -138,11 +139,19 @@ func runtimeModelSettingsFromInput(input json.RawMessage) core.ModelSettings {
 	if len(input) == 0 || json.Unmarshal(input, &stored) != nil {
 		return core.ModelSettings{}
 	}
-	effort := strings.TrimSpace(stored.ReasoningEffort)
-	if effort == "" {
-		return core.ModelSettings{}
+	settings := core.ModelSettings{PromptCacheEnabled: cloneBool(stored.PromptCacheEnabled)}
+	if effort := strings.TrimSpace(stored.ReasoningEffort); effort != "" {
+		settings.ReasoningEffort = &effort
 	}
-	return core.ModelSettings{ReasoningEffort: &effort}
+	return settings
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func runtimeModelSettingsWithThreadDefaults(
@@ -155,6 +164,16 @@ func runtimeModelSettingsWithThreadDefaults(
 		}
 	}
 	return settings
+}
+
+func mergeRuntimeModelSettings(primary, fallback core.ModelSettings) core.ModelSettings {
+	if primary.ReasoningEffort == nil {
+		primary.ReasoningEffort = fallback.ReasoningEffort
+	}
+	if primary.PromptCacheEnabled == nil {
+		primary.PromptCacheEnabled = cloneBool(fallback.PromptCacheEnabled)
+	}
+	return primary
 }
 
 func mergeRuntimeReasoningIntoSettings(
@@ -215,15 +234,4 @@ func stringSetting(settings map[string]any, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(text)
-}
-
-func firstRaw(values ...json.RawMessage) json.RawMessage {
-	for _, value := range values {
-		if len(value) > 0 {
-			out := make([]byte, len(value))
-			copy(out, value)
-			return out
-		}
-	}
-	return nil
 }

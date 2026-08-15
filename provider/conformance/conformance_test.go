@@ -18,15 +18,17 @@ import (
 )
 
 func TestDeterministicProviderDriverConformance(t *testing.T) {
+	openAIPromptCache := &promptCacheFixture{}
 	openAICancellationReady := make(chan struct{})
 	openAIRetry := newRetryFixture()
 	openAITimeout := newTimeoutFixture()
-	openAIServer := httptest.NewServer(openAIConformanceFixture(t, openAICancellationReady, openAIRetry, openAITimeout))
+	openAIServer := httptest.NewServer(openAIConformanceFixture(t, openAIPromptCache, openAICancellationReady, openAIRetry, openAITimeout))
 	defer openAIServer.Close()
+	anthropicPromptCache := &promptCacheFixture{}
 	anthropicCancellationReady := make(chan struct{})
 	anthropicRetry := newRetryFixture()
 	anthropicTimeout := newTimeoutFixture()
-	anthropicServer := httptest.NewServer(anthropicConformanceFixture(t, anthropicCancellationReady, anthropicRetry, anthropicTimeout))
+	anthropicServer := httptest.NewServer(anthropicConformanceFixture(t, anthropicPromptCache, anthropicCancellationReady, anthropicRetry, anthropicTimeout))
 	defer anthropicServer.Close()
 
 	cases := []struct {
@@ -37,12 +39,13 @@ func TestDeterministicProviderDriverConformance(t *testing.T) {
 			name: "native OpenAI",
 			model: func() (conformance.Driver, error) {
 				return conformance.Driver{
-					Name:                "native OpenAI",
-					Model:               openai.New(openai.WithAPIKey("test-openai-key"), openai.WithBaseURL(openAIServer.URL), openai.WithModel("gpt-4o")),
-					ReasoningModel:      openai.New(openai.WithAPIKey("test-openai-key"), openai.WithBaseURL(openAIServer.URL), openai.WithModel("gpt-5")),
-					Claims:              conformance.Claims{ToolCalls: true, StructuredOutput: true, Vision: true, CacheReadUsage: true, Streaming: true, Usage: true, Cancellation: true, PartialStream: true, MalformedStream: true, DisconnectStream: true, Retryability: true, RequestTimeout: true, StreamTimeout: true, ReasoningVisibility: true},
-					CancellationReady:   openAICancellationReady,
-					RequestTimeoutReady: openAITimeout.readyFor("gpt-4o"),
+					Name:                  "native OpenAI",
+					Model:                 openai.New(openai.WithAPIKey("test-openai-key"), openai.WithBaseURL(openAIServer.URL), openai.WithModel("gpt-4o"), openai.WithPromptCacheKey("conformance-cache"), openai.WithPromptCacheRetention("24h")),
+					ReasoningModel:        openai.New(openai.WithAPIKey("test-openai-key"), openai.WithBaseURL(openAIServer.URL), openai.WithModel("gpt-5")),
+					Claims:                conformance.Claims{ToolCalls: true, StructuredOutput: true, Vision: true, CacheReadUsage: true, PromptCacheActivation: true, Streaming: true, Usage: true, Cancellation: true, PartialStream: true, MalformedStream: true, DisconnectStream: true, Retryability: true, RequestTimeout: true, StreamTimeout: true, ReasoningVisibility: true},
+					PromptCacheActivation: openAIPromptCache.verify,
+					CancellationReady:     openAICancellationReady,
+					RequestTimeoutReady:   openAITimeout.readyFor("gpt-4o"),
 					Expectations: conformance.Expectations{
 						ResponseText:          "openai response",
 						ToolName:              "conformance_echo",
@@ -97,12 +100,13 @@ func TestDeterministicProviderDriverConformance(t *testing.T) {
 			model: func() (conformance.Driver, error) {
 				model := anthropic.New(anthropic.WithAPIKey("test-anthropic-key"), anthropic.WithBaseURL(anthropicServer.URL), anthropic.WithModel(anthropic.ClaudeSonnet46))
 				return conformance.Driver{
-					Name:                "native Anthropic",
-					Model:               model,
-					ReasoningModel:      model,
-					Claims:              conformance.Claims{ToolCalls: true, StructuredOutput: true, Vision: true, CacheReadUsage: true, Streaming: true, Usage: true, Cancellation: true, PartialStream: true, MalformedStream: true, DisconnectStream: true, Retryability: true, RequestTimeout: true, StreamTimeout: true, ReasoningVisibility: true},
-					CancellationReady:   anthropicCancellationReady,
-					RequestTimeoutReady: anthropicTimeout.readyFor(anthropic.ClaudeSonnet46),
+					Name:                  "native Anthropic",
+					Model:                 model,
+					ReasoningModel:        model,
+					Claims:                conformance.Claims{ToolCalls: true, StructuredOutput: true, Vision: true, CacheReadUsage: true, PromptCacheActivation: true, Streaming: true, Usage: true, Cancellation: true, PartialStream: true, MalformedStream: true, DisconnectStream: true, Retryability: true, RequestTimeout: true, StreamTimeout: true, ReasoningVisibility: true},
+					PromptCacheActivation: anthropicPromptCache.verify,
+					CancellationReady:     anthropicCancellationReady,
+					RequestTimeoutReady:   anthropicTimeout.readyFor(anthropic.ClaudeSonnet46),
 					Expectations: conformance.Expectations{
 						ResponseText:          "anthropic response",
 						ToolName:              "conformance_echo",
@@ -134,6 +138,31 @@ func TestDeterministicProviderDriverConformance(t *testing.T) {
 			}
 		})
 	}
+}
+
+type promptCacheFixture struct {
+	mu      sync.Mutex
+	request bool
+	stream  bool
+}
+
+func (f *promptCacheFixture) record(stream bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if stream {
+		f.stream = true
+		return
+	}
+	f.request = true
+}
+
+func (f *promptCacheFixture) verify() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.request || !f.stream {
+		return fmt.Errorf("observed request=%t stream=%t, want both", f.request, f.stream)
+	}
+	return nil
 }
 
 func TestVerifyRejectsUnprovenClaims(t *testing.T) {
@@ -348,7 +377,7 @@ func TestVerifyRejectsStructuredOutputValueMismatch(t *testing.T) {
 	}
 }
 
-func openAIConformanceFixture(t *testing.T, cancellationReady chan<- struct{}, retry *retryFixture, timeout *timeoutFixture) http.Handler {
+func openAIConformanceFixture(t *testing.T, promptCache *promptCacheFixture, cancellationReady chan<- struct{}, retry *retryFixture, timeout *timeoutFixture) http.Handler {
 	t.Helper()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/responses" {
@@ -373,6 +402,10 @@ func openAIConformanceFixture(t *testing.T, cancellationReady chan<- struct{}, r
 		}
 		if err := json.Unmarshal(body, &request); err != nil {
 			t.Fatalf("decode OpenAI request: %v", err)
+		}
+		if request.Model == "gpt-4o" && strings.Contains(string(body), "run conformance") {
+			assertOpenAIPromptCache(t, body)
+			promptCache.record(request.Stream)
 		}
 		if strings.Contains(string(body), "cancel conformance") {
 			waitForCancellation(r, cancellationReady)
@@ -482,7 +515,7 @@ data: [DONE]
 `)
 }
 
-func anthropicConformanceFixture(t *testing.T, cancellationReady chan<- struct{}, retry *retryFixture, timeout *timeoutFixture) http.Handler {
+func anthropicConformanceFixture(t *testing.T, promptCache *promptCacheFixture, cancellationReady chan<- struct{}, retry *retryFixture, timeout *timeoutFixture) http.Handler {
 	t.Helper()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages" {
@@ -502,6 +535,10 @@ func anthropicConformanceFixture(t *testing.T, cancellationReady chan<- struct{}
 		}
 		if err := json.Unmarshal(body, &request); err != nil {
 			t.Fatalf("decode Anthropic request: %v", err)
+		}
+		if strings.Contains(string(body), "run conformance") {
+			assertAnthropicPromptCache(t, body)
+			promptCache.record(request.Stream)
 		}
 		if strings.Contains(string(body), "cancel conformance") {
 			waitForCancellation(r, cancellationReady)
@@ -654,6 +691,37 @@ func assertOpenAIStructuredOutputFormat(t *testing.T, raw json.RawMessage) {
 		t.Fatalf("OpenAI json_schema = %#v, want strict %q schema", schema, core.DefaultOutputToolName)
 	}
 	assertStructuredOutputSchema(t, schema.Schema)
+}
+
+func assertOpenAIPromptCache(t *testing.T, body []byte) {
+	t.Helper()
+	var request map[string]any
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatalf("decode OpenAI prompt-cache request: %v", err)
+	}
+	if request["prompt_cache_key"] != "conformance-cache" {
+		t.Fatalf("OpenAI prompt_cache_key = %#v, want conformance-cache", request["prompt_cache_key"])
+	}
+	if request["prompt_cache_retention"] != "24h" {
+		t.Fatalf("OpenAI prompt_cache_retention = %#v, want 24h", request["prompt_cache_retention"])
+	}
+}
+
+func assertAnthropicPromptCache(t *testing.T, body []byte) {
+	t.Helper()
+	var request struct {
+		System []struct {
+			CacheControl *struct {
+				Type string `json:"type"`
+			} `json:"cache_control"`
+		} `json:"system"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatalf("decode Anthropic prompt-cache request: %v", err)
+	}
+	if len(request.System) == 0 || request.System[len(request.System)-1].CacheControl == nil || request.System[len(request.System)-1].CacheControl.Type != "ephemeral" {
+		t.Fatalf("Anthropic prompt-cache system blocks = %#v, want final ephemeral marker", request.System)
+	}
 }
 
 func assertAnthropicStructuredOutputTool(t *testing.T, raw json.RawMessage) {

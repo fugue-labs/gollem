@@ -1689,6 +1689,28 @@ func TestAnthropicCacheControl_Disabled(t *testing.T) {
 	}
 }
 
+func TestPromptCacheEnabledSettingOverridesProviderDefault(t *testing.T) {
+	disabled := false
+	p := New()
+	if p.promptCacheEnabled(&core.ModelSettings{PromptCacheEnabled: &disabled}) {
+		t.Fatal("explicit prompt-cache disable should suppress Anthropic cache_control markers")
+	}
+	req, err := buildRequest([]core.ModelMessage{core.ModelRequest{Parts: []core.ModelRequestPart{
+		core.SystemPromptPart{Content: "stable context"},
+		core.UserPromptPart{Content: "hello"},
+	}}}, nil, nil, ClaudeSonnet46, 4096, false, p.promptCacheEnabled(&core.ModelSettings{PromptCacheEnabled: &disabled}), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.System) != 1 || req.System[0].CacheControl != nil {
+		t.Fatalf("disabled Anthropic cache markers = %#v, want no marker", req.System)
+	}
+	enabled := true
+	if !p.promptCacheEnabled(&core.ModelSettings{PromptCacheEnabled: &enabled}) {
+		t.Fatal("explicit prompt-cache enable should retain Anthropic cache_control markers")
+	}
+}
+
 func TestAnthropicCacheControl_UsageTracking(t *testing.T) {
 	usage := apiUsage{
 		InputTokens:              100,

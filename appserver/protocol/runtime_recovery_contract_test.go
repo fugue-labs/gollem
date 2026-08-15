@@ -25,6 +25,7 @@ func TestTurnRunRetryContractIsGeneratedAndBound(t *testing.T) {
 		"thinkingBudget",
 		"adaptiveThinking",
 		"reasoningEffort",
+		"promptCacheEnabled",
 		"stopSequences",
 		"settings",
 		"input",

@@ -42,6 +42,12 @@ type ModelSettings struct {
 	// Fable). Per-provider gating rejects values a given model doesn't accept
 	// (e.g., "xhigh" requires Opus 4.7+; "max" requires 4.6+).
 	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
+	// PromptCacheEnabled controls Gollem's explicit prompt-cache request metadata.
+	// Nil preserves the provider default. False suppresses Gollem-managed cache
+	// keys, cache-control markers, and configured cache references; true asks a
+	// provider to emit its configured native cache control. It does not create a
+	// provider cache or override provider-side automatic caching.
+	PromptCacheEnabled *bool `json:"prompt_cache_enabled,omitempty"`
 	// StopSequences causes generation to halt when the model would emit any
 	// listed string. Supported by Anthropic (stop_sequences) and Gemini
 	// (stopSequences). Ignored by providers that don't support it (e.g.,

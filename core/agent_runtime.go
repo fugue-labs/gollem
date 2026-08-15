@@ -134,6 +134,10 @@ func cloneModelSettings(settings *ModelSettings) *ModelSettings {
 	}
 	cloned := *settings
 	cloned.ToolChoice = cloneToolChoice(settings.ToolChoice)
+	if settings.PromptCacheEnabled != nil {
+		promptCacheEnabled := *settings.PromptCacheEnabled
+		cloned.PromptCacheEnabled = &promptCacheEnabled
+	}
 	return &cloned
 }
 

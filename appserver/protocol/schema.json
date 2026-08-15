@@ -17148,6 +17148,16 @@
         "model": {
           "type": "string"
         },
+        "promptCacheEnabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "provider": {
           "type": "string"
         },
@@ -22829,6 +22839,16 @@
         "prompt": {
           "type": "string"
         },
+        "promptCacheEnabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "provider": {
           "type": "string"
         },
@@ -24498,6 +24518,16 @@
         "prompt": {
           "type": "string"
         },
+        "promptCacheEnabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "provider": {
           "type": "string"
         },
@@ -24648,6 +24678,16 @@
         },
         "prompt": {
           "type": "string"
+        },
+        "promptCacheEnabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "provider": {
           "type": "string"

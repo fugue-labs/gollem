@@ -3519,6 +3519,7 @@ export type RuntimeModelParams = {
   "input"?: unknown;
   "maxTokens"?: number | null;
   "model"?: string;
+  "promptCacheEnabled"?: boolean | null;
   "provider"?: string;
   "providerId"?: string;
   "reasoningEffort"?: string | null;
@@ -4304,6 +4305,7 @@ export type ThreadRunStartParams = {
   "metadata"?: Record<string, unknown> | null;
   "model"?: string;
   "prompt"?: string;
+  "promptCacheEnabled"?: boolean | null;
   "provider"?: string;
   "providerId"?: string;
   "reasoningEffort"?: string | null;
@@ -4664,6 +4666,7 @@ export type TurnRunRetryParams = {
   "metadata"?: Record<string, unknown> | null;
   "model"?: string;
   "prompt"?: string;
+  "promptCacheEnabled"?: boolean | null;
   "provider"?: string;
   "providerId"?: string;
   "reasoningEffort"?: string | null;
@@ -4691,6 +4694,7 @@ export type TurnRunStartParams = {
   "metadata"?: Record<string, unknown> | null;
   "model"?: string;
   "prompt"?: string;
+  "promptCacheEnabled"?: boolean | null;
   "provider"?: string;
   "providerId"?: string;
   "reasoningEffort"?: string | null;

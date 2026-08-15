@@ -17,8 +17,8 @@ of behavior and must not enable a control solely on provider identity.
 | Structured output | Proven native JSON-schema output | Unsupported | Proven schema-backed `final_result` tool output | `provider/conformance` runs native output mode through a typed agent and verifies the normalized result; fixtures assert OpenAI `response_format` and Anthropic's generated output tool schema |
 | Vision image input | Proven | Unsupported | Proven | `provider/conformance` sends a deterministic PNG data URI through `core.ImagePart`, asserts each provider's native image wire format, and verifies the normalized response |
 | Reasoning visibility | Proven where catalog-supported | Unsupported | Proven where catalog-supported | `provider/conformance` verifies native `ThinkingPart` start/delta events and final retention; local Chat Completions remains unsupported |
-| Prompt cache / Responses API | Catalog-supported where applicable | Unsupported | Catalog-supported where applicable | Provider-specific tests; no common conformance claim yet |
-| Cache-read token accounting | Proven | Unsupported | Proven | `provider/conformance` verifies provider-reported cache reads normalize to `core.Usage.CacheReadTokens`; this is accounting evidence, not a portable prompt-cache activation control |
+| Prompt-cache activation | Proven | Unsupported | Proven | `provider/conformance` sends `core.ModelSettings.PromptCacheEnabled=true` on normal and streaming requests and fixtures observe OpenAI cache metadata or Anthropic `cache_control` markers |
+| Cache-read token accounting | Proven | Unsupported | Proven | `provider/conformance` verifies provider-reported cache reads normalize to `core.Usage.CacheReadTokens`; accounting and activation remain distinct evidence |
 | Malformed JSON stream event normalization | Proven | Proven | Proven | `provider/conformance` plus provider parser tests; returns `StreamProtocolError` without raw event data |
 | Abrupt EOF partial-stream result | Proven | Proven | Proven | `provider/conformance` plus provider parser tests; preserves partial response and returns `StreamIncompleteError` |
 | Read-error peer-disconnect classification | Proven | Proven | Proven | `provider/conformance` plus provider parser tests; returns source-free `StreamTransportError`, while context cancellation remains intact |
@@ -27,6 +27,12 @@ of behavior and must not enable a control solely on provider identity.
 | Post-output retry / replay | Not yet proven | Not yet proven | Not yet proven | A stream may have produced caller-visible output; recovery must not replay it without an explicit safe-resume contract |
 | Endpoint health probe | Unsupported | Proven | Unsupported | `provider/health/probe` performs a loopback-only `GET /v1/models`; it returns only a typed status and never starts a model turn |
 | Capability mismatch | Catalog/daemon proven | Catalog/daemon proven | Catalog/daemon proven | `ValidateAgentRuntimeSelection` rejects unconfigured, unknown, cross-provider, and non-streaming/non-tool-capable selections before the daemon persists a thread or turn; Slang continues to render the same condition as unavailable |
+
+`core.ModelSettings.PromptCacheEnabled` is optional: `nil` preserves the
+provider default, `true` requests its configured native cache control, and
+`false` suppresses Gollem-managed explicit cache metadata. It does not create
+cache entries, guarantee a cache hit, disable opaque provider-side automatic
+caching, or authorize a local response replay.
 
 `Catalog-supported` means the catalog may expose the capability only for the
 listed provider/model profile. It does not make that behavior part of the common

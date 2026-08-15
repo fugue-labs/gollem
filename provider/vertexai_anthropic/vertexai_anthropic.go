@@ -291,7 +291,7 @@ func (p *Provider) Request(ctx context.Context, messages []core.ModelMessage, se
 	if err != nil {
 		return nil, fmt.Errorf("vertexai_anthropic: failed to build request: %w", err)
 	}
-	p.applyPromptCacheControl(req)
+	p.applyPromptCacheControl(req, settings)
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -331,7 +331,7 @@ func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessa
 	if err != nil {
 		return nil, fmt.Errorf("vertexai_anthropic: failed to build request: %w", err)
 	}
-	p.applyPromptCacheControl(req)
+	p.applyPromptCacheControl(req, settings)
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -385,8 +385,8 @@ func envEnabled(name string) bool {
 	}
 }
 
-func (p *Provider) applyPromptCacheControl(req *apiRequest) {
-	if req == nil || !p.promptCachingEnabled {
+func (p *Provider) applyPromptCacheControl(req *apiRequest, settings *core.ModelSettings) {
+	if req == nil || !p.promptCachingEnabled || (settings != nil && settings.PromptCacheEnabled != nil && !*settings.PromptCacheEnabled) {
 		return
 	}
 	cc := &apiCacheControl{Type: "ephemeral"}

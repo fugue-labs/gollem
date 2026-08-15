@@ -483,8 +483,7 @@ func (p *Provider) Request(ctx context.Context, messages []core.ModelMessage, se
 	if err != nil {
 		return nil, fmt.Errorf("openai: failed to build request: %w", err)
 	}
-	req.PromptCacheKey = p.promptCacheKey
-	req.PromptCacheRetention = p.promptCacheRetention
+	p.applyChatPromptCacheSettings(req, settings)
 	req.ServiceTier = p.serviceTier
 
 	body, err := json.Marshal(req)
@@ -494,7 +493,7 @@ func (p *Provider) Request(ctx context.Context, messages []core.ModelMessage, se
 	// Count the built API messages, not the input slice: one ModelMessage can
 	// expand into multiple API messages (multi-part system/user/tool content).
 	ri.setRequestShape(len(body), len(req.Messages))
-	ri.markCacheKey(p.promptCacheKey)
+	ri.markCacheKey(req.PromptCacheKey)
 
 	resp, err := p.doRequest(ctx, chatCompletionsEndpoint, body, ri)
 	if err != nil {
@@ -535,8 +534,7 @@ func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessa
 		ri.finish()
 		return nil, fmt.Errorf("openai: failed to build request: %w", err)
 	}
-	req.PromptCacheKey = p.promptCacheKey
-	req.PromptCacheRetention = p.promptCacheRetention
+	p.applyChatPromptCacheSettings(req, settings)
 	req.ServiceTier = p.serviceTier
 
 	body, err := json.Marshal(req)
@@ -547,7 +545,7 @@ func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessa
 	// Count the built API messages, not the input slice: one ModelMessage can
 	// expand into multiple API messages (multi-part system/user/tool content).
 	ri.setRequestShape(len(body), len(req.Messages))
-	ri.markCacheKey(p.promptCacheKey)
+	ri.markCacheKey(req.PromptCacheKey)
 
 	resp, err := p.doRequest(ctx, chatCompletionsEndpoint, body, ri) //nolint:bodyclose // Response body ownership transfers to streamedResponse.
 	if err != nil {
@@ -565,6 +563,18 @@ func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessa
 	}
 
 	return newBoundStreamedResponse(resp.Body, p.model, p.resolveResponseModel, ri), nil
+}
+
+func (p *Provider) promptCacheEnabled(settings *core.ModelSettings) bool {
+	return settings == nil || settings.PromptCacheEnabled == nil || *settings.PromptCacheEnabled
+}
+
+func (p *Provider) applyChatPromptCacheSettings(req *apiRequest, settings *core.ModelSettings) {
+	if req == nil || !p.promptCacheEnabled(settings) {
+		return
+	}
+	req.PromptCacheKey = p.promptCacheKey
+	req.PromptCacheRetention = p.promptCacheRetention
 }
 
 // responsesEP returns the Responses API endpoint path. ChatGPT subscription

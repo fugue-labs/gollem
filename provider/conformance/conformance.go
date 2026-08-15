@@ -21,20 +21,21 @@ import (
 // A driver must not advertise one of these capabilities in Slang unless it has
 // a matching deterministic fixture and this verification passes.
 type Claims struct {
-	ToolCalls           bool
-	StructuredOutput    bool
-	Vision              bool
-	CacheReadUsage      bool
-	Streaming           bool
-	Usage               bool
-	Cancellation        bool
-	PartialStream       bool
-	MalformedStream     bool
-	DisconnectStream    bool
-	Retryability        bool
-	RequestTimeout      bool
-	StreamTimeout       bool
-	ReasoningVisibility bool
+	ToolCalls             bool
+	StructuredOutput      bool
+	Vision                bool
+	CacheReadUsage        bool
+	PromptCacheActivation bool
+	Streaming             bool
+	Usage                 bool
+	Cancellation          bool
+	PartialStream         bool
+	MalformedStream       bool
+	DisconnectStream      bool
+	Retryability          bool
+	RequestTimeout        bool
+	StreamTimeout         bool
+	ReasoningVisibility   bool
 }
 
 // Expectations declares the normalized outputs a deterministic fixture
@@ -63,13 +64,14 @@ type Expectations struct {
 // Driver binds a provider model to the common capability claims and expected
 // normalized results that its deterministic fixture produces.
 type Driver struct {
-	Name                string
-	Model               core.Model
-	Claims              Claims
-	Expectations        Expectations
-	CancellationReady   <-chan struct{}
-	RequestTimeoutReady <-chan struct{}
-	ReasoningModel      core.Model
+	Name                  string
+	Model                 core.Model
+	Claims                Claims
+	Expectations          Expectations
+	CancellationReady     <-chan struct{}
+	RequestTimeoutReady   <-chan struct{}
+	ReasoningModel        core.Model
+	PromptCacheActivation func() error
 }
 
 // Verify exercises the claimed common model surface through core.Model. It is
@@ -98,6 +100,9 @@ func Verify(ctx context.Context, driver Driver) error {
 	}
 	if driver.Claims.CacheReadUsage && driver.Expectations.CacheReadTokens <= 0 {
 		return fmt.Errorf("provider conformance: %s cache-read fixture must expect positive cache-read tokens", driver.Name)
+	}
+	if driver.Claims.PromptCacheActivation && driver.PromptCacheActivation == nil {
+		return fmt.Errorf("provider conformance: %s prompt-cache fixture must observe request activation", driver.Name)
 	}
 	if driver.Claims.Streaming && strings.TrimSpace(driver.Expectations.StreamText) == "" {
 		return fmt.Errorf("provider conformance: %s streaming fixture must expect stream text", driver.Name)
@@ -141,7 +146,9 @@ func Verify(ctx context.Context, driver Driver) error {
 			},
 		}}
 	}
-	response, err := driver.Model.Request(ctx, conformanceMessages(), nil, params)
+	promptCacheEnabled := true
+	promptCacheSettings := &core.ModelSettings{PromptCacheEnabled: &promptCacheEnabled}
+	response, err := driver.Model.Request(ctx, conformanceMessages(), promptCacheSettings, params)
 	if err != nil {
 		return fmt.Errorf("provider conformance: %s request: %w", driver.Name, err)
 	}
@@ -195,7 +202,7 @@ func Verify(ctx context.Context, driver Driver) error {
 	if !driver.Claims.Streaming {
 		return nil
 	}
-	stream, err := driver.Model.RequestStream(ctx, conformanceMessages(), nil, &core.ModelRequestParameters{AllowTextOutput: true})
+	stream, err := driver.Model.RequestStream(ctx, conformanceMessages(), promptCacheSettings, &core.ModelRequestParameters{AllowTextOutput: true})
 	if err != nil {
 		return fmt.Errorf("provider conformance: %s stream request: %w", driver.Name, err)
 	}
@@ -211,6 +218,11 @@ func Verify(ctx context.Context, driver Driver) error {
 	}
 	if err := verifyResponse(driver, stream.Response(), true); err != nil {
 		return err
+	}
+	if driver.Claims.PromptCacheActivation {
+		if err := driver.PromptCacheActivation(); err != nil {
+			return fmt.Errorf("provider conformance: %s prompt-cache activation: %w", driver.Name, err)
+		}
 	}
 	if driver.Claims.PartialStream {
 		if err := verifyPartialStream(ctx, driver); err != nil {
@@ -570,7 +582,10 @@ func verifyToolCall(driver Driver, parts []core.ModelResponsePart) error {
 
 func conformanceMessages() []core.ModelMessage {
 	return []core.ModelMessage{
-		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "run conformance"}}},
+		core.ModelRequest{Parts: []core.ModelRequestPart{
+			core.SystemPromptPart{Content: "stable conformance context"},
+			core.UserPromptPart{Content: "run conformance"},
+		}},
 	}
 }
 

@@ -191,7 +191,7 @@ func (p *Provider) Request(ctx context.Context, messages []core.ModelMessage, se
 	if err != nil {
 		return nil, fmt.Errorf("vertexai: failed to build request: %w", err)
 	}
-	p.applyCacheSettings(req)
+	p.applyCacheSettings(req, settings)
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -231,7 +231,7 @@ func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessa
 	if err != nil {
 		return nil, fmt.Errorf("vertexai: failed to build request: %w", err)
 	}
-	p.applyCacheSettings(req)
+	p.applyCacheSettings(req, settings)
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -271,8 +271,8 @@ func (p *Provider) setHeaders(ctx context.Context, req *http.Request) error {
 
 // applyCacheSettings attaches the cached content reference to the request
 // if configured on the provider.
-func (p *Provider) applyCacheSettings(req *geminiRequest) {
-	if p.cachedContent != "" {
+func (p *Provider) applyCacheSettings(req *geminiRequest, settings *core.ModelSettings) {
+	if p.cachedContent != "" && (settings == nil || settings.PromptCacheEnabled == nil || *settings.PromptCacheEnabled) {
 		req.CachedContent = p.cachedContent
 	}
 }

@@ -2705,6 +2705,40 @@ func TestAutoPromptCacheRetentionExplicit(t *testing.T) {
 	}
 }
 
+func TestPromptCacheEnabledSettingSuppressesExplicitMetadata(t *testing.T) {
+	disabled := false
+	p := New(
+		WithAPIKey("test-key"),
+		WithPromptCacheKey("stable-key"),
+		WithPromptCacheRetention("24h"),
+	)
+	if p.promptCacheEnabled(&core.ModelSettings{PromptCacheEnabled: &disabled}) {
+		t.Fatal("explicit prompt-cache disable should suppress OpenAI cache metadata")
+	}
+}
+
+func TestPromptCacheDisabledOmitsChatAndResponsesMetadata(t *testing.T) {
+	disabled := false
+	settings := &core.ModelSettings{PromptCacheEnabled: &disabled}
+	p := New(
+		WithAPIKey("test-key"),
+		WithPromptCacheKey("stable-key"),
+		WithPromptCacheRetention("24h"),
+	)
+
+	chat := &apiRequest{}
+	p.applyChatPromptCacheSettings(chat, settings)
+	if chat.PromptCacheKey != "" || chat.PromptCacheRetention != "" {
+		t.Fatalf("chat cache metadata = %#v, want omitted", chat)
+	}
+
+	responses := &responsesRequest{Model: GPT56}
+	p.applyResponsesEndpointSettingsForSettings(responses, settings)
+	if responses.PromptCacheKey != "" || responses.PromptCacheRetention != "" || responses.PromptCacheOptions != nil {
+		t.Fatalf("responses cache metadata = %#v, want omitted", responses)
+	}
+}
+
 func TestChatGPTAuthMode_Headers(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Verify ChatGPT-Account-ID header is set.

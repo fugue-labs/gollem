@@ -3,6 +3,7 @@ package protocol
 import (
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -70,6 +71,21 @@ func TestRuntimeClientBindingsAreExact(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("runtime client bindings = %#v, want %#v", got, want)
+	}
+}
+
+func TestRuntimeModelParamsExposePromptCacheSetting(t *testing.T) {
+	defs := JSONSchema()["$defs"].(Schema)
+	properties := defs["RuntimeModelParams"].(Schema)["properties"].(Schema)
+	if _, ok := properties["promptCacheEnabled"]; !ok {
+		t.Fatal("RuntimeModelParams schema omitted promptCacheEnabled")
+	}
+	generated, err := MarshalTypeScript()
+	if err != nil {
+		t.Fatalf("MarshalTypeScript: %v", err)
+	}
+	if !strings.Contains(string(generated), `"promptCacheEnabled"?: boolean | null;`) {
+		t.Fatal("RuntimeModelParams TypeScript omitted nullable promptCacheEnabled")
 	}
 }
 

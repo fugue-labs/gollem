@@ -134,7 +134,14 @@ func (p *Provider) requestViaResponses(ctx context.Context, messages []core.Mode
 	if err != nil {
 		return nil, fmt.Errorf("openai: failed to build responses request: %w", err)
 	}
-	p.applyResponsesEndpointSettings(req)
+	p.applyResponsesEndpointSettingsForSettings(req, settings)
+	// The WebSocket create event carries prompt_cache_key for its active
+	// Responses session even when a proxy URL prevents endpoint classification.
+	// Keep that established transport behavior, but honor an explicit per-turn
+	// disable before the request reaches the socket.
+	if p.shouldUseResponsesWebSocket() && p.promptCacheEnabled(settings) && req.PromptCacheKey == "" {
+		req.PromptCacheKey = p.promptCacheKey
+	}
 	return p.requestViaResponsesWithReq(ctx, req, ri)
 }
 
@@ -142,18 +149,27 @@ func (p *Provider) requestViaResponses(ctx context.Context, messages []core.Mode
 // request (caching, service tier, reasoning, verbosity). Shared by both the
 // synchronous and streaming request paths.
 func (p *Provider) applyResponsesEndpointSettings(req *responsesRequest) {
+	p.applyResponsesEndpointSettingsForSettings(req, nil)
+}
+
+func (p *Provider) applyResponsesEndpointSettingsForSettings(req *responsesRequest, settings *core.ModelSettings) {
+	cacheEnabled := p.promptCacheEnabled(settings)
 	if p.isChatGPTEndpoint() {
 		// ChatGPT backend supports prefix-based caching via prompt_cache_key.
-		req.PromptCacheKey = p.promptCacheKey
+		if cacheEnabled {
+			req.PromptCacheKey = p.promptCacheKey
+		}
 		p.applyChatGPTRequirements(req)
 	} else if p.isOpenAIEndpoint() {
-		req.PromptCacheKey = p.promptCacheKey
-		if isGPT56Model(req.Model) {
+		if cacheEnabled {
+			req.PromptCacheKey = p.promptCacheKey
+		}
+		if cacheEnabled && isGPT56Model(req.Model) {
 			// GPT-5.6 replaces the legacy retention policy with a minimum
 			// cache lifetime. 30m is currently the only supported TTL.
 			req.PromptCacheRetention = ""
 			req.PromptCacheOptions = &promptCacheOptions{TTL: "30m"}
-		} else {
+		} else if cacheEnabled {
 			req.PromptCacheRetention = p.promptCacheRetention
 			req.PromptCacheOptions = nil
 		}
@@ -173,11 +189,13 @@ func (p *Provider) applyResponsesEndpointSettings(req *responsesRequest) {
 		//
 		// Exception: ChatGPT auth with a custom/proxy URL still gets caching
 		// since the backend supports it regardless of proxy routing.
-		if p.hasChatGPTAuth() {
+		if cacheEnabled && p.hasChatGPTAuth() {
 			req.PromptCacheKey = p.promptCacheKey
 		}
 		req.Reasoning = nil
-		req.PromptCacheRetention = p.promptCacheRetention
+		if cacheEnabled {
+			req.PromptCacheRetention = p.promptCacheRetention
+		}
 	}
 }
 
@@ -206,7 +224,7 @@ func (p *Provider) requestStreamViaResponses(ctx context.Context, messages []cor
 	streamTrue := true
 	req.Stream = &streamTrue
 
-	p.applyResponsesEndpointSettings(req)
+	p.applyResponsesEndpointSettingsForSettings(req, settings)
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -351,13 +369,8 @@ func extractTextContent(content any) string {
 }
 
 func (p *Provider) requestViaResponsesWithReq(ctx context.Context, req *responsesRequest, ri *requestInstrumentation) (*core.ModelResponse, error) {
-	// The cache key actually sent is whatever applyResponsesEndpointSettings
-	// copied onto req, falling back to the provider's configured key (the WS
-	// create event carries it regardless of endpoint classification).
+	// The trace reports only cache metadata actually placed on this request.
 	cacheKey := req.PromptCacheKey
-	if cacheKey == "" {
-		cacheKey = p.promptCacheKey
-	}
 	ri.markCacheKey(cacheKey)
 
 	// Finish the active trace on return. ri is reassigned below when the

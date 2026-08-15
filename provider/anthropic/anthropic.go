@@ -247,7 +247,7 @@ func (p *Provider) ModelName() string {
 func (p *Provider) Request(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (*core.ModelResponse, error) {
 	ri := newRequestInstrumentation(p.requestObserver, p.model)
 	defer ri.finish()
-	req, err := buildRequest(messages, settings, params, p.model, p.maxTokens, false, !p.disablePromptCache, p.disableToolSearch)
+	req, err := buildRequest(messages, settings, params, p.model, p.maxTokens, false, p.promptCacheEnabled(settings), p.disableToolSearch)
 	if err != nil {
 		ri.recordError(err)
 		return nil, fmt.Errorf("anthropic: failed to build request: %w", err)
@@ -282,7 +282,7 @@ func (p *Provider) Request(ctx context.Context, messages []core.ModelMessage, se
 // RequestStream sends messages and returns a streaming response.
 func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessage, settings *core.ModelSettings, params *core.ModelRequestParameters) (core.StreamedResponse, error) {
 	ri := newRequestInstrumentation(p.requestObserver, p.model)
-	req, err := buildRequest(messages, settings, params, p.model, p.maxTokens, true, !p.disablePromptCache, p.disableToolSearch)
+	req, err := buildRequest(messages, settings, params, p.model, p.maxTokens, true, p.promptCacheEnabled(settings), p.disableToolSearch)
 	if err != nil {
 		ri.recordError(err)
 		ri.finish()
@@ -305,6 +305,13 @@ func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessa
 	}
 
 	return newStreamedResponse(resp.Body, p.model, ri), nil
+}
+
+func (p *Provider) promptCacheEnabled(settings *core.ModelSettings) bool {
+	if p.disablePromptCache {
+		return false
+	}
+	return settings == nil || settings.PromptCacheEnabled == nil || *settings.PromptCacheEnabled
 }
 
 // doRequest sends a single HTTP request and returns the response or a typed

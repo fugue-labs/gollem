@@ -47,6 +47,7 @@ func TestAgentRuntimeConfig_ClonesAndExports(t *testing.T) {
 	topP := 0.9
 	thinking := 256
 	effort := "high"
+	promptCacheEnabled := true
 	quota := &UsageQuota{
 		MaxRequests:    5,
 		MaxTotalTokens: 1000,
@@ -102,12 +103,13 @@ func TestAgentRuntimeConfig_ClonesAndExports(t *testing.T) {
 		return runtimeConfigOutput{Answer: "fixed"}, nil
 	})
 	agent.modelSettings = &ModelSettings{
-		MaxTokens:       &maxTokens,
-		Temperature:     &temperature,
-		TopP:            &topP,
-		ToolChoice:      ToolChoiceForce("direct_tool"),
-		ThinkingBudget:  &thinking,
-		ReasoningEffort: &effort,
+		MaxTokens:          &maxTokens,
+		Temperature:        &temperature,
+		TopP:               &topP,
+		ToolChoice:         ToolChoiceForce("direct_tool"),
+		ThinkingBudget:     &thinking,
+		ReasoningEffort:    &effort,
+		PromptCacheEnabled: &promptCacheEnabled,
 	}
 	agent.usageLimits = UsageLimits{
 		RequestLimit:   &reqLimit,
@@ -205,10 +207,10 @@ func TestAgentRuntimeConfig_ClonesAndExports(t *testing.T) {
 	if len(cfg.OutputValidators) != 1 || cfg.OutputValidators[0] == nil {
 		t.Fatalf("expected output validators, got %+v", cfg.OutputValidators)
 	}
-	if cfg.ModelSettings == nil || cfg.ModelSettings.ToolChoice == nil {
+	if cfg.ModelSettings == nil || cfg.ModelSettings.ToolChoice == nil || cfg.ModelSettings.PromptCacheEnabled == nil {
 		t.Fatalf("expected model settings clone, got %+v", cfg.ModelSettings)
 	}
-	if cfg.ModelSettings == agent.modelSettings || cfg.ModelSettings.ToolChoice == agent.modelSettings.ToolChoice {
+	if cfg.ModelSettings == agent.modelSettings || cfg.ModelSettings.ToolChoice == agent.modelSettings.ToolChoice || cfg.ModelSettings.PromptCacheEnabled == agent.modelSettings.PromptCacheEnabled {
 		t.Fatal("expected model settings and tool choice to be deep-cloned")
 	}
 	if cfg.UsageQuota == nil || cfg.UsageQuota == agent.usageQuota {

@@ -190,15 +190,7 @@ func (s *RuntimeService) Start(ctx context.Context, st store.Store, notifier run
 	}
 	s.mu.Unlock()
 	if len(req.Input) == 0 {
-		input, err := json.Marshal(runtimeTurnInput{
-			Prompt:          req.Prompt,
-			ProviderID:      req.Selection.ProviderID,
-			Provider:        req.Selection.Provider,
-			Model:           req.Selection.Model,
-			ReasoningEffort: runtimeReasoningEffort(req.ModelSettings),
-			Metadata:        cloneRuntimeMap(req.Metadata),
-			SubmittedAt:     time.Now().UTC(),
-		})
+		input, err := runtimeTurnInputJSON(req.Prompt, req.Selection, req.ModelSettings, req.Metadata)
 		if err != nil {
 			return nil, fmt.Errorf("marshal runtime input: %w", err)
 		}
@@ -291,6 +283,14 @@ func (s *RuntimeService) Retry(ctx context.Context, st store.Store, notifier run
 		return nil, ErrRuntimeShuttingDown
 	}
 	s.mu.Unlock()
+
+	if len(req.Input) == 0 {
+		input, err := runtimeTurnInputJSON(req.Prompt, req.Selection, req.ModelSettings, req.Metadata)
+		if err != nil {
+			return nil, err
+		}
+		req.Input = input
+	}
 
 	recoveryStore, ok := st.(store.RuntimeRecoveryStore)
 	if !ok {
@@ -639,13 +639,36 @@ func statusFromRuntimeError(err error) store.TurnStatus {
 }
 
 type runtimeTurnInput struct {
-	Prompt          string         `json:"prompt"`
-	ProviderID      string         `json:"providerId,omitempty"`
-	Provider        string         `json:"provider,omitempty"`
-	Model           string         `json:"model,omitempty"`
-	ReasoningEffort string         `json:"reasoningEffort,omitempty"`
-	Metadata        map[string]any `json:"metadata,omitempty"`
-	SubmittedAt     time.Time      `json:"submittedAt"`
+	Prompt             string         `json:"prompt"`
+	ProviderID         string         `json:"providerId,omitempty"`
+	Provider           string         `json:"provider,omitempty"`
+	Model              string         `json:"model,omitempty"`
+	ReasoningEffort    string         `json:"reasoningEffort,omitempty"`
+	PromptCacheEnabled *bool          `json:"promptCacheEnabled,omitempty"`
+	Metadata           map[string]any `json:"metadata,omitempty"`
+	SubmittedAt        time.Time      `json:"submittedAt"`
+}
+
+func runtimeTurnInputJSON(
+	prompt string,
+	selection RuntimeModelSelection,
+	settings core.ModelSettings,
+	metadata map[string]any,
+) (json.RawMessage, error) {
+	input, err := json.Marshal(runtimeTurnInput{
+		Prompt:             prompt,
+		ProviderID:         selection.ProviderID,
+		Provider:           selection.Provider,
+		Model:              selection.Model,
+		ReasoningEffort:    runtimeReasoningEffort(settings),
+		PromptCacheEnabled: runtimePromptCacheEnabled(settings),
+		Metadata:           cloneRuntimeMap(metadata),
+		SubmittedAt:        time.Now().UTC(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal runtime input: %w", err)
+	}
+	return input, nil
 }
 
 func runtimeReasoningEffort(settings core.ModelSettings) string {
@@ -653,6 +676,10 @@ func runtimeReasoningEffort(settings core.ModelSettings) string {
 		return ""
 	}
 	return strings.TrimSpace(*settings.ReasoningEffort)
+}
+
+func runtimePromptCacheEnabled(settings core.ModelSettings) *bool {
+	return cloneBool(settings.PromptCacheEnabled)
 }
 
 type runtimeResultPayload struct {
@@ -1001,5 +1028,6 @@ func hasRuntimeModelSettings(settings core.ModelSettings) bool {
 		settings.ThinkingBudget != nil ||
 		settings.AdaptiveThinking != nil ||
 		settings.ReasoningEffort != nil ||
+		settings.PromptCacheEnabled != nil ||
 		len(settings.StopSequences) > 0
 }

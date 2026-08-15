@@ -1620,9 +1620,7 @@ func (s *Server) handleTurnRetry(ctx context.Context, raw json.RawMessage) (any,
 	selection := runtimeSelectionFromParams(params.ProviderID, params.Provider, params.Model)
 	selection = mergeRuntimeSelection(selection, runtimeSelectionFromInput(source.Input))
 	modelSettings := runtimeModelSettingsFromParams(params.RuntimeModelParams)
-	if modelSettings.ReasoningEffort == nil {
-		modelSettings = runtimeModelSettingsFromInput(source.Input)
-	}
+	modelSettings = mergeRuntimeModelSettings(modelSettings, runtimeModelSettingsFromInput(source.Input))
 	if err := s.validateRuntimeSelection(selection, modelSettings); err != nil {
 		return nil, invalidParams(err.Error(), err)
 	}
@@ -1630,7 +1628,7 @@ func (s *Server) handleTurnRetry(ctx context.Context, raw json.RawMessage) (any,
 		SourceTurnID:   source.ID,
 		IdempotencyKey: idempotencyKey,
 		Prompt:         prompt,
-		Input:          firstRaw(params.Input, source.Input),
+		Input:          params.Input,
 		Metadata:       params.Metadata,
 		Selection:      selection,
 		ModelSettings:  modelSettings,

@@ -157,6 +157,42 @@ func TestRuntimeStartPersistsExplicitReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestRuntimeStartPersistsExplicitPromptCacheSetting(t *testing.T) {
+	ctx := context.Background()
+	st := newRuntimeTestStore(t)
+	thread, err := st.CreateThread(ctx, store.CreateThreadRequest{Title: "Prompt cache receipt"})
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	disabled := false
+	runtimeSvc := NewRuntimeService(WithRuntimeModel(
+		core.NewTestModel(core.TextResponse("done")),
+		RuntimeModelInfo{ProviderID: "openai", Model: "gpt-5"},
+	))
+
+	started, err := runtimeSvc.Start(ctx, st, nil, RuntimeStartRequest{
+		ThreadID: thread.ID,
+		Prompt:   "persist the prompt cache preference",
+		ModelSettings: core.ModelSettings{
+			PromptCacheEnabled: &disabled,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RuntimeService.Start: %v", err)
+	}
+	var input runtimeTurnInput
+	if err := json.Unmarshal(started.Turn.Input, &input); err != nil {
+		t.Fatalf("decode turn input: %v", err)
+	}
+	if input.PromptCacheEnabled == nil || *input.PromptCacheEnabled {
+		t.Fatalf("turn prompt cache setting = %#v, want false", input.PromptCacheEnabled)
+	}
+	inherited := runtimeModelSettingsFromInput(started.Turn.Input)
+	if inherited.PromptCacheEnabled == nil || *inherited.PromptCacheEnabled {
+		t.Fatalf("inherited prompt cache setting = %#v, want false", inherited.PromptCacheEnabled)
+	}
+}
+
 func TestServerRuntimeReasoningEffortFailsClosedAgainstModelCatalog(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -996,13 +1032,20 @@ func TestServerRuntimeThreadCompactBoundsResumeHistory(t *testing.T) {
 func TestServerRuntimeTurnRetryBranchesBeforeSourceTurn(t *testing.T) {
 	ctx := context.Background()
 	st := newRuntimeTestStore(t)
-	model := core.NewTestModel(core.TextResponse("first answer"), core.TextResponse("retry answer"))
+	model := core.NewTestModel(
+		core.TextResponse("first answer"),
+		core.TextResponse("retry answer"),
+		core.TextResponse("inherited retry answer"),
+	)
 	server := readyServer(
 		WithStore(st),
 		WithRuntimeService(NewRuntimeService(WithRuntimeModel(model, RuntimeModelInfo{ProviderID: "test", Model: "test-model"}))),
 	)
 
-	startResp := server.HandleRequest(ctx, request("thread/start", map[string]any{"prompt": "original prompt"}))
+	startResp := server.HandleRequest(ctx, request("thread/start", map[string]any{
+		"prompt":             "original prompt",
+		"promptCacheEnabled": false,
+	}))
 	if startResp.Error != nil {
 		t.Fatalf("thread/start error: %v", startResp.Error)
 	}
@@ -1012,11 +1055,27 @@ func TestServerRuntimeTurnRetryBranchesBeforeSourceTurn(t *testing.T) {
 	decodeResult(t, startResp, &started)
 	waitForNotificationSet(t, server, "turn/completed")
 
-	retryResp := server.HandleRequest(ctx, request("turn/retry", map[string]any{"turnId": started.Turn.ID}))
+	retryResp := server.HandleRequest(ctx, request("turn/retry", map[string]any{
+		"turnId":             started.Turn.ID,
+		"promptCacheEnabled": true,
+	}))
 	if retryResp.Error != nil {
 		t.Fatalf("turn/retry error: %v", retryResp.Error)
 	}
+	var retried protocol.TurnRunRetryResult
+	decodeResult(t, retryResp, &retried)
 	waitForNotificationSet(t, server, "turn/completed")
+	persisted, err := st.GetTurn(ctx, retried.Turn.ID)
+	if err != nil {
+		t.Fatalf("GetTurn retried: %v", err)
+	}
+	var persistedInput runtimeTurnInput
+	if err := json.Unmarshal(persisted.Input, &persistedInput); err != nil {
+		t.Fatalf("unmarshal retried input: %v", err)
+	}
+	if persistedInput.PromptCacheEnabled == nil || !*persistedInput.PromptCacheEnabled {
+		t.Fatalf("persisted retry prompt-cache setting = %#v, want explicit true override", persistedInput)
+	}
 
 	calls := model.Calls()
 	if len(calls) != 2 {
@@ -1025,7 +1084,26 @@ func TestServerRuntimeTurnRetryBranchesBeforeSourceTurn(t *testing.T) {
 	if len(calls[1].Messages) != 1 {
 		t.Fatalf("retry messages = %#v", calls[1].Messages)
 	}
+	if calls[1].Settings == nil || calls[1].Settings.PromptCacheEnabled == nil || !*calls[1].Settings.PromptCacheEnabled {
+		t.Fatalf("retry prompt-cache setting = %#v, want explicit true override", calls[1].Settings)
+	}
 	assertRuntimeUserPrompt(t, calls[1].Messages[0], "original prompt")
+
+	inheritedRetryResp := server.HandleRequest(ctx, request("turn/retry", map[string]any{
+		"turnId": retried.Turn.ID,
+	}))
+	if inheritedRetryResp.Error != nil {
+		t.Fatalf("inherited turn/retry error: %v", inheritedRetryResp.Error)
+	}
+	waitForNotificationSet(t, server, "turn/completed")
+
+	calls = model.Calls()
+	if len(calls) != 3 {
+		t.Fatalf("model calls after inherited retry = %d, want 3", len(calls))
+	}
+	if calls[2].Settings == nil || calls[2].Settings.PromptCacheEnabled == nil || !*calls[2].Settings.PromptCacheEnabled {
+		t.Fatalf("inherited retry prompt-cache setting = %#v, want persisted true", calls[2].Settings)
+	}
 }
 
 func TestServerRuntimeTurnRetryIsIdempotentAcrossDuplicateRequests(t *testing.T) {
