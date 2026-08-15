@@ -1970,3 +1970,15 @@ func TestMapUsageWithoutCachedContentTokens(t *testing.T) {
 		t.Errorf("expected CacheReadTokens 0 when not set, got %d", usage.CacheReadTokens)
 	}
 }
+
+func TestGetTokenSourceCreationErrorKeepsVertexPrefix(t *testing.T) {
+	p := New(WithCredentialsFile("/definitely/not/a/gcp-credential.json"))
+
+	_, err := p.getToken(context.Background())
+	if err == nil {
+		t.Fatal("getToken() error = nil, want source creation error")
+	}
+	if !strings.Contains(err.Error(), "vertexai: failed to create token source") {
+		t.Errorf("getToken() error = %q, want vertexai source-creation prefix", err)
+	}
+}

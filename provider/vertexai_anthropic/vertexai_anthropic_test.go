@@ -2004,6 +2004,18 @@ func TestParseHTTPErrorRetryAfter(t *testing.T) {
 	}
 }
 
+func TestGetTokenSourceCreationErrorKeepsVertexAnthropicPrefix(t *testing.T) {
+	p := New(WithCredentialsFile("/definitely/not/a/gcp-credential.json"))
+
+	_, err := p.getToken(context.Background())
+	if err == nil {
+		t.Fatal("getToken() error = nil, want source creation error")
+	}
+	if !strings.Contains(err.Error(), "vertexai_anthropic: failed to create token source") {
+		t.Errorf("getToken() error = %q, want vertexai_anthropic source-creation prefix", err)
+	}
+}
+
 // --- Test helpers ---
 
 type staticTokenSource struct {

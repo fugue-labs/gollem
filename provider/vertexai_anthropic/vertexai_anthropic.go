@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,10 +15,9 @@ import (
 	"sync"
 
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 
 	"github.com/fugue-labs/gollem/core"
-	"github.com/fugue-labs/gollem/provider/internal/vertexerror"
+	"github.com/fugue-labs/gollem/provider/internal/gcpauth"
 )
 
 // Model constants for Claude models via Vertex AI.
@@ -38,7 +38,6 @@ const (
 	defaultModel     = ClaudeSonnet46
 	defaultMaxTokens = 4096
 	anthropicVersion = "vertex-2023-10-16"
-	cloudScope       = "https://www.googleapis.com/auth/cloud-platform"
 )
 
 // isOpus47 reports whether the model string identifies Opus 4.7 or Mythos.
@@ -243,46 +242,18 @@ func (p *Provider) getToken(ctx context.Context) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.tokenSource == nil {
-		ts, err := p.createTokenSource(ctx)
-		if err != nil {
+	token, err := gcpauth.AccessToken(ctx, &p.tokenSource, gcpauth.Credentials{
+		File: p.credentialsFile,
+		JSON: p.credentialsJSON,
+	})
+	if err != nil {
+		var sourceCreationError *gcpauth.SourceCreationError
+		if errors.As(err, &sourceCreationError) {
 			return "", fmt.Errorf("vertexai_anthropic: failed to create token source: %w", err)
 		}
-		p.tokenSource = ts
-	}
-
-	token, err := p.tokenSource.Token()
-	if err != nil {
 		return "", fmt.Errorf("vertexai_anthropic: failed to get token: %w", err)
 	}
-	return token.AccessToken, nil
-}
-
-// createTokenSource creates an OAuth2 token source based on configuration.
-func (p *Provider) createTokenSource(ctx context.Context) (oauth2.TokenSource, error) {
-	if p.credentialsJSON != nil {
-		creds, err := google.CredentialsFromJSON(ctx, p.credentialsJSON, cloudScope) //nolint:staticcheck,nolintlint // credentials are explicitly configured by the process owner
-		if err != nil {
-			return nil, err
-		}
-		return creds.TokenSource, nil
-	}
-	if p.credentialsFile != "" {
-		data, err := os.ReadFile(p.credentialsFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read credentials file: %w", err)
-		}
-		creds, err := google.CredentialsFromJSON(ctx, data, cloudScope) //nolint:staticcheck,nolintlint // credentials are explicitly configured by the process owner
-		if err != nil {
-			return nil, err
-		}
-		return creds.TokenSource, nil
-	}
-	ts, err := google.DefaultTokenSource(ctx, cloudScope)
-	if err != nil {
-		return nil, err
-	}
-	return ts, nil
+	return token, nil
 }
 
 // Request sends messages to Claude via Vertex AI and returns a complete response.
@@ -347,7 +318,9 @@ func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessa
 		return nil, err
 	}
 
-	resp, err := p.httpClient.Do(httpReq)
+	// The error helper closes non-successful bodies; successful streams transfer
+	// ownership to newStreamedResponse.
+	resp, err := p.httpClient.Do(httpReq) //nolint:bodyclose // ownership is split by the status branch below
 	if err != nil {
 		return nil, fmt.Errorf("vertexai_anthropic: HTTP request failed: %w", err)
 	}
@@ -360,19 +333,17 @@ func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessa
 }
 
 func (p *Provider) setHeaders(ctx context.Context, req *http.Request) error {
-	req.Header.Set("Content-Type", "application/json")
 	token, err := p.getToken(ctx)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	gcpauth.SetJSONBearer(req, token)
 	return nil
 }
 
 // parseHTTPError constructs a bounded, redacted ModelHTTPError from a non-200 response.
 func (p *Provider) parseHTTPError(resp *http.Response) error {
-	defer resp.Body.Close()
-	return vertexerror.NewHTTPError("vertexai_anthropic", resp.StatusCode, resp.Body, resp.Header.Get("Retry-After"), p.model)
+	return gcpauth.ParseHTTPError("vertexai_anthropic", p.model, resp)
 }
 
 func envEnabled(name string) bool {
