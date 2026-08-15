@@ -20,6 +20,7 @@ var _ Store = (*SQLiteStore)(nil)
 var _ RuntimeRecoveryStore = (*SQLiteStore)(nil)
 var _ ThreadForkRecoveryStore = (*SQLiteStore)(nil)
 var _ FileChangeRecoveryStore = (*SQLiteStore)(nil)
+var _ TerminalOwnershipStore = (*SQLiteStore)(nil)
 
 // SQLiteStore persists app-server state in SQLite.
 type SQLiteStore struct {
@@ -129,6 +130,16 @@ func (s *SQLiteStore) init() error {
 			payload BLOB NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_app_file_change_recovery_thread ON app_file_change_recovery(thread_id, turn_id, item_id)`,
+		`CREATE TABLE IF NOT EXISTS app_terminal_ownership (
+			id TEXT PRIMARY KEY,
+			workspace_key TEXT NOT NULL,
+			process_id TEXT NOT NULL,
+			status TEXT NOT NULL,
+			started_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			payload BLOB NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_app_terminal_ownership_workspace ON app_terminal_ownership(workspace_key, started_at DESC, id ASC)`,
 	}
 	for _, stmt := range schema {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -170,6 +181,141 @@ func normalizeContext(ctx context.Context) context.Context {
 		return context.Background()
 	}
 	return ctx
+}
+
+// SaveTerminalOwnership writes a redacted terminal lifecycle snapshot. Older
+// events cannot overwrite a newer terminal state, which keeps concurrent exit
+// and startup reconciliation from reviving an owner-lost record.
+func (s *SQLiteStore) SaveTerminalOwnership(ctx context.Context, record TerminalOwnershipRecord) (*TerminalOwnershipRecord, error) {
+	ctx = normalizeContext(ctx)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	record = cloneTerminalOwnershipRecord(record)
+	if err := normalizeTerminalOwnershipRecord(&record); err != nil {
+		return nil, err
+	}
+	if err := s.withTx(ctx, func(tx *sql.Tx) error {
+		existing, err := loadTerminalOwnershipTx(ctx, tx, record.ID)
+		if err == nil && !record.UpdatedAt.After(existing.UpdatedAt) {
+			record = *existing
+			return nil
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		return saveTerminalOwnershipTx(ctx, tx, &record)
+	}); err != nil {
+		return nil, err
+	}
+	return terminalOwnershipRecordPtr(record), nil
+}
+
+// ListTerminalOwnership returns terminal lifecycle records for one opaque
+// workspace identity. Results are newest-first to make live operational views
+// useful without exposing the workspace path used to scope the record.
+func (s *SQLiteStore) ListTerminalOwnership(ctx context.Context, workspaceKey string) ([]*TerminalOwnershipRecord, error) {
+	ctx = normalizeContext(ctx)
+	workspaceKey = strings.TrimSpace(workspaceKey)
+	if workspaceKey == "" {
+		return nil, errors.New("appserver/store: terminal ownership workspace key is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	db, err := s.dbLocked()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT process_id, payload FROM app_terminal_ownership WHERE workspace_key = ? ORDER BY started_at DESC, id ASC`, workspaceKey)
+	if err != nil {
+		return nil, fmt.Errorf("list terminal ownership: %w", err)
+	}
+	defer rows.Close()
+	var records []*TerminalOwnershipRecord
+	for rows.Next() {
+		record, err := scanTerminalOwnership(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, terminalOwnershipRecordPtr(*record))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate terminal ownership: %w", err)
+	}
+	return records, nil
+}
+
+// RecoverTerminalOwnership terminalizes only records that were still running
+// and have no matching live process in the newly-created process service.
+// This is deliberately not a reconnect mechanism: the old process/output is
+// unavailable to the new execution owner.
+func (s *SQLiteStore) RecoverTerminalOwnership(ctx context.Context, req RecoverTerminalOwnershipRequest) ([]*TerminalOwnershipRecord, error) {
+	ctx = normalizeContext(ctx)
+	workspaceKey := strings.TrimSpace(req.WorkspaceKey)
+	if workspaceKey == "" {
+		return nil, errors.New("appserver/store: terminal ownership workspace key is required")
+	}
+	recoveredAt := req.RecoveredAt.UTC()
+	if recoveredAt.IsZero() {
+		recoveredAt = time.Now().UTC()
+	}
+	live := make(map[string]struct{}, len(req.LiveProcessIDs))
+	for _, id := range req.LiveProcessIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			live[id] = struct{}{}
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var recovered []*TerminalOwnershipRecord
+	if err := s.withTx(ctx, func(tx *sql.Tx) error {
+		records, err := loadTerminalOwnershipForWorkspaceTx(ctx, tx, workspaceKey)
+		if err != nil {
+			return err
+		}
+		for _, record := range records {
+			if record.Status != TerminalOwnershipRunning {
+				continue
+			}
+			if _, ok := live[record.ProcessID]; ok {
+				continue
+			}
+			record.Status = TerminalOwnershipOwnerLost
+			record.OwnerLostAt = timePtr(recoveredAt)
+			record.EndedAt = timePtr(recoveredAt)
+			record.ExitCode = nil
+			record.UpdatedAt = recoveredAt
+			if err := saveTerminalOwnershipTx(ctx, tx, record); err != nil {
+				return err
+			}
+			recovered = append(recovered, terminalOwnershipRecordPtr(*record))
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return recovered, nil
+}
+
+// DeleteInactiveTerminalOwnership clears completed or owner-lost records from
+// a workspace after the operational terminal inventory is cleaned.
+func (s *SQLiteStore) DeleteInactiveTerminalOwnership(ctx context.Context, workspaceKey string) error {
+	ctx = normalizeContext(ctx)
+	workspaceKey = strings.TrimSpace(workspaceKey)
+	if workspaceKey == "" {
+		return errors.New("appserver/store: terminal ownership workspace key is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	db, err := s.dbLocked()
+	if err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM app_terminal_ownership WHERE workspace_key = ? AND status <> ?`, workspaceKey, TerminalOwnershipRunning); err != nil {
+		return fmt.Errorf("delete inactive terminal ownership: %w", err)
+	}
+	return nil
 }
 
 // CreateThread implements Store.
@@ -1447,6 +1593,30 @@ func saveFileChangeRecoveryTx(ctx context.Context, tx *sql.Tx, recovery *FileCha
 	return nil
 }
 
+func saveTerminalOwnershipTx(ctx context.Context, tx *sql.Tx, record *TerminalOwnershipRecord) error {
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal terminal ownership: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO app_terminal_ownership (
+			id, workspace_key, process_id, status, started_at, updated_at, payload
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			workspace_key = excluded.workspace_key,
+			process_id = excluded.process_id,
+			status = excluded.status,
+			started_at = excluded.started_at,
+			updated_at = excluded.updated_at,
+			payload = excluded.payload
+	`, record.ID, record.WorkspaceKey, record.ProcessID, string(record.Status), formatTime(record.StartedAt), formatTime(record.UpdatedAt), payload)
+	if err != nil {
+		return fmt.Errorf("save terminal ownership: %w", err)
+	}
+	return nil
+}
+
 func loadThread(ctx context.Context, db *sql.DB, id string) (*Thread, error) {
 	return scanThread(db.QueryRowContext(ctx, `SELECT payload FROM app_threads WHERE id = ?`, id))
 }
@@ -1469,6 +1639,30 @@ func loadFileChangeRecovery(ctx context.Context, db *sql.DB, itemID string) (*Fi
 
 func loadFileChangeRecoveryTx(ctx context.Context, tx *sql.Tx, itemID string) (*FileChangeRecovery, error) {
 	return scanFileChangeRecovery(tx.QueryRowContext(ctx, `SELECT payload FROM app_file_change_recovery WHERE item_id = ?`, itemID))
+}
+
+func loadTerminalOwnershipTx(ctx context.Context, tx *sql.Tx, id string) (*TerminalOwnershipRecord, error) {
+	return scanTerminalOwnership(tx.QueryRowContext(ctx, `SELECT process_id, payload FROM app_terminal_ownership WHERE id = ?`, id))
+}
+
+func loadTerminalOwnershipForWorkspaceTx(ctx context.Context, tx *sql.Tx, workspaceKey string) ([]*TerminalOwnershipRecord, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT process_id, payload FROM app_terminal_ownership WHERE workspace_key = ? ORDER BY started_at DESC, id ASC`, workspaceKey)
+	if err != nil {
+		return nil, fmt.Errorf("load terminal ownership: %w", err)
+	}
+	defer rows.Close()
+	var records []*TerminalOwnershipRecord
+	for rows.Next() {
+		record, err := scanTerminalOwnership(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate terminal ownership: %w", err)
+	}
+	return records, nil
 }
 
 func loadTurnsForThreadTx(ctx context.Context, tx *sql.Tx, threadID string) ([]*Turn, error) {
@@ -1820,6 +2014,20 @@ func scanFileChangeRecovery(row interface{ Scan(dest ...any) error }) (*FileChan
 	return &recovery, nil
 }
 
+func scanTerminalOwnership(row interface{ Scan(dest ...any) error }) (*TerminalOwnershipRecord, error) {
+	var processID string
+	var payload []byte
+	if err := row.Scan(&processID, &payload); err != nil {
+		return nil, fmt.Errorf("scan terminal ownership: %w", err)
+	}
+	var record TerminalOwnershipRecord
+	if err := json.Unmarshal(payload, &record); err != nil {
+		return nil, fmt.Errorf("unmarshal terminal ownership: %w", err)
+	}
+	record.ProcessID = processID
+	return &record, nil
+}
+
 func copyThreadHistoryTx(ctx context.Context, tx *sql.Tx, sourceThreadID, forkThreadID string, now time.Time) error {
 	rows, err := tx.QueryContext(ctx, `SELECT payload FROM app_turns WHERE thread_id = ? ORDER BY created_at ASC, id ASC`, sourceThreadID)
 	if err != nil {
@@ -2076,6 +2284,64 @@ func cloneFileChangeRecovery(src *FileChangeRecovery) *FileChangeRecovery {
 	dst := *src
 	dst.BeforeContent = append([]byte(nil), src.BeforeContent...)
 	return &dst
+}
+
+func cloneTerminalOwnershipRecord(src TerminalOwnershipRecord) TerminalOwnershipRecord {
+	dst := src
+	if src.ExitCode != nil {
+		exitCode := *src.ExitCode
+		dst.ExitCode = &exitCode
+	}
+	if src.EndedAt != nil {
+		endedAt := *src.EndedAt
+		dst.EndedAt = &endedAt
+	}
+	if src.OwnerLostAt != nil {
+		ownerLostAt := *src.OwnerLostAt
+		dst.OwnerLostAt = &ownerLostAt
+	}
+	return dst
+}
+
+func terminalOwnershipRecordPtr(record TerminalOwnershipRecord) *TerminalOwnershipRecord {
+	copy := cloneTerminalOwnershipRecord(record)
+	return &copy
+}
+
+func normalizeTerminalOwnershipRecord(record *TerminalOwnershipRecord) error {
+	if record == nil || strings.TrimSpace(record.ID) == "" || strings.TrimSpace(record.WorkspaceKey) == "" || strings.TrimSpace(record.ProcessID) == "" {
+		return errors.New("appserver/store: incomplete terminal ownership record")
+	}
+	switch record.Status {
+	case TerminalOwnershipRunning, TerminalOwnershipCompleted, TerminalOwnershipFailed, TerminalOwnershipKilled, TerminalOwnershipTimedOut, TerminalOwnershipOwnerLost:
+	default:
+		return fmt.Errorf("appserver/store: unsupported terminal ownership status %q", record.Status)
+	}
+	record.StartedAt = record.StartedAt.UTC()
+	if record.StartedAt.IsZero() {
+		return errors.New("appserver/store: terminal ownership started at is required")
+	}
+	record.UpdatedAt = record.UpdatedAt.UTC()
+	if record.UpdatedAt.IsZero() {
+		record.UpdatedAt = time.Now().UTC()
+	}
+	if record.EndedAt != nil {
+		endedAt := record.EndedAt.UTC()
+		record.EndedAt = &endedAt
+	}
+	if record.OwnerLostAt != nil {
+		ownerLostAt := record.OwnerLostAt.UTC()
+		record.OwnerLostAt = &ownerLostAt
+	}
+	if record.Status == TerminalOwnershipOwnerLost && record.OwnerLostAt == nil {
+		return errors.New("appserver/store: owner-lost terminal ownership requires owner-lost time")
+	}
+	return nil
+}
+
+func timePtr(value time.Time) *time.Time {
+	copy := value
+	return &copy
 }
 
 func turnIDs(turns []*Turn) []string {

@@ -317,3 +317,57 @@ type FileChangeRecoveryStore interface {
 	AbortFileChangeRevert(context.Context, AbortFileChangeRevertRequest) (*FileChangeRecovery, error)
 	CompleteFileChangeRevert(context.Context, CompleteFileChangeRevertRequest) (*CompleteFileChangeRevertResult, error)
 }
+
+// TerminalOwnershipStatus is the durable lifecycle state of a redacted
+// workspace terminal record. It intentionally models ownership rather than
+// attempting to reattach to a process that survived an app-server restart.
+type TerminalOwnershipStatus string
+
+const (
+	TerminalOwnershipRunning   TerminalOwnershipStatus = "running"
+	TerminalOwnershipCompleted TerminalOwnershipStatus = "completed"
+	TerminalOwnershipFailed    TerminalOwnershipStatus = "failed"
+	TerminalOwnershipKilled    TerminalOwnershipStatus = "killed"
+	TerminalOwnershipTimedOut  TerminalOwnershipStatus = "timed_out"
+	TerminalOwnershipOwnerLost TerminalOwnershipStatus = "owner_lost"
+)
+
+// TerminalOwnershipRecord contains only redacted terminal metadata. Process
+// arguments, environment, output, and raw errors are never stored. ProcessID
+// is a private service correlation key and is deliberately omitted from JSON.
+type TerminalOwnershipRecord struct {
+	ID                string                  `json:"id"`
+	WorkspaceKey      string                  `json:"workspaceKey"`
+	ProcessID         string                  `json:"-"`
+	Title             string                  `json:"title"`
+	Command           string                  `json:"command"`
+	WorkDir           string                  `json:"workDir"`
+	Status            TerminalOwnershipStatus `json:"status"`
+	ExitCode          *int                    `json:"exitCode,omitempty"`
+	StartedAt         time.Time               `json:"startedAt"`
+	EndedAt           *time.Time              `json:"endedAt,omitempty"`
+	OwnerLostAt       *time.Time              `json:"ownerLostAt,omitempty"`
+	ArgumentCount     int                     `json:"argumentCount"`
+	CommandRedacted   bool                    `json:"commandRedacted"`
+	MetadataTruncated bool                    `json:"metadataTruncated"`
+	PTY               bool                    `json:"pty"`
+	PTYRows           uint16                  `json:"ptyRows,omitempty"`
+	PTYCols           uint16                  `json:"ptyCols,omitempty"`
+	UpdatedAt         time.Time               `json:"updatedAt"`
+}
+
+type RecoverTerminalOwnershipRequest struct {
+	WorkspaceKey   string
+	LiveProcessIDs []string
+	RecoveredAt    time.Time
+}
+
+// TerminalOwnershipStore is the optional persistence capability required to
+// report a terminal whose execution owner did not survive a restart. It does
+// not persist output or provide a process-reconnect mechanism.
+type TerminalOwnershipStore interface {
+	SaveTerminalOwnership(context.Context, TerminalOwnershipRecord) (*TerminalOwnershipRecord, error)
+	ListTerminalOwnership(context.Context, string) ([]*TerminalOwnershipRecord, error)
+	RecoverTerminalOwnership(context.Context, RecoverTerminalOwnershipRequest) ([]*TerminalOwnershipRecord, error)
+	DeleteInactiveTerminalOwnership(context.Context, string) error
+}

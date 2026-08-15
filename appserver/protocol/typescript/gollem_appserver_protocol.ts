@@ -791,6 +791,7 @@ export type BackgroundTerminal = {
   "exitCode"?: number | null;
   "id": string;
   "metadataTruncated": boolean;
+  "ownerLostAt"?: string | null;
   "pid": number;
   "processId": string;
   "pty": boolean;
@@ -846,7 +847,7 @@ export type BackgroundTerminalResizeResponse = {
   "terminal": BackgroundTerminal;
 };
 
-export type BackgroundTerminalStatus = "running" | "completed" | "failed" | "killed" | "timed_out";
+export type BackgroundTerminalStatus = "running" | "completed" | "failed" | "killed" | "timed_out" | "owner_lost";
 
 export type BackgroundTerminalTerminateParams = {
   "backgroundTerminalId"?: string;

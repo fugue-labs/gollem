@@ -19,6 +19,7 @@ const (
 	BackgroundTerminalStatusFailed    BackgroundTerminalStatus = "failed"
 	BackgroundTerminalStatusKilled    BackgroundTerminalStatus = "killed"
 	BackgroundTerminalStatusTimedOut  BackgroundTerminalStatus = "timed_out"
+	BackgroundTerminalStatusOwnerLost BackgroundTerminalStatus = "owner_lost"
 )
 
 // BackgroundTerminal is the bounded, redacted process record exposed to
@@ -32,10 +33,11 @@ type BackgroundTerminal struct {
 	Title             string                   `json:"title"`
 	Command           string                   `json:"command"`
 	WorkDir           string                   `json:"workDir"`
-	Status            BackgroundTerminalStatus `json:"status" jsonschema:"enum=running|completed|failed|killed|timed_out"`
+	Status            BackgroundTerminalStatus `json:"status" jsonschema:"enum=running|completed|failed|killed|timed_out|owner_lost"`
 	ExitCode          *int                     `json:"exitCode,omitempty"`
 	StartedAt         time.Time                `json:"startedAt"`
 	EndedAt           *time.Time               `json:"endedAt,omitempty"`
+	OwnerLostAt       *time.Time               `json:"ownerLostAt,omitempty"`
 	ArgumentCount     int                      `json:"argumentCount"`
 	CommandRedacted   bool                     `json:"commandRedacted"`
 	MetadataTruncated bool                     `json:"metadataTruncated"`
@@ -82,7 +84,8 @@ type BackgroundTerminalTerminateResponse struct {
 }
 
 // BackgroundTerminalReadParams identifies one terminal from the current
-// in-memory process inventory. The identity is intentionally not durable.
+// process inventory. An owner_lost terminal remains inspectable in the list
+// but cannot be read because the previous owner did not retain its output.
 type BackgroundTerminalReadParams struct {
 	ID string `json:"id"`
 }
@@ -109,8 +112,8 @@ type BackgroundTerminalWriteParams struct {
 }
 
 // BackgroundTerminalWriteResponse acknowledges one accepted input without
-// returning the input itself. The terminal remains in-memory-only and can
-// become unavailable after a Gollem restart.
+// returning the input itself. Owner-lost terminals are intentionally rejected
+// because Gollem never reattaches their prior process or PTY after restart.
 type BackgroundTerminalWriteResponse struct {
 	OK           bool               `json:"ok"`
 	Terminal     BackgroundTerminal `json:"terminal"`

@@ -1517,6 +1517,17 @@
         "metadataTruncated": {
           "type": "boolean"
         },
+        "ownerLostAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "pid": {
           "type": "integer"
         },
@@ -1547,7 +1558,8 @@
             "completed",
             "failed",
             "killed",
-            "timed_out"
+            "timed_out",
+            "owner_lost"
           ]
         },
         "terminalId": {
@@ -1756,7 +1768,8 @@
         "completed",
         "failed",
         "killed",
-        "timed_out"
+        "timed_out",
+        "owner_lost"
       ],
       "type": "string"
     },

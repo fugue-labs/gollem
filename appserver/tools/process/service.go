@@ -107,6 +107,11 @@ type AuditSink func(AuditEvent)
 type OutputSink func(OutputEvent)
 type ExitSink func(ExitEvent)
 
+// LifecycleSink receives the bounded process snapshot immediately after a
+// successful start and after terminal completion. Sinks must not retain raw
+// output unless their caller has an explicit retention policy.
+type LifecycleSink func(Snapshot)
+
 type Option func(*Service)
 
 func WithApproval(fn ApprovalFunc) Option {
@@ -160,6 +165,8 @@ type Service struct {
 	audit              AuditSink
 	output             OutputSink
 	exit               ExitSink
+	lifecycle          map[uint64]LifecycleSink
+	lifecycleCounter   uint64
 }
 
 type StartRequest struct {
@@ -256,6 +263,7 @@ func NewService(root string, opts ...Option) (*Service, error) {
 	s := &Service{
 		fs:                 fsSvc,
 		processes:          make(map[string]*managedProcess),
+		lifecycle:          make(map[uint64]LifecycleSink),
 		maxProcesses:       defaultMaxProcesses,
 		defaultOutputBytes: defaultOutputBytes,
 	}
@@ -263,6 +271,24 @@ func NewService(root string, opts ...Option) (*Service, error) {
 		opt(s)
 	}
 	return s, nil
+}
+
+// AddLifecycleSink observes future process starts and exits. The returned
+// function is idempotent and stops future callbacks for this observer.
+func (s *Service) AddLifecycleSink(sink LifecycleSink) func() {
+	if s == nil || sink == nil {
+		return func() {}
+	}
+	s.mu.Lock()
+	s.lifecycleCounter++
+	id := s.lifecycleCounter
+	s.lifecycle[id] = sink
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		delete(s.lifecycle, id)
+		s.mu.Unlock()
+	}
 }
 
 func (s *Service) Root() string {
@@ -389,6 +415,7 @@ func (s *Service) Start(ctx context.Context, req StartRequest) (*Snapshot, error
 	proc.setPID(cmd.Process.Pid)
 	s.processes[proc.id] = proc
 	s.mu.Unlock()
+	s.emitLifecycle(proc)
 
 	if proc.isPTY() {
 		go func(terminal *os.File, writer io.Writer, done chan struct{}) {
@@ -402,6 +429,7 @@ func (s *Service) Start(ctx context.Context, req StartRequest) (*Snapshot, error
 		proc.closePTY()
 		proc.finish(waitErr)
 		s.emitExit(proc)
+		s.emitLifecycle(proc)
 		close(proc.done)
 	}()
 	if req.Timeout > 0 {
@@ -744,6 +772,25 @@ func (s *Service) emitExit(proc *managedProcess) {
 	}
 	if proc.exit != nil {
 		proc.exit(event)
+	}
+}
+
+func (s *Service) emitLifecycle(proc *managedProcess) {
+	if s == nil || proc == nil {
+		return
+	}
+	s.mu.Lock()
+	sinks := make([]LifecycleSink, 0, len(s.lifecycle))
+	for _, sink := range s.lifecycle {
+		sinks = append(sinks, sink)
+	}
+	s.mu.Unlock()
+	if len(sinks) == 0 {
+		return
+	}
+	snapshot := proc.snapshot()
+	for _, sink := range sinks {
+		sink(snapshot)
 	}
 }
 

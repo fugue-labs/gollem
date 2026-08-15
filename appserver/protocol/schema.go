@@ -1390,6 +1390,7 @@ func wireSchemasForDefinitions(definitions []wireSchemaDefinition) Schema {
 		string(BackgroundTerminalStatusFailed),
 		string(BackgroundTerminalStatusKilled),
 		string(BackgroundTerminalStatusTimedOut),
+		string(BackgroundTerminalStatusOwnerLost),
 	)
 	for name, schema := range accountRateLimitSchemas() {
 		schemas[name] = schema

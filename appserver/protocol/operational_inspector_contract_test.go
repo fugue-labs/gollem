@@ -52,7 +52,7 @@ func TestOperationalInspectorBindingsAreExact(t *testing.T) {
 		}
 	}
 	assertSchemaEnum(t, defs, "BackgroundTerminalStatus", []any{
-		"running", "completed", "failed", "killed", "timed_out",
+		"running", "completed", "failed", "killed", "timed_out", "owner_lost",
 	})
 }
 

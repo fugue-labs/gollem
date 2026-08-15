@@ -53,23 +53,25 @@ type Server struct {
 
 	workspaceCoordinator *WorkspaceMutationCoordinator
 
-	store              store.Store
-	fs                 *toolfs.Service
-	process            *toolprocess.Service
-	git                *toolgit.Service
-	catalog            *catalog.Catalog
-	config             *appconfig.Service
-	cache              *appcache.Service
-	mcp                *appmcp.Service
-	skills             *appskills.Service
-	events             *EventQueue
-	requests           *RequestQueue
-	approvals          *ApprovalService
-	interact           *InteractionService
-	daemon             *DaemonService
-	runtime            *RuntimeService
-	memory             *MemoryService
-	selectionValidator RuntimeSelectionValidator
+	store                store.Store
+	terminalOwnership    store.TerminalOwnershipStore
+	terminalWorkspaceKey string
+	fs                   *toolfs.Service
+	process              *toolprocess.Service
+	git                  *toolgit.Service
+	catalog              *catalog.Catalog
+	config               *appconfig.Service
+	cache                *appcache.Service
+	mcp                  *appmcp.Service
+	skills               *appskills.Service
+	events               *EventQueue
+	requests             *RequestQueue
+	approvals            *ApprovalService
+	interact             *InteractionService
+	daemon               *DaemonService
+	runtime              *RuntimeService
+	memory               *MemoryService
+	selectionValidator   RuntimeSelectionValidator
 
 	requestSchedulerLimit int
 	threadIdleUnloadAfter time.Duration
@@ -264,6 +266,7 @@ func NewServer(opts ...Option) *Server {
 	if s.interact != nil {
 		s.interact.setRequestQueue(s.requests)
 	}
+	s.initializeTerminalOwnership()
 	return s
 }
 
@@ -1279,7 +1282,10 @@ func (s *Server) handleBackgroundTerminalsList(ctx context.Context, raw json.Raw
 	if err != nil {
 		return nil, mapError("thread/backgroundTerminals/list", err)
 	}
-	terminals := operationalBackgroundTerminals(processSvc.Root(), snapshots)
+	terminals, err := s.backgroundTerminalInventory(ctx, snapshots)
+	if err != nil {
+		return nil, mapError("thread/backgroundTerminals/list", err)
+	}
 	snapshotID := operationalSnapshotID("thread/backgroundTerminals/list", terminals)
 	start, end, nextCursor, rpcErr := operationalPageBounds(
 		params, "thread/backgroundTerminals/list", snapshotID, len(terminals),
@@ -1312,14 +1318,21 @@ func (s *Server) handleBackgroundTerminalRead(ctx context.Context, raw json.RawM
 	if strings.TrimSpace(params.ID) == "" {
 		return nil, invalidParams("id is required", nil)
 	}
-	snapshot, err := processSvc.Snapshot(ctx, params.ID)
+	processID, record, err := s.resolveBackgroundTerminalID(ctx, params.ID)
+	if err != nil {
+		return nil, mapError("thread/backgroundTerminals/read", err)
+	}
+	if record != nil && record.Status == store.TerminalOwnershipOwnerLost {
+		return nil, ownerLostTerminalUnavailable("thread/backgroundTerminals/read")
+	}
+	snapshot, err := processSvc.Snapshot(ctx, processID)
 	if err != nil {
 		return nil, mapError("thread/backgroundTerminals/read", err)
 	}
 	stdout, stdoutTruncated := operationalTerminalOutput(snapshot.Stdout, snapshot.StdoutTruncated)
 	stderr, stderrTruncated := operationalTerminalOutput(snapshot.Stderr, snapshot.StderrTruncated)
 	return protocol.BackgroundTerminalReadResponse{
-		Terminal:        operationalBackgroundTerminal(processSvc.Root(), snapshot),
+		Terminal:        operationalBackgroundTerminalWithOwnership(processSvc.Root(), snapshot, record),
 		StdoutBase64:    stdout,
 		StderrBase64:    stderr,
 		StdoutTruncated: stdoutTruncated,
@@ -1341,23 +1354,30 @@ func (s *Server) handleBackgroundTerminalTerminate(ctx context.Context, raw json
 	if id == "" {
 		return nil, invalidParams("id, terminalId, backgroundTerminalId, or processId is required", nil)
 	}
+	processID, record, err := s.resolveBackgroundTerminalID(ctx, id)
+	if err != nil {
+		return nil, mapError("thread/backgroundTerminals/terminate", err)
+	}
+	if record != nil && record.Status == store.TerminalOwnershipOwnerLost {
+		return nil, ownerLostTerminalUnavailable("thread/backgroundTerminals/terminate")
+	}
 	approvalCtx := withRuntimeApprovalItemID(
 		ctx,
-		operationalTerminalTerminateApprovalItemID(id),
+		operationalTerminalTerminateApprovalItemID(processID),
 	)
-	if err := processSvc.Terminate(approvalCtx, id); err != nil {
+	if err := processSvc.Terminate(approvalCtx, processID); err != nil {
 		return nil, mapError("thread/backgroundTerminals/terminate", err)
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	snapshot, err := processSvc.Wait(waitCtx, id)
+	snapshot, err := processSvc.Wait(waitCtx, processID)
 	if err != nil {
 		return nil, mapError("thread/backgroundTerminals/terminate", err)
 	}
 	return protocol.BackgroundTerminalTerminateResponse{
 		OK:       true,
 		ID:       id,
-		Terminal: operationalBackgroundTerminal(processSvc.Root(), snapshot),
+		Terminal: operationalBackgroundTerminalWithOwnership(processSvc.Root(), snapshot, record),
 	}, nil
 }
 
@@ -1380,24 +1400,31 @@ func (s *Server) handleBackgroundTerminalWrite(ctx context.Context, raw json.Raw
 	if len(params.Input) > operationalTerminalWriteMaxBytes {
 		return nil, invalidParams(fmt.Sprintf("input exceeds %d bytes", operationalTerminalWriteMaxBytes), nil)
 	}
-	snapshot, err := processSvc.Snapshot(ctx, id)
+	processID, record, err := s.resolveBackgroundTerminalID(ctx, id)
+	if err != nil {
+		return nil, mapError("thread/backgroundTerminals/write", err)
+	}
+	if record != nil && record.Status == store.TerminalOwnershipOwnerLost {
+		return nil, ownerLostTerminalUnavailable("thread/backgroundTerminals/write")
+	}
+	snapshot, err := processSvc.Snapshot(ctx, processID)
 	if err != nil {
 		return nil, mapError("thread/backgroundTerminals/write", err)
 	}
 	if snapshot.Status != toolprocess.StatusRunning {
 		return nil, invalidParams("background terminal is not running", nil)
 	}
-	approvalCtx := withRuntimeApprovalItemID(ctx, operationalTerminalWriteApprovalItemID(id))
-	if err := processSvc.WriteStdin(approvalCtx, id, []byte(params.Input)); err != nil {
+	approvalCtx := withRuntimeApprovalItemID(ctx, operationalTerminalWriteApprovalItemID(processID))
+	if err := processSvc.WriteStdin(approvalCtx, processID, []byte(params.Input)); err != nil {
 		return nil, mapError("thread/backgroundTerminals/write", err)
 	}
-	snapshot, err = processSvc.Snapshot(ctx, id)
+	snapshot, err = processSvc.Snapshot(ctx, processID)
 	if err != nil {
 		return nil, mapError("thread/backgroundTerminals/write", err)
 	}
 	return protocol.BackgroundTerminalWriteResponse{
 		OK:           true,
-		Terminal:     operationalBackgroundTerminal(processSvc.Root(), snapshot),
+		Terminal:     operationalBackgroundTerminalWithOwnership(processSvc.Root(), snapshot, record),
 		WrittenBytes: len(params.Input),
 		ObservedAt:   operationalObservedAt(),
 	}, nil
@@ -1419,23 +1446,30 @@ func (s *Server) handleBackgroundTerminalResize(ctx context.Context, raw json.Ra
 	if params.Size.Rows == 0 || params.Size.Cols == 0 {
 		return nil, invalidParams("size rows and cols must be positive", nil)
 	}
-	snapshot, err := processSvc.Snapshot(ctx, id)
+	processID, record, err := s.resolveBackgroundTerminalID(ctx, id)
+	if err != nil {
+		return nil, mapError("thread/backgroundTerminals/resize", err)
+	}
+	if record != nil && record.Status == store.TerminalOwnershipOwnerLost {
+		return nil, ownerLostTerminalUnavailable("thread/backgroundTerminals/resize")
+	}
+	snapshot, err := processSvc.Snapshot(ctx, processID)
 	if err != nil {
 		return nil, mapError("thread/backgroundTerminals/resize", err)
 	}
 	if snapshot.Status != toolprocess.StatusRunning {
 		return nil, invalidParams("background terminal is not running", nil)
 	}
-	if err := processSvc.ResizePTY(ctx, id, int(params.Size.Cols), int(params.Size.Rows)); err != nil {
+	if err := processSvc.ResizePTY(ctx, processID, int(params.Size.Cols), int(params.Size.Rows)); err != nil {
 		return nil, mapError("thread/backgroundTerminals/resize", err)
 	}
-	snapshot, err = processSvc.Snapshot(ctx, id)
+	snapshot, err = processSvc.Snapshot(ctx, processID)
 	if err != nil {
 		return nil, mapError("thread/backgroundTerminals/resize", err)
 	}
 	return protocol.BackgroundTerminalResizeResponse{
 		OK:         true,
-		Terminal:   operationalBackgroundTerminal(processSvc.Root(), snapshot),
+		Terminal:   operationalBackgroundTerminalWithOwnership(processSvc.Root(), snapshot, record),
 		ObservedAt: operationalObservedAt(),
 	}, nil
 }
@@ -1451,6 +1485,11 @@ func (s *Server) handleBackgroundTerminalsClean(ctx context.Context, raw json.Ra
 	removed, err := processSvc.CleanCompleted(ctx)
 	if err != nil {
 		return nil, mapError("thread/backgroundTerminals/clean", err)
+	}
+	if s.terminalOwnership != nil {
+		if err := s.terminalOwnership.DeleteInactiveTerminalOwnership(ctx, s.terminalWorkspaceKey); err != nil {
+			return nil, mapError("thread/backgroundTerminals/clean", err)
+		}
 	}
 	terminals := operationalBackgroundTerminals(processSvc.Root(), removed)
 	removedCount := len(terminals)
