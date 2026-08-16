@@ -155,6 +155,84 @@ func TestDeterministicProviderDriverConformance(t *testing.T) {
 	}
 }
 
+func TestCatalogAnthropicProfileConformance(t *testing.T) {
+	// Keep these profiles in lockstep with appserver/catalog. A representative
+	// Sonnet fixture is not evidence that every catalog-listed Claude profile
+	// accepts the same request shape or deferred tool configuration.
+	for _, tc := range []struct {
+		model      string
+		toolSearch bool
+		reasoning  bool
+	}{
+		{anthropic.ClaudeSonnet46, true, true},
+		{anthropic.ClaudeOpus46, true, true},
+		{anthropic.ClaudeOpus47, true, true},
+		{anthropic.ClaudeOpus48, true, true},
+		{anthropic.ClaudeFable5, false, true},
+		{anthropic.ClaudeHaiku45, false, false},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			promptCache := &promptCacheFixture{}
+			toolSearch := &toolSearchFixture{}
+			server := httptest.NewServer(anthropicConformanceFixture(
+				t,
+				promptCache,
+				toolSearch,
+				nil,
+				nil,
+				nil,
+				tc.model,
+			))
+			defer server.Close()
+
+			model := anthropic.New(
+				anthropic.WithAPIKey("catalog-conformance-key"),
+				anthropic.WithBaseURL(server.URL),
+				anthropic.WithModel(tc.model),
+			)
+			claims := conformance.Claims{
+				ToolCalls:             true,
+				ToolSearch:            tc.toolSearch,
+				StructuredOutput:      true,
+				Vision:                true,
+				CacheReadUsage:        true,
+				PromptCacheActivation: true,
+				Streaming:             true,
+				Usage:                 true,
+				ReasoningVisibility:   tc.reasoning,
+			}
+			driver := conformance.Driver{
+				Name:                  "native Anthropic " + tc.model,
+				Model:                 model,
+				Claims:                claims,
+				PromptCacheActivation: promptCache.verify,
+				Expectations: conformance.Expectations{
+					ResponseText:          "anthropic response",
+					ToolName:              "conformance_echo",
+					ToolCallID:            "call_anthropic",
+					ToolArgumentsJSON:     `{"value":"ok"}`,
+					StructuredOutputValue: "anthropic structured",
+					VisionText:            "anthropic vision",
+					CacheReadTokens:       2,
+					StreamText:            "anthropic stream",
+					ReasoningText:         "anthropic reasoning",
+				},
+			}
+			if tc.toolSearch {
+				driver.ToolSearchModel = model
+				driver.ToolSearchActivation = toolSearch.verifyAnthropic
+				driver.Expectations.ToolSearchText = "anthropic tool search"
+			}
+			if tc.reasoning {
+				driver.ReasoningModel = model
+			}
+			if err := conformance.Verify(t.Context(), driver); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 type promptCacheFixture struct {
 	mu      sync.Mutex
 	request bool
@@ -647,8 +725,15 @@ data: [DONE]
 `)
 }
 
-func anthropicConformanceFixture(t *testing.T, promptCache *promptCacheFixture, toolSearch *toolSearchFixture, cancellationReady chan<- struct{}, retry *retryFixture, timeout *timeoutFixture) http.Handler {
+func anthropicConformanceFixture(t *testing.T, promptCache *promptCacheFixture, toolSearch *toolSearchFixture, cancellationReady chan<- struct{}, retry *retryFixture, timeout *timeoutFixture, expectedModel ...string) http.Handler {
 	t.Helper()
+	if len(expectedModel) > 1 {
+		t.Fatalf("Anthropic conformance fixture got %d expected models, want at most one", len(expectedModel))
+	}
+	wantModel := ""
+	if len(expectedModel) == 1 {
+		wantModel = expectedModel[0]
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages" {
 			t.Fatalf("Anthropic path = %q, want /v1/messages", r.URL.Path)
@@ -667,6 +752,9 @@ func anthropicConformanceFixture(t *testing.T, promptCache *promptCacheFixture, 
 		}
 		if err := json.Unmarshal(body, &request); err != nil {
 			t.Fatalf("decode Anthropic request: %v", err)
+		}
+		if wantModel != "" && request.Model != wantModel {
+			t.Fatalf("Anthropic request model = %q, want %q", request.Model, wantModel)
 		}
 		if strings.Contains(string(body), "run conformance") {
 			assertAnthropicPromptCache(t, body)

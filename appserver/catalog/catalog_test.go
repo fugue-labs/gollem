@@ -154,6 +154,36 @@ func TestThinkingCapabilitiesAreModelSpecific(t *testing.T) {
 	}
 }
 
+func TestToolSearchCapabilityIsModelSpecific(t *testing.T) {
+	c := NewDefault(WithEnvLookup(mapEnv(nil)))
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"claude-sonnet-4-6", true},
+		{"claude-opus-4-6", true},
+		{"claude-opus-4-7", true},
+		{"claude-opus-4-8", true},
+		{"claude-fable-5", false},
+		{"claude-haiku-4-5-20251001", false},
+	}
+	provider := findProvider(t, c.providers, ProviderAnthropic)
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			for _, model := range provider.Models {
+				if model.Model != tc.model {
+					continue
+				}
+				if model.Capabilities.ToolSearch != tc.want {
+					t.Fatalf("tool-search capability = %t, want %t", model.Capabilities.ToolSearch, tc.want)
+				}
+				return
+			}
+			t.Fatalf("model %q missing from provider %#v", tc.model, provider.Models)
+		})
+	}
+}
+
 func TestReasoningSummaryCapabilityIsModelSpecific(t *testing.T) {
 	c := NewDefault(WithEnvLookup(mapEnv(nil)))
 	cases := []struct {

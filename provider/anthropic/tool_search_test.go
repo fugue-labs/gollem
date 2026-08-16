@@ -16,6 +16,7 @@ func TestSupportsToolSearch(t *testing.T) {
 		{"claude-sonnet-4-0", true},
 		{"claude-opus-4-6", true},
 		{"claude-opus-4-6-preview", true},
+		{ClaudeFable5, false},
 		{"claude-sonnet-5-foo", true},       // forward-compat
 		{"claude-mythos-preview-abc", true}, // mythos catch-all
 		{"claude-haiku-4-5-20251001", false},
