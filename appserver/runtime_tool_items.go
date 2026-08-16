@@ -154,6 +154,11 @@ func (t *runtimeToolItemTracker) complete(key, status, output string, success bo
 		return
 	}
 	delete(t.items, key)
+	if !success {
+		// Tool errors can contain provider, endpoint, credential, prompt, or tool details.
+		// Persisting a fixed failure label keeps the durable public timeline fail closed.
+		output = runtimePublicToolFailure
+	}
 	state.payload.Status = status
 	state.payload.ContentItems = []runtimeDynamicToolCallContentItem{{Type: "inputText", Text: boundedRuntimeToolOutput(output)}}
 	state.payload.Success = runtimeBoolPointer(success)

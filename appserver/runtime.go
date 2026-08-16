@@ -29,6 +29,8 @@ const (
 	runtimePublicErrorInterrupted = "Runtime execution was interrupted."
 	runtimePublicErrorTimedOut    = "Runtime execution timed out."
 	runtimePublicErrorProvider    = "Provider request failed."
+	runtimePublicToolFailure      = "Tool execution failed."
+	runtimePublicMCPToolFailure   = "MCP tool execution failed."
 )
 
 type RuntimeModelSelection struct {

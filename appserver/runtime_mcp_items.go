@@ -159,9 +159,8 @@ func (t *runtimeMCPItemTracker) toolCompleted(event runtimeMCPToolCompletedEvent
 	state.payload.DurationMS = runtimeInt64Pointer(duration)
 	state.payload.Status = runtimeMCPStatusCompleted
 	if event.Error != "" {
-		message, _ := boundedRuntimeMCPText(event.Error, runtimeMCPMetadataMaxBytes)
 		state.payload.Status = runtimeMCPStatusFailed
-		state.payload.Error = &runtimeMCPToolCallErrorPayload{Message: message}
+		state.payload.Error = &runtimeMCPToolCallErrorPayload{Message: runtimePublicMCPToolFailure}
 		state.payload.Result = nil
 	} else if event.Result != nil {
 		state.payload.Result = event.Result.ItemResult

@@ -1365,7 +1365,7 @@ func TestServerRuntimePersistsFailedDynamicToolCall(t *testing.T) {
 	if failed.Status != "failed" || failed.Success == nil || *failed.Success {
 		t.Fatalf("failed tool item = %#v", failed)
 	}
-	if len(failed.ContentItems) != 1 || !strings.Contains(failed.ContentItems[0].Text, "boom") {
+	if len(failed.ContentItems) != 1 || failed.ContentItems[0].Text != runtimePublicToolFailure {
 		t.Fatalf("failed tool content = %#v", failed.ContentItems)
 	}
 

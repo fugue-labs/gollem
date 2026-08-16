@@ -215,7 +215,7 @@ func TestServerRuntimeDeniedMCPCallPersistsFailedItemWithoutCallingSource(t *tes
 		t.Fatalf("ListItems: %v", err)
 	}
 	mcpItem := findRuntimeMCPItem(t, items, "repo", "mutate")
-	if mcpItem.Item.Status != runtimeMCPStatusFailed || mcpItem.Payload.Error == nil || !strings.Contains(mcpItem.Payload.Error.Message, "denied") {
+	if mcpItem.Item.Status != runtimeMCPStatusFailed || mcpItem.Payload.Error == nil || mcpItem.Payload.Error.Message != runtimePublicMCPToolFailure {
 		t.Fatalf("denied MCP item = %#v", mcpItem)
 	}
 	if source.callCount() != 0 {
@@ -274,7 +274,7 @@ func TestServerRuntimeInterruptCancelsPendingMCPApproval(t *testing.T) {
 		t.Fatalf("ListItems: %v", err)
 	}
 	mcpItem := findRuntimeMCPItem(t, items, "repo", "wait")
-	if mcpItem.Item.Status != runtimeMCPStatusFailed || mcpItem.Payload.Error == nil || !strings.Contains(mcpItem.Payload.Error.Message, "canceled") {
+	if mcpItem.Item.Status != runtimeMCPStatusFailed || mcpItem.Payload.Error == nil || mcpItem.Payload.Error.Message != runtimePublicMCPToolFailure {
 		t.Fatalf("interrupted MCP item = %#v", mcpItem)
 	}
 	requestID, _ := approvalRequest.ID.Value().(string)

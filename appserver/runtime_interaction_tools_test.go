@@ -346,7 +346,7 @@ func TestServerRuntimeInterruptCancelsPendingInteraction(t *testing.T) {
 		t.Fatalf("ListItems: %v", err)
 	}
 	toolItem := findRuntimeToolItem(t, items, "request_user_input", "prompt", "Wait for input")
-	if toolItem.Status != runtimeToolStatusFailed || len(toolItem.Payload.ContentItems) != 1 || !strings.Contains(toolItem.Payload.ContentItems[0].Text, "canceled") {
+	if toolItem.Status != runtimeToolStatusFailed || len(toolItem.Payload.ContentItems) != 1 || toolItem.Payload.ContentItems[0].Text != runtimePublicToolFailure {
 		t.Fatalf("interrupted interaction item = %#v", toolItem)
 	}
 }
