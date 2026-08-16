@@ -47,8 +47,8 @@ remote endpoint.
 
 | Profile | Catalog-supported behavior | Evidence |
 | --- | --- | --- |
-| Vertex AI Gemini | Function tools, native structured output, inline image input, streaming, terminal usage, and configured cached-content attachment | `provider/vertexai` calls `provider/conformance.Verify`; the fixture asserts Gemini function declarations, `inlineData`, cached-content on normal and streaming requests, and normalized responses |
-| Vertex AI Anthropic | Function tools, schema-backed `final_result` output, base64 image input, streaming, terminal usage, prompt-cache activation, and reasoning visibility | `provider/vertexai_anthropic` calls `provider/conformance.Verify`; the fixture asserts Messages-tool/cache/image wire forms plus normalized `ThinkingPart` start, delta, and final retention |
+| Vertex AI Gemini | Function tools, native structured output, inline image input, streaming, terminal usage, and configured cached-content attachment | `provider/vertexai` runs every catalog-listed Gemini profile through `provider/conformance.Verify`; the fixture asserts each exact model route, Gemini function declarations, `inlineData`, cached-content on normal and streaming requests, and normalized responses |
+| Vertex AI Anthropic | Function tools, schema-backed `final_result` output, base64 image input, streaming, terminal usage, prompt-cache activation, and model-specific reasoning visibility | `provider/vertexai_anthropic` runs every catalog-listed Claude profile through `provider/conformance.Verify`; the fixture asserts each exact model route, Messages-tool/cache/image wire forms, and normalized output. Reasoning visibility runs only for the catalog-enabled Sonnet and Opus profiles; Haiku remains explicitly unclaimed. |
 
 `Catalog-supported` means the catalog may expose the capability only for the
 listed provider/model profile. It does not make that behavior part of the common

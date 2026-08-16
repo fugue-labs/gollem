@@ -13,44 +13,58 @@ import (
 )
 
 func TestCatalogCapabilityConformance(t *testing.T) {
-	fixture := &geminiConformanceFixture{t: t}
-	server := httptest.NewServer(http.HandlerFunc(fixture.serveHTTP))
-	defer server.Close()
+	// Keep this list in lockstep with the Vertex Gemini entries in the
+	// app-server catalog. The catalog exposes each profile as runnable, so the
+	// fixture must observe its exact model route rather than a representative.
+	for _, modelName := range []string{
+		Gemini25Flash,
+		Gemini25Pro,
+		Gemini31ProPreview,
+		Gemini3FlashPreview,
+		Gemini20Flash,
+	} {
+		t.Run(modelName, func(t *testing.T) {
+			fixture := &geminiConformanceFixture{t: t, model: modelName}
+			server := httptest.NewServer(http.HandlerFunc(fixture.serveHTTP))
+			defer server.Close()
 
-	model := New(
-		WithProject("conformance-project"),
-		WithLocation("us-central1"),
-		WithModel(Gemini25Flash),
-		WithCachedContent("projects/conformance/locations/us-central1/cachedContents/catalog-proof"),
-	)
-	model.tokenSource = &staticTokenSource{token: "conformance-token"}
-	model.httpClient = &http.Client{Transport: &rewriteTransport{
-		base:      server.Client().Transport,
-		targetURL: server.URL,
-	}}
+			model := New(
+				WithProject("conformance-project"),
+				WithLocation("us-central1"),
+				WithModel(modelName),
+				WithCachedContent("projects/conformance/locations/us-central1/cachedContents/catalog-proof"),
+			)
+			model.tokenSource = &staticTokenSource{token: "conformance-token"}
+			model.httpClient = &http.Client{Transport: &rewriteTransport{
+				base:      server.Client().Transport,
+				targetURL: server.URL,
+			}}
 
-	err := conformance.Verify(t.Context(), conformance.Driver{
-		Name:                  "Vertex AI Gemini",
-		Model:                 model,
-		Claims:                conformance.Claims{ToolCalls: true, StructuredOutput: true, Vision: true, PromptCacheActivation: true, Streaming: true, Usage: true},
-		PromptCacheActivation: fixture.verify,
-		Expectations: conformance.Expectations{
-			ResponseText:          "vertex gemini response",
-			ToolName:              "conformance_echo",
-			ToolCallID:            "call_0",
-			ToolArgumentsJSON:     `{"value":"ok"}`,
-			StructuredOutputValue: "vertex gemini structured",
-			VisionText:            "vertex gemini vision",
-			StreamText:            "vertex gemini stream",
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
+			err := conformance.Verify(t.Context(), conformance.Driver{
+				Name:                  "Vertex AI Gemini " + modelName,
+				Model:                 model,
+				Claims:                conformance.Claims{ToolCalls: true, StructuredOutput: true, Vision: true, PromptCacheActivation: true, Streaming: true, Usage: true},
+				PromptCacheActivation: fixture.verify,
+				Expectations: conformance.Expectations{
+					ResponseText:          "vertex gemini response",
+					ToolName:              "conformance_echo",
+					ToolCallID:            "call_0",
+					ToolArgumentsJSON:     `{"value":"ok"}`,
+					StructuredOutputValue: "vertex gemini structured",
+					VisionText:            "vertex gemini vision",
+					StreamText:            "vertex gemini stream",
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
 type geminiConformanceFixture struct {
-	t *testing.T
+	t     *testing.T
+	model string
 
 	mu                 sync.Mutex
 	cachedRequestCount int
@@ -61,6 +75,9 @@ type geminiConformanceFixture struct {
 func (f *geminiConformanceFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if got := r.Header.Get("Authorization"); got != "Bearer conformance-token" {
 		f.t.Errorf("Authorization = %q, want conformance bearer token", got)
+	}
+	if want := "/models/" + f.model + ":"; !strings.Contains(r.URL.Path, want) {
+		f.t.Errorf("Vertex Gemini request path = %q, want model route containing %q", r.URL.Path, want)
 	}
 
 	var request map[string]any

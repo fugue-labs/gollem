@@ -14,46 +14,64 @@ import (
 )
 
 func TestCatalogCapabilityConformance(t *testing.T) {
-	fixture := &vertexAnthropicConformanceFixture{t: t}
-	server := httptest.NewServer(http.HandlerFunc(fixture.serveHTTP))
-	defer server.Close()
+	// Keep this list in lockstep with the Vertex Anthropic entries in the
+	// app-server catalog. Haiku deliberately omits reasoning visibility.
+	for _, tc := range []struct {
+		model     string
+		reasoning bool
+	}{
+		{ClaudeSonnet46, true},
+		{ClaudeOpus46, true},
+		{ClaudeOpus47, true},
+		{ClaudeHaiku45, false},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			fixture := &vertexAnthropicConformanceFixture{t: t, model: tc.model}
+			server := httptest.NewServer(http.HandlerFunc(fixture.serveHTTP))
+			defer server.Close()
 
-	model := New(
-		WithProject("conformance-project"),
-		WithLocation("us-east5"),
-		WithModel(ClaudeSonnet46),
-		WithPromptCaching(true),
-	)
-	model.tokenSource = &staticTokenSource{token: "conformance-token"}
-	model.httpClient = &http.Client{Transport: &rewriteTransport{
-		base:      server.Client().Transport,
-		targetURL: server.URL,
-	}}
+			model := New(
+				WithProject("conformance-project"),
+				WithLocation("us-east5"),
+				WithModel(tc.model),
+				WithPromptCaching(true),
+			)
+			model.tokenSource = &staticTokenSource{token: "conformance-token"}
+			model.httpClient = &http.Client{Transport: &rewriteTransport{
+				base:      server.Client().Transport,
+				targetURL: server.URL,
+			}}
 
-	err := conformance.Verify(t.Context(), conformance.Driver{
-		Name:                  "Vertex AI Anthropic",
-		Model:                 model,
-		ReasoningModel:        model,
-		Claims:                conformance.Claims{ToolCalls: true, StructuredOutput: true, Vision: true, PromptCacheActivation: true, Streaming: true, Usage: true, ReasoningVisibility: true},
-		PromptCacheActivation: fixture.verify,
-		Expectations: conformance.Expectations{
-			ResponseText:          "vertex anthropic response",
-			ToolName:              "conformance_echo",
-			ToolCallID:            "call_vertex_anthropic",
-			ToolArgumentsJSON:     `{"value":"ok"}`,
-			StructuredOutputValue: "vertex anthropic structured",
-			VisionText:            "vertex anthropic vision",
-			StreamText:            "vertex anthropic stream",
-			ReasoningText:         "vertex anthropic reasoning",
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
+			claims := conformance.Claims{ToolCalls: true, StructuredOutput: true, Vision: true, PromptCacheActivation: true, Streaming: true, Usage: true, ReasoningVisibility: tc.reasoning}
+			driver := conformance.Driver{
+				Name:                  "Vertex AI Anthropic " + tc.model,
+				Model:                 model,
+				Claims:                claims,
+				PromptCacheActivation: fixture.verify,
+				Expectations: conformance.Expectations{
+					ResponseText:          "vertex anthropic response",
+					ToolName:              "conformance_echo",
+					ToolCallID:            "call_vertex_anthropic",
+					ToolArgumentsJSON:     `{"value":"ok"}`,
+					StructuredOutputValue: "vertex anthropic structured",
+					VisionText:            "vertex anthropic vision",
+					StreamText:            "vertex anthropic stream",
+					ReasoningText:         "vertex anthropic reasoning",
+				},
+			}
+			if tc.reasoning {
+				driver.ReasoningModel = model
+			}
+			if err := conformance.Verify(t.Context(), driver); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
 type vertexAnthropicConformanceFixture struct {
-	t *testing.T
+	t     *testing.T
+	model string
 
 	mu                 sync.Mutex
 	cachedRequestCount int
@@ -64,6 +82,9 @@ type vertexAnthropicConformanceFixture struct {
 func (f *vertexAnthropicConformanceFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if got := r.Header.Get("Authorization"); got != "Bearer conformance-token" {
 		f.t.Errorf("Authorization = %q, want conformance bearer token", got)
+	}
+	if want := "/models/" + f.model + ":"; !strings.Contains(r.URL.Path, want) {
+		f.t.Errorf("Vertex Anthropic request path = %q, want model route containing %q", r.URL.Path, want)
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
