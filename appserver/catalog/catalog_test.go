@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	openaiprovider "github.com/fugue-labs/gollem/provider/openai"
+	vertexprovider "github.com/fugue-labs/gollem/provider/vertexai"
 )
 
 func TestProviderListReportsConfigurationWithoutSecretValues(t *testing.T) {
@@ -151,6 +152,51 @@ func TestThinkingCapabilitiesAreModelSpecific(t *testing.T) {
 			}
 			t.Fatalf("model %q missing from provider %#v", tc.model, provider.Models)
 		})
+	}
+}
+
+func TestStopSequenceCapabilitiesAreModelSpecific(t *testing.T) {
+	c := NewDefault(WithEnvLookup(mapEnv(nil)))
+	for _, tc := range []struct {
+		provider string
+		model    string
+		want     bool
+	}{
+		{ProviderOpenAI, "gpt-4o", false},
+		{ProviderOpenAICompatibleLocal, "llama3", false},
+		{ProviderAnthropic, "claude-sonnet-4-6", true},
+		{ProviderAnthropic, "claude-haiku-4-5-20251001", true},
+		{ProviderVertexAI, vertexprovider.Gemini25Flash, true},
+		{ProviderVertexAIAnthropic, "claude-opus-4-7", true},
+	} {
+		t.Run(tc.provider+"/"+tc.model, func(t *testing.T) {
+			provider := findProvider(t, c.providers, tc.provider)
+			for _, model := range provider.Models {
+				if model.Model != tc.model {
+					continue
+				}
+				if model.Capabilities.StopSequences != tc.want {
+					t.Fatalf("stop sequence capability = %t, want %t", model.Capabilities.StopSequences, tc.want)
+				}
+				return
+			}
+			t.Fatalf("model %q missing from provider %#v", tc.model, provider.Models)
+		})
+	}
+	for _, tc := range []struct {
+		provider string
+		want     bool
+	}{
+		{ProviderOpenAI, false},
+		{ProviderOpenAICompatibleLocal, false},
+		{ProviderAnthropic, true},
+		{ProviderVertexAI, true},
+		{ProviderVertexAIAnthropic, true},
+	} {
+		provider := findProvider(t, c.providers, tc.provider)
+		if provider.Capabilities.StopSequences != tc.want {
+			t.Errorf("provider %q stop sequence capability = %t, want %t", tc.provider, provider.Capabilities.StopSequences, tc.want)
+		}
 	}
 }
 

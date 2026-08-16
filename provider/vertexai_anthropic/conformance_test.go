@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -42,12 +43,13 @@ func TestCatalogCapabilityConformance(t *testing.T) {
 				targetURL: server.URL,
 			}}
 
-			claims := conformance.Claims{ToolCalls: true, StructuredOutput: true, Vision: true, PromptCacheActivation: true, Streaming: true, Usage: true, ReasoningVisibility: tc.reasoning}
+			claims := conformance.Claims{ToolCalls: true, StructuredOutput: true, Vision: true, PromptCacheActivation: true, StopSequences: true, Streaming: true, Usage: true, ReasoningVisibility: tc.reasoning}
 			driver := conformance.Driver{
-				Name:                  "Vertex AI Anthropic " + tc.model,
-				Model:                 model,
-				Claims:                claims,
-				PromptCacheActivation: fixture.verify,
+				Name:                    "Vertex AI Anthropic " + tc.model,
+				Model:                   model,
+				Claims:                  claims,
+				PromptCacheActivation:   fixture.verify,
+				StopSequencesActivation: fixture.verifyStopSequences,
 				Expectations: conformance.Expectations{
 					ResponseText:          "vertex anthropic response",
 					ToolName:              "conformance_echo",
@@ -57,6 +59,7 @@ func TestCatalogCapabilityConformance(t *testing.T) {
 					VisionText:            "vertex anthropic vision",
 					StreamText:            "vertex anthropic stream",
 					ReasoningText:         "vertex anthropic reasoning",
+					StopSequenceText:      "vertex anthropic stop sequences",
 				},
 			}
 			if tc.reasoning {
@@ -77,6 +80,7 @@ type vertexAnthropicConformanceFixture struct {
 	cachedRequestCount int
 	toolRequestCount   int
 	visionRequestCount int
+	stopSequenceCount  int
 }
 
 func (f *vertexAnthropicConformanceFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -115,6 +119,15 @@ func (f *vertexAnthropicConformanceFixture) serveHTTP(w http.ResponseWriter, r *
 	}
 
 	switch {
+	case strings.Contains(payload, "stop sequence conformance"):
+		stopSequences, _ := request["stop_sequences"].([]any)
+		if !slices.Equal(stopSequenceStrings(stopSequences), []string{"conformance-stop"}) {
+			f.t.Errorf("Vertex Anthropic stop_sequences = %#v, want [conformance-stop]", stopSequences)
+		}
+		f.mu.Lock()
+		f.stopSequenceCount++
+		f.mu.Unlock()
+		f.writeResponse(w, []any{map[string]any{"type": "text", "text": "vertex anthropic stop sequences"}}, "end_turn")
 	case strings.Contains(payload, "structured output conformance"):
 		if !vertexAnthropicHasTool(request, "final_result") {
 			f.t.Error("Vertex Anthropic structured-output request omitted final_result tool")
@@ -146,6 +159,15 @@ func (f *vertexAnthropicConformanceFixture) serveHTTP(w http.ResponseWriter, r *
 			},
 		}, "tool_use")
 	}
+}
+
+func (f *vertexAnthropicConformanceFixture) verifyStopSequences() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.stopSequenceCount != 1 {
+		return fmt.Errorf("fixture observed %d stop-sequence requests, want 1", f.stopSequenceCount)
+	}
+	return nil
 }
 
 func (f *vertexAnthropicConformanceFixture) writeResponse(w http.ResponseWriter, content []any, stopReason string) {
@@ -243,4 +265,16 @@ func vertexAnthropicHasImage(request map[string]any) bool {
 		}
 	}
 	return false
+}
+
+func stopSequenceStrings(values []any) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		text, ok := value.(string)
+		if !ok {
+			return nil
+		}
+		out = append(out, text)
+	}
+	return out
 }

@@ -145,6 +145,7 @@ func runtimeModelSettingsFromInput(input json.RawMessage) core.ModelSettings {
 		AdaptiveThinking:   cloneBool(stored.AdaptiveThinking),
 		ReasoningSummary:   cloneString(stored.ReasoningSummary),
 		PromptCacheEnabled: cloneBool(stored.PromptCacheEnabled),
+		StopSequences:      append([]string(nil), stored.StopSequences...),
 	}
 	if effort := strings.TrimSpace(stored.ReasoningEffort); effort != "" {
 		settings.ReasoningEffort = &effort
@@ -203,6 +204,9 @@ func mergeRuntimeModelSettings(primary, fallback core.ModelSettings) core.ModelS
 	}
 	if primary.PromptCacheEnabled == nil {
 		primary.PromptCacheEnabled = cloneBool(fallback.PromptCacheEnabled)
+	}
+	if len(primary.StopSequences) == 0 {
+		primary.StopSequences = append([]string(nil), fallback.StopSequences...)
 	}
 	return primary
 }

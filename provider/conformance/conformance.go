@@ -28,6 +28,7 @@ type Claims struct {
 	Vision                bool
 	CacheReadUsage        bool
 	PromptCacheActivation bool
+	StopSequences         bool
 	Streaming             bool
 	Usage                 bool
 	Cancellation          bool
@@ -71,6 +72,7 @@ type Expectations struct {
 	StreamTimeoutText     string
 	ReasoningText         string
 	ReasoningSummaryText  string
+	StopSequenceText      string
 }
 
 // Driver binds a provider model to the common capability claims and expected
@@ -87,6 +89,7 @@ type Driver struct {
 	ToolSearchModel          core.Model
 	NamespaceToolsModel      core.Model
 	PromptCacheActivation    func() error
+	StopSequencesActivation  func() error
 	ToolSearchActivation     func() error
 	NamespaceToolsActivation func() error
 }
@@ -147,6 +150,12 @@ func Verify(ctx context.Context, driver Driver) error {
 	}
 	if driver.Claims.PromptCacheActivation && driver.PromptCacheActivation == nil {
 		return fmt.Errorf("provider conformance: %s prompt-cache fixture must observe request activation", driver.Name)
+	}
+	if driver.Claims.StopSequences && strings.TrimSpace(driver.Expectations.StopSequenceText) == "" {
+		return fmt.Errorf("provider conformance: %s stop-sequence fixture must expect a response", driver.Name)
+	}
+	if driver.Claims.StopSequences && driver.StopSequencesActivation == nil {
+		return fmt.Errorf("provider conformance: %s stop-sequence fixture must observe native activation", driver.Name)
 	}
 	if driver.Claims.Streaming && strings.TrimSpace(driver.Expectations.StreamText) == "" {
 		return fmt.Errorf("provider conformance: %s streaming fixture must expect stream text", driver.Name)
@@ -220,6 +229,11 @@ func Verify(ctx context.Context, driver Driver) error {
 	}
 	if driver.Claims.Vision {
 		if err := verifyVision(ctx, driver); err != nil {
+			return err
+		}
+	}
+	if driver.Claims.StopSequences {
+		if err := verifyStopSequences(ctx, driver); err != nil {
 			return err
 		}
 	}
@@ -350,6 +364,28 @@ func verifyVision(ctx context.Context, driver Driver) error {
 	}
 	if got := response.TextContent(); got != driver.Expectations.VisionText {
 		return fmt.Errorf("provider conformance: %s vision text = %q, want %q", driver.Name, got, driver.Expectations.VisionText)
+	}
+	return nil
+}
+
+// verifyStopSequences sends a value that must be represented by a provider's
+// native request field. The fixture-owned activation callback rejects merely
+// accepted or ignored settings.
+func verifyStopSequences(ctx context.Context, driver Driver) error {
+	response, err := driver.Model.Request(ctx, stopSequenceMessages(), &core.ModelSettings{
+		StopSequences: []string{"conformance-stop"},
+	}, &core.ModelRequestParameters{AllowTextOutput: true})
+	if err != nil {
+		return fmt.Errorf("provider conformance: %s stop-sequence request: %w", driver.Name, err)
+	}
+	if response == nil {
+		return fmt.Errorf("provider conformance: %s stop-sequence request returned a nil response", driver.Name)
+	}
+	if got := response.TextContent(); got != driver.Expectations.StopSequenceText {
+		return fmt.Errorf("provider conformance: %s stop-sequence text = %q, want %q", driver.Name, got, driver.Expectations.StopSequenceText)
+	}
+	if err := driver.StopSequencesActivation(); err != nil {
+		return fmt.Errorf("provider conformance: %s stop-sequence activation: %w", driver.Name, err)
 	}
 	return nil
 }
@@ -760,6 +796,14 @@ func visionMessages() []core.ModelMessage {
 		core.ModelRequest{Parts: []core.ModelRequestPart{
 			core.UserPromptPart{Content: "vision conformance"},
 			core.ImagePart{URL: core.BinaryContent([]byte{1, 2, 3}, "image/png"), MIMEType: "image/png", Detail: "low"},
+		}},
+	}
+}
+
+func stopSequenceMessages() []core.ModelMessage {
+	return []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{
+			core.UserPromptPart{Content: "stop sequence conformance"},
 		}},
 	}
 }

@@ -34,6 +34,7 @@ type ProviderCatalogCapabilities struct {
 	Vision                   bool     `json:"vision"`
 	Streaming                bool     `json:"streaming"`
 	PromptCache              bool     `json:"promptCache"`
+	StopSequences            bool     `json:"stopSequences"`
 	ToolSearch               bool     `json:"toolSearch"`
 	Reasoning                bool     `json:"reasoning"`
 	ReasoningEfforts         []string `json:"reasoningEfforts,omitempty"`
@@ -49,6 +50,7 @@ type ModelCatalogCapabilities struct {
 	Vision             bool `json:"vision"`
 	Streaming          bool `json:"streaming"`
 	PromptCache        bool `json:"promptCache"`
+	StopSequences      bool `json:"stopSequences"`
 	ToolSearch         bool `json:"toolSearch"`
 	Reasoning          bool `json:"reasoning"`
 	AdaptiveThinking   bool `json:"adaptiveThinking"`

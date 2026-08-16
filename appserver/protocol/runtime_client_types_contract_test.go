@@ -96,13 +96,17 @@ func TestRuntimeModelParamsExposePromptCacheAndReasoningSummarySettings(t *testi
 	}
 }
 
-func TestModelCatalogCapabilitiesExposeThinkingModes(t *testing.T) {
+func TestModelCatalogCapabilitiesExposeRuntimeControls(t *testing.T) {
 	defs := JSONSchema()["$defs"].(Schema)
 	properties := defs["ModelCatalogCapabilities"].(Schema)["properties"].(Schema)
-	for _, name := range []string{"adaptiveThinking", "manualThinking", "reasoningSummaries"} {
+	for _, name := range []string{"adaptiveThinking", "manualThinking", "reasoningSummaries", "stopSequences"} {
 		if _, ok := properties[name]; !ok {
 			t.Fatalf("ModelCatalogCapabilities schema omitted %s", name)
 		}
+	}
+	providerProperties := defs["ProviderCatalogCapabilities"].(Schema)["properties"].(Schema)
+	if _, ok := providerProperties["stopSequences"]; !ok {
+		t.Fatal("ProviderCatalogCapabilities schema omitted stopSequences")
 	}
 	generated, err := MarshalTypeScript()
 	if err != nil {
@@ -112,6 +116,7 @@ func TestModelCatalogCapabilitiesExposeThinkingModes(t *testing.T) {
 		`"adaptiveThinking": boolean;`,
 		`"manualThinking": boolean;`,
 		`"reasoningSummaries": boolean;`,
+		`"stopSequences": boolean;`,
 	} {
 		if !strings.Contains(string(generated), want) {
 			t.Errorf("ModelCatalogCapabilities TypeScript missing %q", want)

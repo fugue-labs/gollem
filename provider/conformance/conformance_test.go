@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -27,11 +28,12 @@ func TestDeterministicProviderDriverConformance(t *testing.T) {
 	openAIServer := httptest.NewServer(openAIConformanceFixture(t, openAIPromptCache, openAIToolSearch, openAINamespaceTools, openAICancellationReady, openAIRetry, openAITimeout))
 	defer openAIServer.Close()
 	anthropicPromptCache := &promptCacheFixture{}
+	anthropicStopSequences := &stopSequenceFixture{}
 	anthropicToolSearch := &toolSearchFixture{}
 	anthropicCancellationReady := make(chan struct{})
 	anthropicRetry := newRetryFixture()
 	anthropicTimeout := newTimeoutFixture()
-	anthropicServer := httptest.NewServer(anthropicConformanceFixture(t, anthropicPromptCache, anthropicToolSearch, anthropicCancellationReady, anthropicRetry, anthropicTimeout))
+	anthropicServer := httptest.NewServer(anthropicConformanceFixture(t, anthropicPromptCache, anthropicToolSearch, anthropicStopSequences, anthropicCancellationReady, anthropicRetry, anthropicTimeout))
 	defer anthropicServer.Close()
 
 	cases := []struct {
@@ -112,15 +114,16 @@ func TestDeterministicProviderDriverConformance(t *testing.T) {
 			model: func() (conformance.Driver, error) {
 				model := anthropic.New(anthropic.WithAPIKey("test-anthropic-key"), anthropic.WithBaseURL(anthropicServer.URL), anthropic.WithModel(anthropic.ClaudeSonnet46))
 				return conformance.Driver{
-					Name:                  "native Anthropic",
-					Model:                 model,
-					ReasoningModel:        model,
-					ToolSearchModel:       model,
-					Claims:                conformance.Claims{ToolCalls: true, ToolSearch: true, StructuredOutput: true, Vision: true, CacheReadUsage: true, PromptCacheActivation: true, Streaming: true, Usage: true, Cancellation: true, PartialStream: true, MalformedStream: true, DisconnectStream: true, Retryability: true, RequestTimeout: true, StreamTimeout: true, ReasoningVisibility: true},
-					PromptCacheActivation: anthropicPromptCache.verify,
-					ToolSearchActivation:  anthropicToolSearch.verifyAnthropic,
-					CancellationReady:     anthropicCancellationReady,
-					RequestTimeoutReady:   anthropicTimeout.readyFor(anthropic.ClaudeSonnet46),
+					Name:                    "native Anthropic",
+					Model:                   model,
+					ReasoningModel:          model,
+					ToolSearchModel:         model,
+					Claims:                  conformance.Claims{ToolCalls: true, ToolSearch: true, StructuredOutput: true, Vision: true, CacheReadUsage: true, PromptCacheActivation: true, StopSequences: true, Streaming: true, Usage: true, Cancellation: true, PartialStream: true, MalformedStream: true, DisconnectStream: true, Retryability: true, RequestTimeout: true, StreamTimeout: true, ReasoningVisibility: true},
+					PromptCacheActivation:   anthropicPromptCache.verify,
+					StopSequencesActivation: anthropicStopSequences.verify,
+					ToolSearchActivation:    anthropicToolSearch.verifyAnthropic,
+					CancellationReady:       anthropicCancellationReady,
+					RequestTimeoutReady:     anthropicTimeout.readyFor(anthropic.ClaudeSonnet46),
 					Expectations: conformance.Expectations{
 						ResponseText:          "anthropic response",
 						ToolName:              "conformance_echo",
@@ -136,6 +139,7 @@ func TestDeterministicProviderDriverConformance(t *testing.T) {
 						RetryText:             "anthropic retry",
 						StreamTimeoutText:     "anthropic deadline",
 						ReasoningText:         "anthropic reasoning",
+						StopSequenceText:      "anthropic stop sequences",
 					},
 				}, nil
 			},
@@ -174,10 +178,12 @@ func TestCatalogAnthropicProfileConformance(t *testing.T) {
 		t.Run(tc.model, func(t *testing.T) {
 			promptCache := &promptCacheFixture{}
 			toolSearch := &toolSearchFixture{}
+			stopSequences := &stopSequenceFixture{}
 			server := httptest.NewServer(anthropicConformanceFixture(
 				t,
 				promptCache,
 				toolSearch,
+				stopSequences,
 				nil,
 				nil,
 				nil,
@@ -197,15 +203,17 @@ func TestCatalogAnthropicProfileConformance(t *testing.T) {
 				Vision:                true,
 				CacheReadUsage:        true,
 				PromptCacheActivation: true,
+				StopSequences:         true,
 				Streaming:             true,
 				Usage:                 true,
 				ReasoningVisibility:   tc.reasoning,
 			}
 			driver := conformance.Driver{
-				Name:                  "native Anthropic " + tc.model,
-				Model:                 model,
-				Claims:                claims,
-				PromptCacheActivation: promptCache.verify,
+				Name:                    "native Anthropic " + tc.model,
+				Model:                   model,
+				Claims:                  claims,
+				PromptCacheActivation:   promptCache.verify,
+				StopSequencesActivation: stopSequences.verify,
 				Expectations: conformance.Expectations{
 					ResponseText:          "anthropic response",
 					ToolName:              "conformance_echo",
@@ -216,6 +224,7 @@ func TestCatalogAnthropicProfileConformance(t *testing.T) {
 					CacheReadTokens:       2,
 					StreamText:            "anthropic stream",
 					ReasoningText:         "anthropic reasoning",
+					StopSequenceText:      "anthropic stop sequences",
 				},
 			}
 			if tc.toolSearch {
@@ -237,6 +246,26 @@ type promptCacheFixture struct {
 	mu      sync.Mutex
 	request bool
 	stream  bool
+}
+
+type stopSequenceFixture struct {
+	mu       sync.Mutex
+	observed int
+}
+
+func (f *stopSequenceFixture) record() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.observed++
+}
+
+func (f *stopSequenceFixture) verify() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.observed != 1 {
+		return fmt.Errorf("observed %d stop-sequence requests, want 1", f.observed)
+	}
+	return nil
 }
 
 func (f *promptCacheFixture) record(stream bool) {
@@ -476,6 +505,17 @@ func TestVerifyRejectsUnprovenClaims(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Verify accepted a reasoning claim without expected reasoning text")
+	}
+	err = conformance.Verify(context.Background(), conformance.Driver{
+		Name:   "missing stop-sequence fixture",
+		Model:  openai.New(openai.WithAPIKey("test-key")),
+		Claims: conformance.Claims{StopSequences: true},
+		Expectations: conformance.Expectations{
+			StopSequenceText: "expected",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "stop-sequence fixture") {
+		t.Fatalf("Verify missing stop-sequence fixture error = %v", err)
 	}
 }
 
@@ -725,7 +765,7 @@ data: [DONE]
 `)
 }
 
-func anthropicConformanceFixture(t *testing.T, promptCache *promptCacheFixture, toolSearch *toolSearchFixture, cancellationReady chan<- struct{}, retry *retryFixture, timeout *timeoutFixture, expectedModel ...string) http.Handler {
+func anthropicConformanceFixture(t *testing.T, promptCache *promptCacheFixture, toolSearch *toolSearchFixture, stopSequences *stopSequenceFixture, cancellationReady chan<- struct{}, retry *retryFixture, timeout *timeoutFixture, expectedModel ...string) http.Handler {
 	t.Helper()
 	if len(expectedModel) > 1 {
 		t.Fatalf("Anthropic conformance fixture got %d expected models, want at most one", len(expectedModel))
@@ -746,9 +786,10 @@ func anthropicConformanceFixture(t *testing.T, promptCache *promptCacheFixture, 
 			t.Fatalf("read Anthropic request: %v", err)
 		}
 		var request struct {
-			Model  string          `json:"model"`
-			Stream bool            `json:"stream"`
-			Tools  json.RawMessage `json:"tools"`
+			Model         string          `json:"model"`
+			Stream        bool            `json:"stream"`
+			Tools         json.RawMessage `json:"tools"`
+			StopSequences []string        `json:"stop_sequences"`
 		}
 		if err := json.Unmarshal(body, &request); err != nil {
 			t.Fatalf("decode Anthropic request: %v", err)
@@ -759,6 +800,15 @@ func anthropicConformanceFixture(t *testing.T, promptCache *promptCacheFixture, 
 		if strings.Contains(string(body), "run conformance") {
 			assertAnthropicPromptCache(t, body)
 			promptCache.record(request.Stream)
+		}
+		if strings.Contains(string(body), "stop sequence conformance") {
+			if !slices.Equal(request.StopSequences, []string{"conformance-stop"}) {
+				t.Fatalf("Anthropic stop_sequences = %#v, want [conformance-stop]", request.StopSequences)
+			}
+			stopSequences.record()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"id":"msg-stop-sequences","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"anthropic stop sequences"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}`)
+			return
 		}
 		if strings.Contains(string(body), "cancel conformance") {
 			waitForCancellation(r, cancellationReady)

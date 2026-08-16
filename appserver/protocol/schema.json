@@ -13214,6 +13214,9 @@
         "reasoningSummaries": {
           "type": "boolean"
         },
+        "stopSequences": {
+          "type": "boolean"
+        },
         "streaming": {
           "type": "boolean"
         },
@@ -13236,6 +13239,7 @@
         "vision",
         "streaming",
         "promptCache",
+        "stopSequences",
         "toolSearch",
         "reasoning",
         "adaptiveThinking",
@@ -15268,6 +15272,9 @@
             }
           ]
         },
+        "stopSequences": {
+          "type": "boolean"
+        },
         "streaming": {
           "type": "boolean"
         },
@@ -15297,6 +15304,7 @@
         "vision",
         "streaming",
         "promptCache",
+        "stopSequences",
         "toolSearch",
         "reasoning"
       ],

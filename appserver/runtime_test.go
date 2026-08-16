@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -393,6 +394,103 @@ func TestServerRuntimePromptCacheFailsClosedAgainstModelCatalog(t *testing.T) {
 				t.Fatalf("turn prompt-cache setting = %#v, want %t", input.PromptCacheEnabled, *tc.cache)
 			}
 		})
+	}
+}
+
+func TestServerRuntimeStopSequencesFailClosedAndSurviveRetry(t *testing.T) {
+	ctx := context.Background()
+	st := newRuntimeTestStore(t)
+	model := core.NewTestModel(core.TextResponse("first"), core.TextResponse("retry"))
+	server := readyServer(
+		WithStore(st),
+		WithRuntimeService(NewRuntimeService(WithRuntimeModel(
+			model,
+			RuntimeModelInfo{ProviderID: "anthropic", Model: "claude-sonnet-4-6"},
+		))),
+	)
+
+	for _, tc := range []struct {
+		name       string
+		providerID string
+		model      string
+		wantReason string
+	}{
+		{
+			name:       "OpenAI Responses does not advertise stop sequences",
+			providerID: "openai",
+			model:      "gpt-4o",
+			wantReason: "does not advertise stop sequences",
+		},
+		{
+			name:       "unknown model cannot persist stop sequences",
+			providerID: "anthropic",
+			model:      "future-model",
+			wantReason: "model capability is unavailable",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := server.HandleRequest(ctx, request("thread/start", map[string]any{
+				"workspace":     t.TempDir(),
+				"prompt":        "reject unsupported stop sequences",
+				"providerId":    tc.providerID,
+				"model":         tc.model,
+				"stopSequences": []string{"conformance-stop"},
+			}))
+			if response.Error == nil || response.Error.Code != protocol.CodeInvalidParams {
+				t.Fatalf("thread/start error = %#v, want invalid params", response.Error)
+			}
+			if !strings.Contains(response.Error.Message, tc.wantReason) {
+				t.Fatalf("thread/start error = %q, want %q", response.Error.Message, tc.wantReason)
+			}
+		})
+	}
+	threads, err := st.ListThreads(ctx, store.ThreadFilter{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(threads) != 0 {
+		t.Fatalf("unsupported stop sequence selections created %d threads", len(threads))
+	}
+
+	start := server.HandleRequest(ctx, request("thread/start", map[string]any{
+		"workspace":     t.TempDir(),
+		"prompt":        "persist supported stop sequences",
+		"providerId":    "anthropic",
+		"model":         "claude-sonnet-4-6",
+		"stopSequences": []string{"END", "###"},
+	}))
+	if start.Error != nil {
+		t.Fatalf("thread/start error: %v", start.Error)
+	}
+	var started protocol.ThreadRunStartResult
+	decodeResult(t, start, &started)
+	waitForNotificationSet(t, server, "turn/completed")
+
+	retry := server.HandleRequest(ctx, request("turn/retry", map[string]any{"turnId": started.Turn.ID}))
+	if retry.Error != nil {
+		t.Fatalf("turn/retry error: %v", retry.Error)
+	}
+	var retried protocol.TurnRunRetryResult
+	decodeResult(t, retry, &retried)
+	waitForNotificationSet(t, server, "turn/completed")
+
+	persisted, err := st.GetTurn(ctx, retried.Turn.ID)
+	if err != nil {
+		t.Fatalf("GetTurn retry: %v", err)
+	}
+	var input runtimeTurnInput
+	if err := json.Unmarshal(persisted.Input, &input); err != nil {
+		t.Fatalf("decode retry input: %v", err)
+	}
+	if got, want := input.StopSequences, []string{"END", "###"}; !slices.Equal(got, want) {
+		t.Fatalf("retry input stop sequences = %#v, want %#v", got, want)
+	}
+	calls := model.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("model calls = %d, want 2", len(calls))
+	}
+	if calls[1].Settings == nil || !slices.Equal(calls[1].Settings.StopSequences, []string{"END", "###"}) {
+		t.Fatalf("retry model settings = %#v, want persisted stop sequences", calls[1].Settings)
 	}
 }
 

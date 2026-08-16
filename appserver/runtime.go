@@ -648,6 +648,7 @@ type runtimeTurnInput struct {
 	ThinkingBudget     *int           `json:"thinkingBudget,omitempty"`
 	AdaptiveThinking   *bool          `json:"adaptiveThinking,omitempty"`
 	PromptCacheEnabled *bool          `json:"promptCacheEnabled,omitempty"`
+	StopSequences      []string       `json:"stopSequences,omitempty"`
 	Metadata           map[string]any `json:"metadata,omitempty"`
 	SubmittedAt        time.Time      `json:"submittedAt"`
 }
@@ -668,6 +669,7 @@ func runtimeTurnInputJSON(
 		ThinkingBudget:     runtimeThinkingBudget(settings),
 		AdaptiveThinking:   cloneBool(settings.AdaptiveThinking),
 		PromptCacheEnabled: runtimePromptCacheEnabled(settings),
+		StopSequences:      runtimeStopSequences(settings),
 		Metadata:           cloneRuntimeMap(metadata),
 		SubmittedAt:        time.Now().UTC(),
 	})
@@ -693,6 +695,10 @@ func runtimeReasoningSummary(settings core.ModelSettings) string {
 
 func runtimePromptCacheEnabled(settings core.ModelSettings) *bool {
 	return cloneBool(settings.PromptCacheEnabled)
+}
+
+func runtimeStopSequences(settings core.ModelSettings) []string {
+	return append([]string(nil), settings.StopSequences...)
 }
 
 func runtimeThinkingBudget(settings core.ModelSettings) *int {

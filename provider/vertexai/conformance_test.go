@@ -41,10 +41,11 @@ func TestCatalogCapabilityConformance(t *testing.T) {
 			}}
 
 			err := conformance.Verify(t.Context(), conformance.Driver{
-				Name:                  "Vertex AI Gemini " + modelName,
-				Model:                 model,
-				Claims:                conformance.Claims{ToolCalls: true, StructuredOutput: true, Vision: true, PromptCacheActivation: true, Streaming: true, Usage: true},
-				PromptCacheActivation: fixture.verify,
+				Name:                    "Vertex AI Gemini " + modelName,
+				Model:                   model,
+				Claims:                  conformance.Claims{ToolCalls: true, StructuredOutput: true, Vision: true, PromptCacheActivation: true, StopSequences: true, Streaming: true, Usage: true},
+				PromptCacheActivation:   fixture.verify,
+				StopSequencesActivation: fixture.verifyStopSequences,
 				Expectations: conformance.Expectations{
 					ResponseText:          "vertex gemini response",
 					ToolName:              "conformance_echo",
@@ -53,6 +54,7 @@ func TestCatalogCapabilityConformance(t *testing.T) {
 					StructuredOutputValue: "vertex gemini structured",
 					VisionText:            "vertex gemini vision",
 					StreamText:            "vertex gemini stream",
+					StopSequenceText:      "vertex gemini stop sequences",
 				},
 			})
 			if err != nil {
@@ -70,6 +72,7 @@ type geminiConformanceFixture struct {
 	cachedRequestCount int
 	toolRequestCount   int
 	visionRequestCount int
+	stopSequenceCount  int
 }
 
 func (f *geminiConformanceFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +102,14 @@ func (f *geminiConformanceFixture) serveHTTP(w http.ResponseWriter, r *http.Requ
 	}
 
 	switch {
+	case strings.Contains(prompt, "stop sequence conformance"):
+		if !geminiConformanceHasStopSequences(request, []string{"conformance-stop"}) {
+			f.t.Errorf("Gemini stop-sequence request = %#v, want generationConfig.stopSequences [conformance-stop]", request)
+		}
+		f.mu.Lock()
+		f.stopSequenceCount++
+		f.mu.Unlock()
+		f.writeResponse(w, "vertex gemini stop sequences", nil)
 	case strings.Contains(prompt, "structured output conformance"):
 		f.writeResponse(w, "{\"value\":\"vertex gemini structured\"}", nil)
 	case strings.Contains(prompt, "vision conformance"):
@@ -118,6 +129,15 @@ func (f *geminiConformanceFixture) serveHTTP(w http.ResponseWriter, r *http.Requ
 		f.mu.Unlock()
 		f.writeResponse(w, "vertex gemini response", map[string]any{"name": "conformance_echo", "args": map[string]any{"value": "ok"}})
 	}
+}
+
+func (f *geminiConformanceFixture) verifyStopSequences() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.stopSequenceCount != 1 {
+		return fmt.Errorf("fixture observed %d stop-sequence requests, want 1", f.stopSequenceCount)
+	}
+	return nil
 }
 
 func (f *geminiConformanceFixture) writeResponse(w http.ResponseWriter, text string, functionCall map[string]any) {
@@ -199,4 +219,18 @@ func geminiConformanceHasInlineImage(request map[string]any) bool {
 		}
 	}
 	return false
+}
+
+func geminiConformanceHasStopSequences(request map[string]any, want []string) bool {
+	generationConfig, _ := request["generationConfig"].(map[string]any)
+	values, _ := generationConfig["stopSequences"].([]any)
+	if len(values) != len(want) {
+		return false
+	}
+	for index, value := range values {
+		if value != want[index] {
+			return false
+		}
+	}
+	return true
 }
