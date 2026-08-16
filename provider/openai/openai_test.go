@@ -2632,6 +2632,20 @@ func TestResponsesReasoningSummary(t *testing.T) {
 	}
 }
 
+func TestResponsesPerRequestReasoningSummaryOverridesProviderDefault(t *testing.T) {
+	defaultSummary := "detailed"
+	selectedSummary := "concise"
+	provider := New(WithModel(GPT5), WithReasoningSummary(defaultSummary))
+	req, err := buildResponsesRequest(nil, &core.ModelSettings{ReasoningSummary: &selectedSummary}, nil, GPT5, 4096, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.applyResponsesEndpointSettingsForSettings(req, &core.ModelSettings{ReasoningSummary: &selectedSummary})
+	if req.Reasoning == nil || req.Reasoning.Summary != selectedSummary {
+		t.Fatalf("reasoning summary = %#v, want per-request %q", req.Reasoning, selectedSummary)
+	}
+}
+
 func TestResponsesTextVerbosity(t *testing.T) {
 	// Verify the text verbosity field is serialized correctly.
 	req := &responsesRequest{

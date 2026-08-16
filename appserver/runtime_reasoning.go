@@ -65,6 +65,30 @@ func validateRuntimeThinkingSelection(
 	return nil
 }
 
+func validateRuntimeReasoningSummarySelection(
+	catalogService *catalog.Catalog,
+	selection RuntimeModelSelection,
+	settings core.ModelSettings,
+) error {
+	if settings.ReasoningSummary == nil {
+		return nil
+	}
+	summary := strings.TrimSpace(*settings.ReasoningSummary)
+	switch summary {
+	case "auto", "concise", "detailed":
+	default:
+		return fmt.Errorf("reasoning summary %q is unavailable; choose auto, concise, or detailed", summary)
+	}
+	selected, err := selectedRuntimeCatalogModel(catalogService, selection)
+	if err != nil {
+		return err
+	}
+	if !selected.Capabilities.ReasoningSummaries {
+		return fmt.Errorf("model %q does not advertise reasoning summaries", selected.ID)
+	}
+	return nil
+}
+
 func selectedRuntimeCatalogModel(catalogService *catalog.Catalog, selection RuntimeModelSelection) (*catalog.Model, error) {
 	providerID := strings.TrimSpace(firstNonEmpty(selection.ProviderID, selection.Provider))
 	modelName := strings.TrimSpace(selection.Model)

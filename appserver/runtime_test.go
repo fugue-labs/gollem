@@ -451,6 +451,89 @@ func TestServerRuntimeRetryRetainsThinkingSettings(t *testing.T) {
 	}
 }
 
+func TestServerRuntimeReasoningSummaryFailsClosedAndSurvivesRetry(t *testing.T) {
+	ctx := context.Background()
+	st := newRuntimeTestStore(t)
+	model := core.NewTestModel(core.TextResponse("first"), core.TextResponse("retry"))
+	server := readyServer(
+		WithStore(st),
+		WithRuntimeService(NewRuntimeService(WithRuntimeModel(
+			model,
+			RuntimeModelInfo{ProviderID: "openai", Model: "gpt-5"},
+		))),
+	)
+
+	unsupported := server.HandleRequest(ctx, request("thread/start", map[string]any{
+		"workspace":        t.TempDir(),
+		"prompt":           "reject unsupported summary selection",
+		"providerId":       "openai",
+		"model":            "gpt-4o",
+		"reasoningSummary": "concise",
+	}))
+	if unsupported.Error == nil || unsupported.Error.Code != protocol.CodeInvalidParams || !strings.Contains(unsupported.Error.Message, "does not advertise reasoning summaries") {
+		t.Fatalf("unsupported reasoning summary error = %#v", unsupported.Error)
+	}
+	threads, err := st.ListThreads(ctx, store.ThreadFilter{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(threads) != 0 {
+		t.Fatalf("unsupported reasoning summary created %d threads", len(threads))
+	}
+
+	invalid := server.HandleRequest(ctx, request("thread/start", map[string]any{
+		"workspace":        t.TempDir(),
+		"prompt":           "reject invalid summary mode",
+		"providerId":       "openai",
+		"model":            "gpt-5",
+		"reasoningSummary": "full",
+	}))
+	if invalid.Error == nil || invalid.Error.Code != protocol.CodeInvalidParams || !strings.Contains(invalid.Error.Message, "reasoning summary") {
+		t.Fatalf("invalid reasoning summary error = %#v", invalid.Error)
+	}
+
+	start := server.HandleRequest(ctx, request("thread/start", map[string]any{
+		"workspace":        t.TempDir(),
+		"prompt":           "persist summary selection",
+		"providerId":       "openai",
+		"model":            "gpt-5",
+		"reasoningSummary": "concise",
+	}))
+	if start.Error != nil {
+		t.Fatalf("thread/start error: %v", start.Error)
+	}
+	var started protocol.ThreadRunStartResult
+	decodeResult(t, start, &started)
+	waitForNotificationSet(t, server, "turn/completed")
+
+	retry := server.HandleRequest(ctx, request("turn/retry", map[string]any{"turnId": started.Turn.ID}))
+	if retry.Error != nil {
+		t.Fatalf("turn/retry error: %v", retry.Error)
+	}
+	var retried protocol.TurnRunRetryResult
+	decodeResult(t, retry, &retried)
+	waitForNotificationSet(t, server, "turn/completed")
+
+	persisted, err := st.GetTurn(ctx, retried.Turn.ID)
+	if err != nil {
+		t.Fatalf("GetTurn retry: %v", err)
+	}
+	var input runtimeTurnInput
+	if err := json.Unmarshal(persisted.Input, &input); err != nil {
+		t.Fatalf("decode retry input: %v", err)
+	}
+	if input.ReasoningSummary != "concise" {
+		t.Fatalf("retry input reasoning summary = %q, want concise", input.ReasoningSummary)
+	}
+	calls := model.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("model calls = %d, want 2", len(calls))
+	}
+	if calls[1].Settings == nil || calls[1].Settings.ReasoningSummary == nil || *calls[1].Settings.ReasoningSummary != "concise" {
+		t.Fatalf("retry model settings = %#v, want concise reasoning summary", calls[1].Settings)
+	}
+}
+
 func sameIntPointer(got, want *int) bool {
 	if got == nil || want == nil {
 		return got == want

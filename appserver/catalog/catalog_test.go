@@ -153,6 +153,51 @@ func TestThinkingCapabilitiesAreModelSpecific(t *testing.T) {
 	}
 }
 
+func TestReasoningSummaryCapabilityIsModelSpecific(t *testing.T) {
+	c := NewDefault(WithEnvLookup(mapEnv(nil)))
+	cases := []struct {
+		provider string
+		model    string
+		want     bool
+	}{
+		{ProviderOpenAI, "gpt-4o", false},
+		{ProviderOpenAI, "gpt-5", true},
+		{ProviderOpenAI, "gpt-5-mini", true},
+		{ProviderOpenAI, "gpt-5-codex", true},
+		{ProviderAnthropic, "claude-sonnet-4-6", false},
+		{ProviderVertexAIAnthropic, "claude-sonnet-4-6", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.provider+"/"+tc.model, func(t *testing.T) {
+			provider := findProvider(t, c.providers, tc.provider)
+			for _, model := range provider.Models {
+				if model.Model != tc.model {
+					continue
+				}
+				if model.Capabilities.ReasoningSummaries != tc.want {
+					t.Fatalf("reasoning summary capability = %t, want %t", model.Capabilities.ReasoningSummaries, tc.want)
+				}
+				return
+			}
+			t.Fatalf("model %q missing from provider %#v", tc.model, provider.Models)
+		})
+	}
+
+	for _, tc := range []struct {
+		provider string
+		want     bool
+	}{
+		{ProviderOpenAI, true},
+		{ProviderAnthropic, false},
+		{ProviderVertexAIAnthropic, false},
+	} {
+		provider := findProvider(t, c.providers, tc.provider)
+		if provider.Capabilities.ReasoningSummaries != tc.want {
+			t.Fatalf("provider %q reasoning summaries = %t, want %t", tc.provider, provider.Capabilities.ReasoningSummaries, tc.want)
+		}
+	}
+}
+
 func TestValidateAgentRuntimeSelection(t *testing.T) {
 	c := NewDefault(WithEnvLookup(mapEnv(map[string]string{
 		"OPENAI_API_KEY": "configured",

@@ -2768,6 +2768,7 @@ export type ModelCatalogCapabilities = {
   "manualThinking": boolean;
   "promptCache": boolean;
   "reasoning": boolean;
+  "reasoningSummaries": boolean;
   "streaming": boolean;
   "structuredOutput": boolean;
   "toolCalls": boolean;
@@ -3526,6 +3527,7 @@ export type RuntimeModelParams = {
   "provider"?: string;
   "providerId"?: string;
   "reasoningEffort"?: string | null;
+  "reasoningSummary"?: string | null;
   "settings"?: Record<string, unknown> | null;
   "stopSequences"?: Array<string> | null;
   "temperature"?: number | null;
@@ -4312,6 +4314,7 @@ export type ThreadRunStartParams = {
   "provider"?: string;
   "providerId"?: string;
   "reasoningEffort"?: string | null;
+  "reasoningSummary"?: string | null;
   "settings"?: Record<string, unknown> | null;
   "stopSequences"?: Array<string> | null;
   "temperature"?: number | null;
@@ -4673,6 +4676,7 @@ export type TurnRunRetryParams = {
   "provider"?: string;
   "providerId"?: string;
   "reasoningEffort"?: string | null;
+  "reasoningSummary"?: string | null;
   "settings"?: Record<string, unknown> | null;
   "stopSequences"?: Array<string> | null;
   "temperature"?: number | null;
@@ -4701,6 +4705,7 @@ export type TurnRunStartParams = {
   "provider"?: string;
   "providerId"?: string;
   "reasoningEffort"?: string | null;
+  "reasoningSummary"?: string | null;
   "settings"?: Record<string, unknown> | null;
   "stopSequences"?: Array<string> | null;
   "temperature"?: number | null;

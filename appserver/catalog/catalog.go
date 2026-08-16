@@ -383,10 +383,10 @@ func (c *Catalog) defaultProviders() []Provider {
 			Models: []Model{
 				model(ProviderOpenAI, openaiprovider.GPT4o, "GPT-4o", "General-purpose multimodal OpenAI model.", false, textAndImage(), false, capabilities(true, true, true, true, true, false, false), []string{"low", "medium", "high"}, "medium"),
 				model(ProviderOpenAI, openaiprovider.GPT4oMini, "GPT-4o mini", "Smaller OpenAI multimodal model for lower-latency turns.", false, textAndImage(), false, capabilities(true, true, true, true, true, false, false), []string{"low", "medium", "high"}, "medium"),
-				model(ProviderOpenAI, openaiprovider.GPT5, "GPT-5", "OpenAI reasoning model with strong coding and tool-use support.", false, textAndImage(), false, capabilities(true, true, true, true, true, true, false), []string{"minimal", "low", "medium", "high"}, "medium"),
-				model(ProviderOpenAI, openaiprovider.GPT5Mini, "GPT-5 mini", "Lower-latency GPT-5 family model.", false, textAndImage(), false, capabilities(true, true, true, true, true, true, false), []string{"minimal", "low", "medium", "high"}, "medium"),
-				model(ProviderOpenAI, openaiprovider.GPT5Nano, "GPT-5 nano", "Small GPT-5 family model for fast utility work.", true, textAndImage(), false, capabilities(true, true, true, true, true, true, false), []string{"minimal", "low", "medium", "high"}, "low"),
-				model(ProviderOpenAI, openaiprovider.GPT5Codex, "GPT-5 Codex", "OpenAI coding-specialized model exposed through Gollem's neutral model controls.", false, textAndImage(), false, capabilities(true, true, true, true, true, true, false), []string{"minimal", "low", "medium", "high"}, "medium"),
+				model(ProviderOpenAI, openaiprovider.GPT5, "GPT-5", "OpenAI reasoning model with strong coding and tool-use support.", false, textAndImage(), false, reasoningSummaryCapabilities(capabilities(true, true, true, true, true, true, false), true), []string{"minimal", "low", "medium", "high"}, "medium"),
+				model(ProviderOpenAI, openaiprovider.GPT5Mini, "GPT-5 mini", "Lower-latency GPT-5 family model.", false, textAndImage(), false, reasoningSummaryCapabilities(capabilities(true, true, true, true, true, true, false), true), []string{"minimal", "low", "medium", "high"}, "medium"),
+				model(ProviderOpenAI, openaiprovider.GPT5Nano, "GPT-5 nano", "Small GPT-5 family model for fast utility work.", true, textAndImage(), false, reasoningSummaryCapabilities(capabilities(true, true, true, true, true, true, false), true), []string{"minimal", "low", "medium", "high"}, "low"),
+				model(ProviderOpenAI, openaiprovider.GPT5Codex, "GPT-5 Codex", "OpenAI coding-specialized model exposed through Gollem's neutral model controls.", false, textAndImage(), false, reasoningSummaryCapabilities(capabilities(true, true, true, true, true, true, false), true), []string{"minimal", "low", "medium", "high"}, "medium"),
 			},
 		},
 		{
@@ -431,17 +431,16 @@ func (c *Catalog) defaultProviders() []Provider {
 			RequiredEnvVars: []string{"ANTHROPIC_API_KEY"},
 			AuthModes:       []string{"api-key"},
 			Capabilities: ProviderCapabilities{
-				ToolCalls:          true,
-				StructuredOutput:   true,
-				Vision:             true,
-				Streaming:          true,
-				PromptCache:        true,
-				ToolSearch:         true,
-				Reasoning:          true,
-				ReasoningEfforts:   []string{"low", "medium", "high", "xhigh", "max"},
-				ReasoningSummaries: true,
-				AdaptiveThinking:   true,
-				ManualThinking:     true,
+				ToolCalls:        true,
+				StructuredOutput: true,
+				Vision:           true,
+				Streaming:        true,
+				PromptCache:      true,
+				ToolSearch:       true,
+				Reasoning:        true,
+				ReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"},
+				AdaptiveThinking: true,
+				ManualThinking:   true,
 			},
 			Models: []Model{
 				model(ProviderAnthropic, anthropicprovider.ClaudeSonnet46, "Claude Sonnet 4.6", "Anthropic balanced coding and agentic workflow model.", false, textAndImage(), false, thinkingCapabilities(capabilities(true, true, true, true, true, true, true), true, true), []string{"low", "medium", "high", "max"}, "medium"),
@@ -490,16 +489,15 @@ func (c *Catalog) defaultProviders() []Provider {
 			OptionalEnvVars: []string{"GOOGLE_APPLICATION_CREDENTIALS"},
 			AuthModes:       []string{"application-default-credentials", "service-account"},
 			Capabilities: ProviderCapabilities{
-				ToolCalls:          true,
-				StructuredOutput:   true,
-				Vision:             true,
-				Streaming:          true,
-				PromptCache:        true,
-				Reasoning:          true,
-				ReasoningEfforts:   []string{"low", "medium", "high", "xhigh", "max"},
-				ReasoningSummaries: true,
-				AdaptiveThinking:   true,
-				ManualThinking:     true,
+				ToolCalls:        true,
+				StructuredOutput: true,
+				Vision:           true,
+				Streaming:        true,
+				PromptCache:      true,
+				Reasoning:        true,
+				ReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"},
+				AdaptiveThinking: true,
+				ManualThinking:   true,
 			},
 			Models: []Model{
 				model(ProviderVertexAIAnthropic, vertexanthropicprovider.ClaudeSonnet46, "Claude Sonnet 4.6 on Vertex AI", "Anthropic Sonnet through Vertex AI.", true, textAndImage(), false, thinkingCapabilities(capabilities(true, true, true, true, true, true, false), true, true), []string{"low", "medium", "high", "max"}, "medium"),
@@ -609,6 +607,11 @@ func capabilities(toolCalls, structured, vision, streaming, promptCache, reasoni
 func thinkingCapabilities(caps ModelCapabilities, adaptive, manual bool) ModelCapabilities {
 	caps.AdaptiveThinking = adaptive
 	caps.ManualThinking = manual
+	return caps
+}
+
+func reasoningSummaryCapabilities(caps ModelCapabilities, summaries bool) ModelCapabilities {
+	caps.ReasoningSummaries = summaries
 	return caps
 }
 

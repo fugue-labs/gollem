@@ -19,6 +19,7 @@ of behavior and must not enable a control solely on provider identity.
 | Namespace tool grouping | Proven for catalog-listed GPT-5 Responses models | Unsupported | Unsupported | `provider/conformance` groups a namespaced function through the OpenAI Responses API and verifies both the native `namespace` object and normalized tool-call namespace metadata |
 | Deferred tool search | Adapter proven for `gpt-5.4`, but not catalog-enabled | Unsupported | Proven for catalog-listed Sonnet and Opus models | `provider/conformance` sends a `DeferLoading` tool, verifies the normalized response, and fixtures assert OpenAI's `tool_search` or Anthropic's regex search primitive plus the deferred tool |
 | Reasoning visibility | Proven where catalog-supported | Unsupported | Proven where catalog-supported | `provider/conformance` verifies native `ThinkingPart` start/delta events and final retention; local Chat Completions remains unsupported |
+| Reasoning-summary selection | Proven for catalog-listed GPT-5 Responses models | Unsupported | Unsupported | `provider/openai` calls `provider/conformance.Verify` with `ReasoningSummary="concise"`, asserts `reasoning.summary` on the native request, and verifies the normalized `ThinkingPart` stream and final retention. Anthropic thinking visibility is distinct from OpenAI's selectable summary mode. |
 | Prompt-cache activation | Proven | Unsupported | Proven | `provider/conformance` sends `core.ModelSettings.PromptCacheEnabled=true` on normal and streaming requests and fixtures observe OpenAI cache metadata or Anthropic `cache_control` markers |
 | Cache-read token accounting | Proven | Unsupported | Proven | `provider/conformance` verifies provider-reported cache reads normalize to `core.Usage.CacheReadTokens`; accounting and activation remain distinct evidence |
 | Malformed JSON stream event normalization | Proven | Proven | Proven | `provider/conformance` plus provider parser tests; returns `StreamProtocolError` without raw event data |
@@ -52,6 +53,12 @@ remote endpoint.
 `Catalog-supported` means the catalog may expose the capability only for the
 listed provider/model profile. It does not make that behavior part of the common
 driver contract until a deterministic conformance scenario covers it.
+
+Reasoning summary is model-bound rather than inferred from provider-level
+thinking visibility. The current catalog exposes it only for OpenAI GPT-5
+Responses profiles. Anthropic and Vertex Anthropic retain their proven
+reasoning visibility but do not advertise a selectable summary request because
+their adapters do not receive one through the provider-neutral runtime.
 
 ## Custody And Local Endpoint Rules
 

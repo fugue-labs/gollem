@@ -13211,6 +13211,9 @@
         "reasoning": {
           "type": "boolean"
         },
+        "reasoningSummaries": {
+          "type": "boolean"
+        },
         "streaming": {
           "type": "boolean"
         },
@@ -13236,7 +13239,8 @@
         "toolSearch",
         "reasoning",
         "adaptiveThinking",
-        "manualThinking"
+        "manualThinking",
+        "reasoningSummaries"
       ],
       "type": "object"
     },
@@ -17186,6 +17190,16 @@
           "type": "string"
         },
         "reasoningEffort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasoningSummary": {
           "anyOf": [
             {
               "type": "string"
@@ -22886,6 +22900,16 @@
             }
           ]
         },
+        "reasoningSummary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "settings": {
           "anyOf": [
             {
@@ -24565,6 +24589,16 @@
             }
           ]
         },
+        "reasoningSummary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "settings": {
           "anyOf": [
             {
@@ -24717,6 +24751,16 @@
           "type": "string"
         },
         "reasoningEffort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasoningSummary": {
           "anyOf": [
             {
               "type": "string"

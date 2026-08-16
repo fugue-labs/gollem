@@ -44,15 +44,16 @@ type ProviderCatalogCapabilities struct {
 }
 
 type ModelCatalogCapabilities struct {
-	ToolCalls        bool `json:"toolCalls"`
-	StructuredOutput bool `json:"structuredOutput"`
-	Vision           bool `json:"vision"`
-	Streaming        bool `json:"streaming"`
-	PromptCache      bool `json:"promptCache"`
-	ToolSearch       bool `json:"toolSearch"`
-	Reasoning        bool `json:"reasoning"`
-	AdaptiveThinking bool `json:"adaptiveThinking"`
-	ManualThinking   bool `json:"manualThinking"`
+	ToolCalls          bool `json:"toolCalls"`
+	StructuredOutput   bool `json:"structuredOutput"`
+	Vision             bool `json:"vision"`
+	Streaming          bool `json:"streaming"`
+	PromptCache        bool `json:"promptCache"`
+	ToolSearch         bool `json:"toolSearch"`
+	Reasoning          bool `json:"reasoning"`
+	AdaptiveThinking   bool `json:"adaptiveThinking"`
+	ManualThinking     bool `json:"manualThinking"`
+	ReasoningSummaries bool `json:"reasoningSummaries"`
 }
 
 type ModelCatalogReasoningEffortOption struct {
@@ -187,6 +188,7 @@ type RuntimeModelParams struct {
 	ThinkingBudget     *int            `json:"thinkingBudget,omitempty"`
 	AdaptiveThinking   *bool           `json:"adaptiveThinking,omitempty"`
 	ReasoningEffort    *string         `json:"reasoningEffort,omitempty"`
+	ReasoningSummary   *string         `json:"reasoningSummary,omitempty"`
 	PromptCacheEnabled *bool           `json:"promptCacheEnabled,omitempty"`
 	StopSequences      []string        `json:"stopSequences,omitempty"`
 	Settings           map[string]any  `json:"settings,omitempty"`

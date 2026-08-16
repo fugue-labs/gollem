@@ -644,6 +644,7 @@ type runtimeTurnInput struct {
 	Provider           string         `json:"provider,omitempty"`
 	Model              string         `json:"model,omitempty"`
 	ReasoningEffort    string         `json:"reasoningEffort,omitempty"`
+	ReasoningSummary   string         `json:"reasoningSummary,omitempty"`
 	ThinkingBudget     *int           `json:"thinkingBudget,omitempty"`
 	AdaptiveThinking   *bool          `json:"adaptiveThinking,omitempty"`
 	PromptCacheEnabled *bool          `json:"promptCacheEnabled,omitempty"`
@@ -663,6 +664,7 @@ func runtimeTurnInputJSON(
 		Provider:           selection.Provider,
 		Model:              selection.Model,
 		ReasoningEffort:    runtimeReasoningEffort(settings),
+		ReasoningSummary:   runtimeReasoningSummary(settings),
 		ThinkingBudget:     runtimeThinkingBudget(settings),
 		AdaptiveThinking:   cloneBool(settings.AdaptiveThinking),
 		PromptCacheEnabled: runtimePromptCacheEnabled(settings),
@@ -680,6 +682,13 @@ func runtimeReasoningEffort(settings core.ModelSettings) string {
 		return ""
 	}
 	return strings.TrimSpace(*settings.ReasoningEffort)
+}
+
+func runtimeReasoningSummary(settings core.ModelSettings) string {
+	if settings.ReasoningSummary == nil {
+		return ""
+	}
+	return strings.TrimSpace(*settings.ReasoningSummary)
 }
 
 func runtimePromptCacheEnabled(settings core.ModelSettings) *bool {
@@ -1036,6 +1045,7 @@ func hasRuntimeModelSettings(settings core.ModelSettings) bool {
 		settings.ThinkingBudget != nil ||
 		settings.AdaptiveThinking != nil ||
 		settings.ReasoningEffort != nil ||
+		settings.ReasoningSummary != nil ||
 		settings.PromptCacheEnabled != nil ||
 		len(settings.StopSequences) > 0
 }

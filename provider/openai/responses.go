@@ -174,8 +174,15 @@ func (p *Provider) applyResponsesEndpointSettingsForSettings(req *responsesReque
 			req.PromptCacheOptions = nil
 		}
 		req.ServiceTier = p.serviceTier
-		if p.reasoningSummary != "" && req.Reasoning != nil {
-			req.Reasoning.Summary = p.reasoningSummary
+		summary := p.reasoningSummary
+		if settings != nil && settings.ReasoningSummary != nil {
+			summary = strings.TrimSpace(*settings.ReasoningSummary)
+		}
+		if summary != "" {
+			if req.Reasoning == nil {
+				req.Reasoning = &responsesReasoning{}
+			}
+			req.Reasoning.Summary = summary
 		}
 		if p.textVerbosity != "" {
 			if req.Text == nil {

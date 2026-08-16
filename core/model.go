@@ -42,6 +42,11 @@ type ModelSettings struct {
 	// Fable). Per-provider gating rejects values a given model doesn't accept
 	// (e.g., "xhigh" requires Opus 4.7+; "max" requires 4.6+).
 	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
+	// ReasoningSummary asks an adapter that supports user-visible reasoning
+	// summaries to request the selected bounded summary mode. Nil preserves the
+	// provider default. This is currently supported by OpenAI Responses
+	// reasoning models; catalog validation must reject it for other profiles.
+	ReasoningSummary *string `json:"reasoning_summary,omitempty"`
 	// PromptCacheEnabled controls Gollem's explicit prompt-cache request metadata.
 	// Nil preserves the provider default. False suppresses Gollem-managed cache
 	// keys, cache-control markers, and configured cache references; true asks a

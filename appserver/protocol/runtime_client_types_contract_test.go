@@ -74,25 +74,32 @@ func TestRuntimeClientBindingsAreExact(t *testing.T) {
 	}
 }
 
-func TestRuntimeModelParamsExposePromptCacheSetting(t *testing.T) {
+func TestRuntimeModelParamsExposePromptCacheAndReasoningSummarySettings(t *testing.T) {
 	defs := JSONSchema()["$defs"].(Schema)
 	properties := defs["RuntimeModelParams"].(Schema)["properties"].(Schema)
-	if _, ok := properties["promptCacheEnabled"]; !ok {
-		t.Fatal("RuntimeModelParams schema omitted promptCacheEnabled")
+	for _, name := range []string{"promptCacheEnabled", "reasoningSummary"} {
+		if _, ok := properties[name]; !ok {
+			t.Fatalf("RuntimeModelParams schema omitted %s", name)
+		}
 	}
 	generated, err := MarshalTypeScript()
 	if err != nil {
 		t.Fatalf("MarshalTypeScript: %v", err)
 	}
-	if !strings.Contains(string(generated), `"promptCacheEnabled"?: boolean | null;`) {
-		t.Fatal("RuntimeModelParams TypeScript omitted nullable promptCacheEnabled")
+	for _, want := range []string{
+		`"promptCacheEnabled"?: boolean | null;`,
+		`"reasoningSummary"?: string | null;`,
+	} {
+		if !strings.Contains(string(generated), want) {
+			t.Errorf("RuntimeModelParams TypeScript omitted %q", want)
+		}
 	}
 }
 
 func TestModelCatalogCapabilitiesExposeThinkingModes(t *testing.T) {
 	defs := JSONSchema()["$defs"].(Schema)
 	properties := defs["ModelCatalogCapabilities"].(Schema)["properties"].(Schema)
-	for _, name := range []string{"adaptiveThinking", "manualThinking"} {
+	for _, name := range []string{"adaptiveThinking", "manualThinking", "reasoningSummaries"} {
 		if _, ok := properties[name]; !ok {
 			t.Fatalf("ModelCatalogCapabilities schema omitted %s", name)
 		}
@@ -104,6 +111,7 @@ func TestModelCatalogCapabilitiesExposeThinkingModes(t *testing.T) {
 	for _, want := range []string{
 		`"adaptiveThinking": boolean;`,
 		`"manualThinking": boolean;`,
+		`"reasoningSummaries": boolean;`,
 	} {
 		if !strings.Contains(string(generated), want) {
 			t.Errorf("ModelCatalogCapabilities TypeScript missing %q", want)
