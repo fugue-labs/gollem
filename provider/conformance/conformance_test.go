@@ -20,10 +20,11 @@ import (
 func TestDeterministicProviderDriverConformance(t *testing.T) {
 	openAIPromptCache := &promptCacheFixture{}
 	openAIToolSearch := &toolSearchFixture{}
+	openAINamespaceTools := &namespaceToolsFixture{}
 	openAICancellationReady := make(chan struct{})
 	openAIRetry := newRetryFixture()
 	openAITimeout := newTimeoutFixture()
-	openAIServer := httptest.NewServer(openAIConformanceFixture(t, openAIPromptCache, openAIToolSearch, openAICancellationReady, openAIRetry, openAITimeout))
+	openAIServer := httptest.NewServer(openAIConformanceFixture(t, openAIPromptCache, openAIToolSearch, openAINamespaceTools, openAICancellationReady, openAIRetry, openAITimeout))
 	defer openAIServer.Close()
 	anthropicPromptCache := &promptCacheFixture{}
 	anthropicToolSearch := &toolSearchFixture{}
@@ -41,21 +42,27 @@ func TestDeterministicProviderDriverConformance(t *testing.T) {
 			name: "native OpenAI",
 			model: func() (conformance.Driver, error) {
 				return conformance.Driver{
-					Name:                  "native OpenAI",
-					Model:                 openai.New(openai.WithAPIKey("test-openai-key"), openai.WithBaseURL(openAIServer.URL), openai.WithModel("gpt-4o"), openai.WithPromptCacheKey("conformance-cache"), openai.WithPromptCacheRetention("24h")),
-					ReasoningModel:        openai.New(openai.WithAPIKey("test-openai-key"), openai.WithBaseURL(openAIServer.URL), openai.WithModel("gpt-5")),
-					ToolSearchModel:       openai.New(openai.WithAPIKey("test-openai-key"), openai.WithBaseURL(openAIServer.URL), openai.WithModel("gpt-5.4")),
-					Claims:                conformance.Claims{ToolCalls: true, ToolSearch: true, StructuredOutput: true, Vision: true, CacheReadUsage: true, PromptCacheActivation: true, Streaming: true, Usage: true, Cancellation: true, PartialStream: true, MalformedStream: true, DisconnectStream: true, Retryability: true, RequestTimeout: true, StreamTimeout: true, ReasoningVisibility: true},
-					PromptCacheActivation: openAIPromptCache.verify,
-					ToolSearchActivation:  openAIToolSearch.verifyOpenAI,
-					CancellationReady:     openAICancellationReady,
-					RequestTimeoutReady:   openAITimeout.readyFor("gpt-4o"),
+					Name:                     "native OpenAI",
+					Model:                    openai.New(openai.WithAPIKey("test-openai-key"), openai.WithBaseURL(openAIServer.URL), openai.WithModel("gpt-4o"), openai.WithPromptCacheKey("conformance-cache"), openai.WithPromptCacheRetention("24h")),
+					ReasoningModel:           openai.New(openai.WithAPIKey("test-openai-key"), openai.WithBaseURL(openAIServer.URL), openai.WithModel("gpt-5")),
+					ToolSearchModel:          openai.New(openai.WithAPIKey("test-openai-key"), openai.WithBaseURL(openAIServer.URL), openai.WithModel("gpt-5.4")),
+					NamespaceToolsModel:      openai.New(openai.WithAPIKey("test-openai-key"), openai.WithBaseURL(openAIServer.URL), openai.WithModel("gpt-5")),
+					Claims:                   conformance.Claims{ToolCalls: true, ToolSearch: true, NamespaceTools: true, StructuredOutput: true, Vision: true, CacheReadUsage: true, PromptCacheActivation: true, Streaming: true, Usage: true, Cancellation: true, PartialStream: true, MalformedStream: true, DisconnectStream: true, Retryability: true, RequestTimeout: true, StreamTimeout: true, ReasoningVisibility: true},
+					PromptCacheActivation:    openAIPromptCache.verify,
+					ToolSearchActivation:     openAIToolSearch.verifyOpenAI,
+					NamespaceToolsActivation: openAINamespaceTools.verify,
+					CancellationReady:        openAICancellationReady,
+					RequestTimeoutReady:      openAITimeout.readyFor("gpt-4o"),
 					Expectations: conformance.Expectations{
 						ResponseText:          "openai response",
 						ToolName:              "conformance_echo",
 						ToolCallID:            "call_openai",
 						ToolArgumentsJSON:     `{"value":"ok"}`,
 						ToolSearchText:        "openai tool search",
+						NamespaceToolName:     "conformance_namespaced",
+						NamespaceToolCallID:   "call_namespace_openai",
+						NamespaceToolArgsJSON: `{"value":"namespaced"}`,
+						Namespace:             "conformance",
 						StructuredOutputValue: "openai structured",
 						VisionText:            "openai vision",
 						CacheReadTokens:       2,
@@ -209,6 +216,26 @@ func (f *toolSearchFixture) verifyAnthropic() error {
 	return nil
 }
 
+type namespaceToolsFixture struct {
+	mu       sync.Mutex
+	observed bool
+}
+
+func (f *namespaceToolsFixture) record() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.observed = true
+}
+
+func (f *namespaceToolsFixture) verify() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.observed {
+		return fmt.Errorf("OpenAI fixture did not observe namespace grouping")
+	}
+	return nil
+}
+
 func TestVerifyRejectsUnprovenClaims(t *testing.T) {
 	err := conformance.Verify(context.Background(), conformance.Driver{
 		Name:   "missing structured-output fixture",
@@ -243,6 +270,29 @@ func TestVerifyRejectsUnprovenClaims(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "deferred-tool activation") {
 		t.Fatalf("Verify missing tool-search fixture error = %v", err)
+	}
+	err = conformance.Verify(context.Background(), conformance.Driver{
+		Name:   "missing namespace-tools model",
+		Model:  openai.New(openai.WithAPIKey("test-key")),
+		Claims: conformance.Claims{NamespaceTools: true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "namespace-tools model") {
+		t.Fatalf("Verify missing namespace-tools model error = %v", err)
+	}
+	err = conformance.Verify(context.Background(), conformance.Driver{
+		Name:                "missing namespace-tools fixture",
+		Model:               openai.New(openai.WithAPIKey("test-key")),
+		NamespaceToolsModel: openai.New(openai.WithAPIKey("test-key")),
+		Claims:              conformance.Claims{NamespaceTools: true},
+		Expectations: conformance.Expectations{
+			NamespaceToolName:     "conformance_namespaced",
+			NamespaceToolCallID:   "call_namespace",
+			NamespaceToolArgsJSON: `{"value":"namespaced"}`,
+			Namespace:             "conformance",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "namespace grouping") {
+		t.Fatalf("Verify missing namespace-tools fixture error = %v", err)
 	}
 	err = conformance.Verify(context.Background(), conformance.Driver{
 		Name:   "missing cache-read fixture",
@@ -439,11 +489,11 @@ func TestVerifyRejectsStructuredOutputValueMismatch(t *testing.T) {
 	}
 }
 
-func openAIConformanceFixture(t *testing.T, promptCache *promptCacheFixture, toolSearch *toolSearchFixture, cancellationReady chan<- struct{}, retry *retryFixture, timeout *timeoutFixture) http.Handler {
+func openAIConformanceFixture(t *testing.T, promptCache *promptCacheFixture, toolSearch *toolSearchFixture, namespaceTools *namespaceToolsFixture, cancellationReady chan<- struct{}, retry *retryFixture, timeout *timeoutFixture) http.Handler {
 	t.Helper()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/responses" {
-			openAIResponsesConformanceFixture(t, w, r, toolSearch)
+			openAIResponsesConformanceFixture(t, w, r, toolSearch, namespaceTools)
 			return
 		}
 		if r.URL.Path != "/v1/chat/completions" {
@@ -542,7 +592,7 @@ data: [DONE]
 	})
 }
 
-func openAIResponsesConformanceFixture(t *testing.T, w http.ResponseWriter, r *http.Request, toolSearch *toolSearchFixture) {
+func openAIResponsesConformanceFixture(t *testing.T, w http.ResponseWriter, r *http.Request, toolSearch *toolSearchFixture, namespaceTools *namespaceToolsFixture) {
 	t.Helper()
 	if r.Header.Get("Authorization") == "" {
 		t.Fatal("OpenAI reasoning fixture request had no authorization header")
@@ -566,6 +616,16 @@ func openAIResponsesConformanceFixture(t *testing.T, w http.ResponseWriter, r *h
 		toolSearch.recordOpenAI()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"id":"resp-tool-search","model":"gpt-5.4","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"openai tool search"}]}],"usage":{"input_tokens":3,"output_tokens":2}}`)
+		return
+	}
+	if strings.Contains(string(body), "namespace tools conformance") {
+		if request.Model != "gpt-5" || request.Stream {
+			t.Fatalf("unexpected OpenAI namespace-tools request: model=%q stream=%t", request.Model, request.Stream)
+		}
+		assertOpenAINamespaceToolsRequest(t, body)
+		namespaceTools.record()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"resp-namespace","model":"gpt-5","output":[{"type":"function_call","name":"conformance_namespaced","namespace":"conformance","call_id":"call_namespace_openai","arguments":"{\"value\":\"namespaced\"}"}],"usage":{"input_tokens":3,"output_tokens":2}}`)
 		return
 	}
 	if request.Model != "gpt-5" || !request.Stream || !strings.Contains(string(body), "reasoning conformance") {
@@ -842,6 +902,29 @@ func assertOpenAIToolSearchRequest(t *testing.T, body []byte) {
 	deferred := request.Tools[1]
 	if deferred.Type != "function" || deferred.Name != "conformance_deferred" || !deferred.DeferLoading {
 		t.Fatalf("OpenAI deferred tool = %#v, want conformance deferred function", deferred)
+	}
+}
+
+func assertOpenAINamespaceToolsRequest(t *testing.T, body []byte) {
+	t.Helper()
+	var request struct {
+		Tools []struct {
+			Type  string `json:"type"`
+			Name  string `json:"name"`
+			Tools []struct {
+				Type string `json:"type"`
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatalf("decode OpenAI namespace-tools request: %v", err)
+	}
+	if len(request.Tools) != 1 || request.Tools[0].Type != "namespace" || request.Tools[0].Name != "conformance" {
+		t.Fatalf("OpenAI namespace-tools groups = %#v, want one conformance namespace", request.Tools)
+	}
+	if len(request.Tools[0].Tools) != 1 || request.Tools[0].Tools[0].Type != "function" || request.Tools[0].Tools[0].Name != "conformance_namespaced" {
+		t.Fatalf("OpenAI namespace-tools contents = %#v, want conformance function", request.Tools[0].Tools)
 	}
 }
 

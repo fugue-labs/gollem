@@ -23,6 +23,7 @@ import (
 type Claims struct {
 	ToolCalls             bool
 	ToolSearch            bool
+	NamespaceTools        bool
 	StructuredOutput      bool
 	Vision                bool
 	CacheReadUsage        bool
@@ -42,7 +43,9 @@ type Claims struct {
 // Expectations declares the normalized outputs a deterministic fixture
 // produces. ToolName, ToolCallID, and ToolArgumentsJSON are required when
 // Claims.ToolCalls is true. ToolSearchText is required when Claims.ToolSearch
-// is true. StructuredOutputValue is required when
+// is true. NamespaceToolName, NamespaceToolCallID, NamespaceToolArgsJSON, and
+// Namespace are required when Claims.NamespaceTools is true.
+// StructuredOutputValue is required when
 // Claims.StructuredOutput is true. VisionText is required when Claims.Vision
 // is true. CacheReadTokens is required when Claims.CacheReadUsage is true.
 // StreamText is required when
@@ -53,6 +56,10 @@ type Expectations struct {
 	ToolCallID            string
 	ToolArgumentsJSON     string
 	ToolSearchText        string
+	NamespaceToolName     string
+	NamespaceToolCallID   string
+	NamespaceToolArgsJSON string
+	Namespace             string
 	StructuredOutputValue string
 	VisionText            string
 	CacheReadTokens       int
@@ -67,16 +74,18 @@ type Expectations struct {
 // Driver binds a provider model to the common capability claims and expected
 // normalized results that its deterministic fixture produces.
 type Driver struct {
-	Name                  string
-	Model                 core.Model
-	Claims                Claims
-	Expectations          Expectations
-	CancellationReady     <-chan struct{}
-	RequestTimeoutReady   <-chan struct{}
-	ReasoningModel        core.Model
-	ToolSearchModel       core.Model
-	PromptCacheActivation func() error
-	ToolSearchActivation  func() error
+	Name                     string
+	Model                    core.Model
+	Claims                   Claims
+	Expectations             Expectations
+	CancellationReady        <-chan struct{}
+	RequestTimeoutReady      <-chan struct{}
+	ReasoningModel           core.Model
+	ToolSearchModel          core.Model
+	NamespaceToolsModel      core.Model
+	PromptCacheActivation    func() error
+	ToolSearchActivation     func() error
+	NamespaceToolsActivation func() error
 }
 
 // Verify exercises the claimed common model surface through core.Model. It is
@@ -105,6 +114,24 @@ func Verify(ctx context.Context, driver Driver) error {
 	}
 	if driver.Claims.ToolSearch && driver.ToolSearchActivation == nil {
 		return fmt.Errorf("provider conformance: %s tool-search fixture must observe deferred-tool activation", driver.Name)
+	}
+	if driver.Claims.NamespaceTools && driver.NamespaceToolsModel == nil {
+		return fmt.Errorf("provider conformance: %s namespace-tools fixture must supply a Responses model", driver.Name)
+	}
+	if driver.Claims.NamespaceTools && strings.TrimSpace(driver.Expectations.NamespaceToolName) == "" {
+		return fmt.Errorf("provider conformance: %s namespace-tools fixture must expect a tool name", driver.Name)
+	}
+	if driver.Claims.NamespaceTools && strings.TrimSpace(driver.Expectations.NamespaceToolCallID) == "" {
+		return fmt.Errorf("provider conformance: %s namespace-tools fixture must expect a tool call ID", driver.Name)
+	}
+	if driver.Claims.NamespaceTools && strings.TrimSpace(driver.Expectations.NamespaceToolArgsJSON) == "" {
+		return fmt.Errorf("provider conformance: %s namespace-tools fixture must expect tool arguments", driver.Name)
+	}
+	if driver.Claims.NamespaceTools && strings.TrimSpace(driver.Expectations.Namespace) == "" {
+		return fmt.Errorf("provider conformance: %s namespace-tools fixture must expect a namespace", driver.Name)
+	}
+	if driver.Claims.NamespaceTools && driver.NamespaceToolsActivation == nil {
+		return fmt.Errorf("provider conformance: %s namespace-tools fixture must observe namespace grouping", driver.Name)
 	}
 	if driver.Claims.StructuredOutput && strings.TrimSpace(driver.Expectations.StructuredOutputValue) == "" {
 		return fmt.Errorf("provider conformance: %s structured-output fixture must expect a typed value", driver.Name)
@@ -189,6 +216,11 @@ func Verify(ctx context.Context, driver Driver) error {
 	}
 	if driver.Claims.ToolSearch {
 		if err := verifyToolSearch(ctx, driver); err != nil {
+			return err
+		}
+	}
+	if driver.Claims.NamespaceTools {
+		if err := verifyNamespaceTools(ctx, driver); err != nil {
 			return err
 		}
 	}
@@ -332,6 +364,34 @@ func verifyToolSearch(ctx context.Context, driver Driver) error {
 	}
 	if err := driver.ToolSearchActivation(); err != nil {
 		return fmt.Errorf("provider conformance: %s tool-search activation: %w", driver.Name, err)
+	}
+	return nil
+}
+
+// verifyNamespaceTools exercises Responses API namespace grouping without
+// enabling deferred loading. The fixture verifies the native namespace object,
+// while normalized tool-call metadata preserves the selected namespace.
+func verifyNamespaceTools(ctx context.Context, driver Driver) error {
+	response, err := driver.NamespaceToolsModel.Request(ctx, namespaceToolsMessages(), nil, &core.ModelRequestParameters{
+		AllowTextOutput: true,
+		FunctionTools: []core.ToolDefinition{{
+			Name:             "conformance_namespaced",
+			Description:      "A namespaced tool used only for provider conformance.",
+			ParametersSchema: core.Schema{"type": "object"},
+			Namespace:        driver.Expectations.Namespace,
+		}},
+	})
+	if err != nil {
+		return fmt.Errorf("provider conformance: %s namespace-tools request: %w", driver.Name, err)
+	}
+	if response == nil {
+		return fmt.Errorf("provider conformance: %s namespace-tools request returned a nil response", driver.Name)
+	}
+	if err := verifyNamespaceToolCall(driver, response.Parts); err != nil {
+		return err
+	}
+	if err := driver.NamespaceToolsActivation(); err != nil {
+		return fmt.Errorf("provider conformance: %s namespace-tools activation: %w", driver.Name, err)
 	}
 	return nil
 }
@@ -627,6 +687,27 @@ func verifyToolCall(driver Driver, parts []core.ModelResponsePart) error {
 	)
 }
 
+func verifyNamespaceToolCall(driver Driver, parts []core.ModelResponsePart) error {
+	for _, part := range parts {
+		call, ok := part.(core.ToolCallPart)
+		if !ok || call.ToolName != driver.Expectations.NamespaceToolName ||
+			call.ToolCallID != driver.Expectations.NamespaceToolCallID ||
+			call.ArgsJSON != driver.Expectations.NamespaceToolArgsJSON {
+			continue
+		}
+		if call.Metadata != nil && call.Metadata["namespace"] == driver.Expectations.Namespace {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		"provider conformance: %s response did not preserve namespace %q for tool %q call ID %q",
+		driver.Name,
+		driver.Expectations.Namespace,
+		driver.Expectations.NamespaceToolName,
+		driver.Expectations.NamespaceToolCallID,
+	)
+}
+
 func conformanceMessages() []core.ModelMessage {
 	return []core.ModelMessage{
 		core.ModelRequest{Parts: []core.ModelRequestPart{
@@ -648,6 +729,12 @@ func visionMessages() []core.ModelMessage {
 func toolSearchMessages() []core.ModelMessage {
 	return []core.ModelMessage{
 		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "tool search conformance"}}},
+	}
+}
+
+func namespaceToolsMessages() []core.ModelMessage {
+	return []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "namespace tools conformance"}}},
 	}
 }
 
