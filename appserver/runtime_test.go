@@ -120,6 +120,58 @@ func TestRuntimeStartFailureTerminalizesCreatedTurn(t *testing.T) {
 	}
 }
 
+func TestServerRuntimeFailureRedactsPersistedAndNotifiedErrors(t *testing.T) {
+	const secret = "https://provider.invalid/v1?api_key=super-secret"
+	ctx := context.Background()
+	st := newRuntimeTestStore(t)
+	server := readyServer(
+		WithStore(st),
+		WithRuntimeService(NewRuntimeService(WithRuntimeModel(
+			runtimeFailingModel{err: errors.New("provider request to " + secret + " failed")},
+			RuntimeModelInfo{ProviderID: "test", Model: "failing"},
+		))),
+	)
+
+	response := server.HandleRequest(ctx, request("thread/start", map[string]any{
+		"prompt": "do not disclose this prompt",
+	}))
+	if response.Error != nil {
+		t.Fatalf("thread/start error: %v", response.Error)
+	}
+	var started protocol.ThreadRunStartResult
+	decodeResult(t, response, &started)
+	notifications := waitForNotificationSet(t, server, "error", "turn/completed")
+
+	persisted, err := st.GetTurn(ctx, started.Turn.ID)
+	if err != nil {
+		t.Fatalf("GetTurn: %v", err)
+	}
+	if persisted.Status != store.TurnFailed || persisted.Error != runtimePublicErrorFailed {
+		t.Fatalf("persisted turn = %#v, want redacted failed turn", persisted)
+	}
+	if strings.Contains(persisted.Error, secret) {
+		t.Fatalf("persisted error exposed %q: %q", secret, persisted.Error)
+	}
+
+	for _, notification := range notifications {
+		if notification.Method != "error" {
+			continue
+		}
+		var params runtimeErrorNotificationParams
+		if err := json.Unmarshal(notification.Params, &params); err != nil {
+			t.Fatalf("decode error notification: %v", err)
+		}
+		if params.Error != runtimePublicErrorFailed || params.ThreadID != started.Thread.ID || params.TurnID != started.Turn.ID {
+			t.Fatalf("error notification = %#v", params)
+		}
+		if strings.Contains(params.Error, secret) {
+			t.Fatalf("notification error exposed %q: %q", secret, params.Error)
+		}
+		return
+	}
+	t.Fatal("runtime error notification missing")
+}
+
 func TestRuntimeStartPersistsExplicitReasoningEffort(t *testing.T) {
 	ctx := context.Background()
 	st := newRuntimeTestStore(t)
@@ -1799,7 +1851,7 @@ func TestServerRuntimeTurnInterruptCancelsActiveRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTurn: %v", err)
 	}
-	if turn.Status != store.TurnInterrupted {
+	if turn.Status != store.TurnInterrupted || turn.Error != runtimePublicErrorInterrupted {
 		t.Fatalf("turn status = %s, want interrupted; error=%q", turn.Status, turn.Error)
 	}
 }
@@ -1833,7 +1885,7 @@ func TestRuntimeShutdownCancelsActiveRunBeforeStoreClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTurn: %v", err)
 	}
-	if turn.Status != store.TurnInterrupted {
+	if turn.Status != store.TurnInterrupted || turn.Error != runtimePublicErrorInterrupted {
 		t.Fatalf("turn status = %s, want interrupted; error=%q", turn.Status, turn.Error)
 	}
 	if err := st.Close(); err != nil {
@@ -2267,8 +2319,8 @@ func TestServerRuntimeTurnSteerFailsClosedWhenConsumptionBoundaryCannotPersist(t
 	if err != nil {
 		t.Fatalf("GetTurn: %v", err)
 	}
-	if turn.Status != store.TurnFailed || !strings.Contains(turn.Error, "item boundary unavailable") {
-		t.Fatalf("turn = %#v, want failed consumption acknowledgement", turn)
+	if turn.Status != store.TurnFailed || turn.Error != runtimePublicErrorFailed {
+		t.Fatalf("turn = %#v, want redacted failed consumption acknowledgement", turn)
 	}
 	items, err := base.ListItems(ctx, store.ItemFilter{
 		ThreadID: started.Turn.ThreadID,
@@ -2597,6 +2649,22 @@ func assertRuntimeAssistantText(t *testing.T, message core.ModelMessage, want st
 
 type blockingRuntimeModel struct {
 	started chan struct{}
+}
+
+type runtimeFailingModel struct {
+	err error
+}
+
+func (m runtimeFailingModel) Request(context.Context, []core.ModelMessage, *core.ModelSettings, *core.ModelRequestParameters) (*core.ModelResponse, error) {
+	return nil, m.err
+}
+
+func (m runtimeFailingModel) RequestStream(context.Context, []core.ModelMessage, *core.ModelSettings, *core.ModelRequestParameters) (core.StreamedResponse, error) {
+	return nil, m.err
+}
+
+func (runtimeFailingModel) ModelName() string {
+	return "failing"
 }
 
 func (m *blockingRuntimeModel) Request(ctx context.Context, _ []core.ModelMessage, _ *core.ModelSettings, _ *core.ModelRequestParameters) (*core.ModelResponse, error) {

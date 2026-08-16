@@ -1,13 +1,17 @@
 package appserver
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/fugue-labs/gollem/appserver/protocol"
 	"github.com/fugue-labs/gollem/appserver/store"
+	"github.com/fugue-labs/gollem/core"
 )
 
 type runtimeErrorCaptureNotifier struct {
@@ -36,7 +40,7 @@ func TestPublishRuntimeErrorRetainsLiveExtensionShape(t *testing.T) {
 				t.Fatalf("method = %q", notifier.method)
 			}
 			params, ok := notifier.params.(runtimeErrorNotificationParams)
-			if !ok || params.Error != "boom" || params.At.IsZero() {
+			if !ok || params.Error != runtimePublicErrorFailed || params.At.IsZero() {
 				t.Fatalf("params = %#v (%T)", notifier.params, notifier.params)
 			}
 			if tc.turn != nil && (params.ThreadID != "thread" || params.TurnID != "turn") {
@@ -64,6 +68,43 @@ func TestPublishRuntimeErrorRetainsLiveExtensionShape(t *testing.T) {
 			var exact protocol.ErrorNotification
 			if err := json.Unmarshal(encoded, &exact); err == nil {
 				t.Fatal("incompatible live extension decoded as exact public error")
+			}
+		})
+	}
+}
+
+func TestRuntimePublicErrorRedactsUntrustedDetails(t *testing.T) {
+	const secret = "https://provider.invalid/v1?api_key=super-secret"
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"generic", fmt.Errorf("request %s failed", secret), runtimePublicErrorFailed},
+		{"cancelled", fmt.Errorf("request %s: %w", secret, context.Canceled), runtimePublicErrorInterrupted},
+		{"timed out", fmt.Errorf("request %s: %w", secret, context.DeadlineExceeded), runtimePublicErrorTimedOut},
+		{
+			"provider HTTP status",
+			fmt.Errorf("request %s: %w", secret, &core.ModelHTTPError{
+				Message:    "Authorization: Bearer super-secret",
+				StatusCode: 429,
+				Body:       "prompt=super-secret",
+			}),
+			"Provider request failed (HTTP 429).",
+		},
+		{
+			"invalid provider status",
+			&core.ModelHTTPError{Message: secret, StatusCode: 0, Body: secret},
+			runtimePublicErrorProvider,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := runtimePublicError(tc.err)
+			if got != tc.want {
+				t.Fatalf("runtimePublicError(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+			if got == "" || strings.Contains(got, "super-secret") || strings.Contains(got, "provider.invalid") {
+				t.Fatalf("runtimePublicError(%v) exposed untrusted detail: %q", tc.err, got)
 			}
 		})
 	}

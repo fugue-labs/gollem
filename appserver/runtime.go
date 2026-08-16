@@ -24,6 +24,13 @@ var (
 	ErrRuntimeRecoveryUnavailable = errors.New("appserver/runtime: store does not support restart recovery")
 )
 
+const (
+	runtimePublicErrorFailed      = "Runtime execution failed."
+	runtimePublicErrorInterrupted = "Runtime execution was interrupted."
+	runtimePublicErrorTimedOut    = "Runtime execution timed out."
+	runtimePublicErrorProvider    = "Provider request failed."
+)
+
 type RuntimeModelSelection struct {
 	ProviderID string `json:"providerId,omitempty"`
 	Provider   string `json:"provider,omitempty"`
@@ -608,10 +615,7 @@ func (s *RuntimeService) complete(st store.Store, notifier runtimeNotifier, turn
 	if payload, err := json.Marshal(resultPayload); err == nil {
 		rawResult = payload
 	}
-	errorText := ""
-	if runErr != nil {
-		errorText = runErr.Error()
-	}
+	errorText := runtimePublicError(runErr)
 	completed, err := st.CompleteTurn(context.Background(), store.CompleteTurnRequest{
 		ID:     turn.ID,
 		Status: status,
@@ -636,6 +640,29 @@ func statusFromRuntimeError(err error) store.TurnStatus {
 		return store.TurnInterrupted
 	}
 	return store.TurnFailed
+}
+
+// runtimePublicError deliberately projects only stable recovery information.
+// Runtime errors can contain provider payloads, endpoints, credentials, prompts,
+// or tool output and must not cross the durable or app-server notification boundary.
+func runtimePublicError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.Canceled) {
+		return runtimePublicErrorInterrupted
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return runtimePublicErrorTimedOut
+	}
+	var httpErr *core.ModelHTTPError
+	if errors.As(err, &httpErr) && httpErr != nil {
+		if httpErr.StatusCode >= 100 && httpErr.StatusCode <= 599 {
+			return fmt.Sprintf("Provider request failed (HTTP %d).", httpErr.StatusCode)
+		}
+		return runtimePublicErrorProvider
+	}
+	return runtimePublicErrorFailed
 }
 
 type runtimeTurnInput struct {
@@ -856,7 +883,7 @@ func publishRuntimeError(notifier runtimeNotifier, turn *store.Turn, text string
 	if notifier == nil || text == "" {
 		return
 	}
-	params := runtimeErrorNotificationParams{Error: text, At: time.Now().UTC()}
+	params := runtimeErrorNotificationParams{Error: runtimePublicErrorFailed, At: time.Now().UTC()}
 	if turn != nil {
 		params.ThreadID = turn.ThreadID
 		params.TurnID = turn.ID
