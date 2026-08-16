@@ -21,10 +21,55 @@ func validateRuntimeReasoningSelection(
 	if effort == "" {
 		return errors.New("reasoning effort must not be empty")
 	}
+	selected, err := selectedRuntimeCatalogModel(catalogService, selection)
+	if err != nil {
+		return err
+	}
+	if !selected.Capabilities.Reasoning {
+		return fmt.Errorf("model %q does not advertise reasoning", selected.ID)
+	}
+	for _, option := range selected.SupportedReasoningEfforts {
+		if strings.TrimSpace(option.ReasoningEffort) == effort {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		"model %q does not advertise reasoning effort %q",
+		selected.ID,
+		effort,
+	)
+}
+
+func validateRuntimeThinkingSelection(
+	catalogService *catalog.Catalog,
+	selection RuntimeModelSelection,
+	settings core.ModelSettings,
+) error {
+	adaptive := settings.AdaptiveThinking != nil && *settings.AdaptiveThinking
+	if settings.ThinkingBudget == nil && !adaptive {
+		return nil
+	}
+	if settings.ThinkingBudget != nil && adaptive {
+		return errors.New("thinking budget and adaptive thinking are mutually exclusive")
+	}
+	selected, err := selectedRuntimeCatalogModel(catalogService, selection)
+	if err != nil {
+		return err
+	}
+	if settings.ThinkingBudget != nil && !selected.Capabilities.ManualThinking {
+		return fmt.Errorf("model %q does not advertise manual thinking", selected.ID)
+	}
+	if adaptive && !selected.Capabilities.AdaptiveThinking {
+		return fmt.Errorf("model %q does not advertise adaptive thinking", selected.ID)
+	}
+	return nil
+}
+
+func selectedRuntimeCatalogModel(catalogService *catalog.Catalog, selection RuntimeModelSelection) (*catalog.Model, error) {
 	providerID := strings.TrimSpace(firstNonEmpty(selection.ProviderID, selection.Provider))
 	modelName := strings.TrimSpace(selection.Model)
 	if providerID == "" {
-		return fmt.Errorf("provider capability is unavailable for reasoning effort %q", effort)
+		return nil, errors.New("provider capability is unavailable")
 	}
 	includeHidden := true
 	response, err := catalogService.ListModels(catalog.ModelListParams{
@@ -32,7 +77,7 @@ func validateRuntimeReasoningSelection(
 		IncludeHidden: &includeHidden,
 	})
 	if err != nil {
-		return fmt.Errorf("read model capability: %w", err)
+		return nil, fmt.Errorf("read model capability: %w", err)
 	}
 	var selected *catalog.Model
 	for index := range response.Data {
@@ -50,19 +95,7 @@ func validateRuntimeReasoningSelection(
 		}
 	}
 	if selected == nil {
-		return fmt.Errorf("model capability is unavailable for %q", modelName)
+		return nil, fmt.Errorf("model capability is unavailable for %q", modelName)
 	}
-	if !selected.Capabilities.Reasoning {
-		return fmt.Errorf("model %q does not advertise reasoning", selected.ID)
-	}
-	for _, option := range selected.SupportedReasoningEfforts {
-		if strings.TrimSpace(option.ReasoningEffort) == effort {
-			return nil
-		}
-	}
-	return fmt.Errorf(
-		"model %q does not advertise reasoning effort %q",
-		selected.ID,
-		effort,
-	)
+	return selected, nil
 }

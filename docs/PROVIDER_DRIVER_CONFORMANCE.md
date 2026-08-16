@@ -28,7 +28,7 @@ of behavior and must not enable a control solely on provider identity.
 | Request deadline propagation | Proven | Proven | Proven | `provider/conformance` confirms initial-request and post-header streaming cancellation with `context.DeadlineExceeded` normalization |
 | Post-output retry / replay | Not yet proven | Not yet proven | Not yet proven | A stream may have produced caller-visible output; recovery must not replay it without an explicit safe-resume contract |
 | Endpoint health probe | Unsupported | Proven | Unsupported | `provider/health/probe` performs a loopback-only `GET /v1/models`; it returns only a typed status and never starts a model turn |
-| Capability mismatch | Catalog/daemon proven | Catalog/daemon proven | Catalog/daemon proven | `ValidateAgentRuntimeSelection` rejects unconfigured, unknown, cross-provider, and non-streaming/non-tool-capable selections before the daemon persists a thread or turn; Slang continues to render the same condition as unavailable |
+| Capability mismatch | Catalog/daemon proven | Catalog/daemon proven | Catalog/daemon proven | `ValidateAgentRuntimeSelection` rejects unconfigured, unknown, cross-provider, and non-streaming/non-tool-capable selections before the daemon persists a thread or turn; model-specific manual/adaptive thinking selection is likewise rejected before persistence, and Slang continues to render the same condition as unavailable |
 
 `core.ModelSettings.PromptCacheEnabled` is optional: `nil` preserves the
 provider default, `true` requests its configured native cache control, and

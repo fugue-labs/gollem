@@ -89,6 +89,28 @@ func TestRuntimeModelParamsExposePromptCacheSetting(t *testing.T) {
 	}
 }
 
+func TestModelCatalogCapabilitiesExposeThinkingModes(t *testing.T) {
+	defs := JSONSchema()["$defs"].(Schema)
+	properties := defs["ModelCatalogCapabilities"].(Schema)["properties"].(Schema)
+	for _, name := range []string{"adaptiveThinking", "manualThinking"} {
+		if _, ok := properties[name]; !ok {
+			t.Fatalf("ModelCatalogCapabilities schema omitted %s", name)
+		}
+	}
+	generated, err := MarshalTypeScript()
+	if err != nil {
+		t.Fatalf("MarshalTypeScript: %v", err)
+	}
+	for _, want := range []string{
+		`"adaptiveThinking": boolean;`,
+		`"manualThinking": boolean;`,
+	} {
+		if !strings.Contains(string(generated), want) {
+			t.Errorf("ModelCatalogCapabilities TypeScript missing %q", want)
+		}
+	}
+}
+
 func TestRuntimeClientSchemasAreClosedAndCredentialFree(t *testing.T) {
 	defs := JSONSchema()["$defs"].(Schema)
 	names := []string{

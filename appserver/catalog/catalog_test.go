@@ -122,6 +122,37 @@ func TestProviderCapabilities(t *testing.T) {
 	}
 }
 
+func TestThinkingCapabilitiesAreModelSpecific(t *testing.T) {
+	c := NewDefault(WithEnvLookup(mapEnv(nil)))
+	cases := []struct {
+		provider string
+		model    string
+		adaptive bool
+		manual   bool
+	}{
+		{ProviderAnthropic, "claude-sonnet-4-6", true, true},
+		{ProviderAnthropic, "claude-opus-4-7", true, false},
+		{ProviderAnthropic, "claude-haiku-4-5-20251001", false, false},
+		{ProviderVertexAIAnthropic, "claude-sonnet-4-6", true, true},
+		{ProviderVertexAIAnthropic, "claude-opus-4-7", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.provider+"/"+tc.model, func(t *testing.T) {
+			provider := findProvider(t, c.providers, tc.provider)
+			for _, model := range provider.Models {
+				if model.Model != tc.model {
+					continue
+				}
+				if model.Capabilities.AdaptiveThinking != tc.adaptive || model.Capabilities.ManualThinking != tc.manual {
+					t.Fatalf("thinking capabilities = %#v, want adaptive=%t manual=%t", model.Capabilities, tc.adaptive, tc.manual)
+				}
+				return
+			}
+			t.Fatalf("model %q missing from provider %#v", tc.model, provider.Models)
+		})
+	}
+}
+
 func TestValidateAgentRuntimeSelection(t *testing.T) {
 	c := NewDefault(WithEnvLookup(mapEnv(map[string]string{
 		"OPENAI_API_KEY": "configured",

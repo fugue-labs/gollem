@@ -51,6 +51,8 @@ type ModelCatalogCapabilities struct {
 	PromptCache      bool `json:"promptCache"`
 	ToolSearch       bool `json:"toolSearch"`
 	Reasoning        bool `json:"reasoning"`
+	AdaptiveThinking bool `json:"adaptiveThinking"`
+	ManualThinking   bool `json:"manualThinking"`
 }
 
 type ModelCatalogReasoningEffortOption struct {

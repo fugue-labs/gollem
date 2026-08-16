@@ -8,5 +8,8 @@ func (s *Server) validateRuntimeSelection(selection RuntimeModelSelection, setti
 			return err
 		}
 	}
-	return validateRuntimeReasoningSelection(s.catalog, selection, settings)
+	if err := validateRuntimeReasoningSelection(s.catalog, selection, settings); err != nil {
+		return err
+	}
+	return validateRuntimeThinkingSelection(s.catalog, selection, settings)
 }

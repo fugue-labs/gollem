@@ -309,6 +309,162 @@ func TestServerRuntimeReasoningEffortFailsClosedAgainstModelCatalog(t *testing.T
 	}
 }
 
+func TestServerRuntimeThinkingModesFailClosedAgainstModelCatalog(t *testing.T) {
+	on := true
+	budget := 2048
+	for _, tc := range []struct {
+		name       string
+		model      string
+		budget     *int
+		adaptive   *bool
+		wantReason string
+	}{
+		{
+			name:       "manual thinking unavailable on opus 4.7",
+			model:      "claude-opus-4-7",
+			budget:     &budget,
+			wantReason: "does not advertise manual thinking",
+		},
+		{
+			name:       "adaptive thinking unavailable on haiku",
+			model:      "claude-haiku-4-5-20251001",
+			adaptive:   &on,
+			wantReason: "does not advertise adaptive thinking",
+		},
+		{
+			name:       "manual and adaptive thinking conflict",
+			model:      "claude-sonnet-4-6",
+			budget:     &budget,
+			adaptive:   &on,
+			wantReason: "mutually exclusive",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := newRuntimeTestStore(t)
+			server := readyServer(
+				WithStore(st),
+				WithRuntimeService(NewRuntimeService(WithRuntimeModel(
+					core.NewTestModel(core.TextResponse("must not run")),
+					RuntimeModelInfo{ProviderID: "anthropic", Model: tc.model},
+				))),
+			)
+			params := map[string]any{
+				"workspace":  t.TempDir(),
+				"prompt":     "validate the selected thinking mode",
+				"providerId": "anthropic",
+				"model":      tc.model,
+			}
+			if tc.budget != nil {
+				params["thinkingBudget"] = *tc.budget
+			}
+			if tc.adaptive != nil {
+				params["adaptiveThinking"] = *tc.adaptive
+			}
+			response := server.HandleRequest(ctx, request("thread/start", params))
+			if response.Error == nil || response.Error.Code != protocol.CodeInvalidParams {
+				t.Fatalf("thread/start error = %#v, want invalid params", response.Error)
+			}
+			if !strings.Contains(response.Error.Message, tc.wantReason) {
+				t.Fatalf("thread/start error = %q, want %q", response.Error.Message, tc.wantReason)
+			}
+			threads, err := st.ListThreads(ctx, store.ThreadFilter{})
+			if err != nil {
+				t.Fatalf("ListThreads: %v", err)
+			}
+			if len(threads) != 0 {
+				t.Fatalf("invalid thinking mode created %d threads", len(threads))
+			}
+		})
+	}
+}
+
+func TestServerRuntimeRetryRetainsThinkingSettings(t *testing.T) {
+	on := true
+	budget := 2048
+	for _, tc := range []struct {
+		name     string
+		budget   *int
+		adaptive *bool
+	}{
+		{name: "manual", budget: &budget},
+		{name: "adaptive", adaptive: &on},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := newRuntimeTestStore(t)
+			model := core.NewTestModel(core.TextResponse("first"), core.TextResponse("retry"))
+			server := readyServer(
+				WithStore(st),
+				WithRuntimeService(NewRuntimeService(WithRuntimeModel(
+					model,
+					RuntimeModelInfo{ProviderID: "anthropic", Model: "claude-sonnet-4-6"},
+				))),
+			)
+			params := map[string]any{
+				"workspace":  t.TempDir(),
+				"prompt":     "persist the thinking selection",
+				"providerId": "anthropic",
+				"model":      "claude-sonnet-4-6",
+			}
+			if tc.budget != nil {
+				params["thinkingBudget"] = *tc.budget
+			}
+			if tc.adaptive != nil {
+				params["adaptiveThinking"] = *tc.adaptive
+			}
+			start := server.HandleRequest(ctx, request("thread/start", params))
+			if start.Error != nil {
+				t.Fatalf("thread/start error: %v", start.Error)
+			}
+			var started protocol.ThreadRunStartResult
+			decodeResult(t, start, &started)
+			waitForNotificationSet(t, server, "turn/completed")
+
+			retry := server.HandleRequest(ctx, request("turn/retry", map[string]any{"turnId": started.Turn.ID}))
+			if retry.Error != nil {
+				t.Fatalf("turn/retry error: %v", retry.Error)
+			}
+			var retried protocol.TurnRunRetryResult
+			decodeResult(t, retry, &retried)
+			waitForNotificationSet(t, server, "turn/completed")
+
+			persisted, err := st.GetTurn(ctx, retried.Turn.ID)
+			if err != nil {
+				t.Fatalf("GetTurn retry: %v", err)
+			}
+			var input runtimeTurnInput
+			if err := json.Unmarshal(persisted.Input, &input); err != nil {
+				t.Fatalf("decode retry input: %v", err)
+			}
+			if !sameIntPointer(input.ThinkingBudget, tc.budget) || !sameBoolPointer(input.AdaptiveThinking, tc.adaptive) {
+				t.Fatalf("retry input thinking settings = %#v, want budget=%#v adaptive=%#v", input, tc.budget, tc.adaptive)
+			}
+			calls := model.Calls()
+			if len(calls) != 2 {
+				t.Fatalf("model calls = %d, want 2", len(calls))
+			}
+			if calls[1].Settings == nil || !sameIntPointer(calls[1].Settings.ThinkingBudget, tc.budget) || !sameBoolPointer(calls[1].Settings.AdaptiveThinking, tc.adaptive) {
+				t.Fatalf("retry model settings = %#v, want budget=%#v adaptive=%#v", calls[1].Settings, tc.budget, tc.adaptive)
+			}
+		})
+	}
+}
+
+func sameIntPointer(got, want *int) bool {
+	if got == nil || want == nil {
+		return got == want
+	}
+	return *got == *want
+}
+
+func sameBoolPointer(got, want *bool) bool {
+	if got == nil || want == nil {
+		return got == want
+	}
+	return *got == *want
+}
+
 func TestServerRuntimeSelectionValidatorFailsClosedBeforeThreadCreation(t *testing.T) {
 	ctx := context.Background()
 	st := newRuntimeTestStore(t)

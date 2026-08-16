@@ -2764,6 +2764,8 @@ export type ModelCatalogAvailabilityNux = {
 };
 
 export type ModelCatalogCapabilities = {
+  "adaptiveThinking": boolean;
+  "manualThinking": boolean;
   "promptCache": boolean;
   "reasoning": boolean;
   "streaming": boolean;

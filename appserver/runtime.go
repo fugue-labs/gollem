@@ -644,6 +644,8 @@ type runtimeTurnInput struct {
 	Provider           string         `json:"provider,omitempty"`
 	Model              string         `json:"model,omitempty"`
 	ReasoningEffort    string         `json:"reasoningEffort,omitempty"`
+	ThinkingBudget     *int           `json:"thinkingBudget,omitempty"`
+	AdaptiveThinking   *bool          `json:"adaptiveThinking,omitempty"`
 	PromptCacheEnabled *bool          `json:"promptCacheEnabled,omitempty"`
 	Metadata           map[string]any `json:"metadata,omitempty"`
 	SubmittedAt        time.Time      `json:"submittedAt"`
@@ -661,6 +663,8 @@ func runtimeTurnInputJSON(
 		Provider:           selection.Provider,
 		Model:              selection.Model,
 		ReasoningEffort:    runtimeReasoningEffort(settings),
+		ThinkingBudget:     runtimeThinkingBudget(settings),
+		AdaptiveThinking:   cloneBool(settings.AdaptiveThinking),
 		PromptCacheEnabled: runtimePromptCacheEnabled(settings),
 		Metadata:           cloneRuntimeMap(metadata),
 		SubmittedAt:        time.Now().UTC(),
@@ -680,6 +684,10 @@ func runtimeReasoningEffort(settings core.ModelSettings) string {
 
 func runtimePromptCacheEnabled(settings core.ModelSettings) *bool {
 	return cloneBool(settings.PromptCacheEnabled)
+}
+
+func runtimeThinkingBudget(settings core.ModelSettings) *int {
+	return cloneInt(settings.ThinkingBudget)
 }
 
 type runtimeResultPayload struct {

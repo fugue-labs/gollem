@@ -139,7 +139,11 @@ func runtimeModelSettingsFromInput(input json.RawMessage) core.ModelSettings {
 	if len(input) == 0 || json.Unmarshal(input, &stored) != nil {
 		return core.ModelSettings{}
 	}
-	settings := core.ModelSettings{PromptCacheEnabled: cloneBool(stored.PromptCacheEnabled)}
+	settings := core.ModelSettings{
+		ThinkingBudget:     cloneInt(stored.ThinkingBudget),
+		AdaptiveThinking:   cloneBool(stored.AdaptiveThinking),
+		PromptCacheEnabled: cloneBool(stored.PromptCacheEnabled),
+	}
 	if effort := strings.TrimSpace(stored.ReasoningEffort); effort != "" {
 		settings.ReasoningEffort = &effort
 	}
@@ -147,6 +151,14 @@ func runtimeModelSettingsFromInput(input json.RawMessage) core.ModelSettings {
 }
 
 func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneInt(value *int) *int {
 	if value == nil {
 		return nil
 	}
@@ -167,6 +179,12 @@ func runtimeModelSettingsWithThreadDefaults(
 }
 
 func mergeRuntimeModelSettings(primary, fallback core.ModelSettings) core.ModelSettings {
+	if primary.ThinkingBudget == nil {
+		primary.ThinkingBudget = cloneInt(fallback.ThinkingBudget)
+	}
+	if primary.AdaptiveThinking == nil {
+		primary.AdaptiveThinking = cloneBool(fallback.AdaptiveThinking)
+	}
 	if primary.ReasoningEffort == nil {
 		primary.ReasoningEffort = fallback.ReasoningEffort
 	}
