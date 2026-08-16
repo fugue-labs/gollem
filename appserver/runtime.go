@@ -643,6 +643,9 @@ type runtimeTurnInput struct {
 	ProviderID         string         `json:"providerId,omitempty"`
 	Provider           string         `json:"provider,omitempty"`
 	Model              string         `json:"model,omitempty"`
+	MaxTokens          *int           `json:"maxTokens,omitempty"`
+	Temperature        *float64       `json:"temperature,omitempty"`
+	TopP               *float64       `json:"topP,omitempty"`
 	ReasoningEffort    string         `json:"reasoningEffort,omitempty"`
 	ReasoningSummary   string         `json:"reasoningSummary,omitempty"`
 	ThinkingBudget     *int           `json:"thinkingBudget,omitempty"`
@@ -664,6 +667,9 @@ func runtimeTurnInputJSON(
 		ProviderID:         selection.ProviderID,
 		Provider:           selection.Provider,
 		Model:              selection.Model,
+		MaxTokens:          cloneInt(settings.MaxTokens),
+		Temperature:        cloneFloat64(settings.Temperature),
+		TopP:               cloneFloat64(settings.TopP),
 		ReasoningEffort:    runtimeReasoningEffort(settings),
 		ReasoningSummary:   runtimeReasoningSummary(settings),
 		ThinkingBudget:     runtimeThinkingBudget(settings),

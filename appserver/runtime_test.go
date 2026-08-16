@@ -636,6 +636,71 @@ func TestServerRuntimeRetryRetainsThinkingSettings(t *testing.T) {
 	}
 }
 
+func TestServerRuntimeRetryRetainsGenericModelSettings(t *testing.T) {
+	ctx := context.Background()
+	st := newRuntimeTestStore(t)
+	model := core.NewTestModel(core.TextResponse("first"), core.TextResponse("retry"))
+	server := readyServer(
+		WithStore(st),
+		WithRuntimeService(NewRuntimeService(WithRuntimeModel(
+			model,
+			RuntimeModelInfo{ProviderID: "openai", Model: "gpt-4o"},
+		))),
+	)
+	const (
+		maxTokens   = 1234
+		temperature = 0.35
+		topP        = 0.8
+	)
+	start := server.HandleRequest(ctx, request("thread/start", map[string]any{
+		"workspace":   t.TempDir(),
+		"prompt":      "persist generic model settings",
+		"providerId":  "openai",
+		"model":       "gpt-4o",
+		"maxTokens":   maxTokens,
+		"temperature": temperature,
+		"topP":        topP,
+	}))
+	if start.Error != nil {
+		t.Fatalf("thread/start error: %v", start.Error)
+	}
+	var started protocol.ThreadRunStartResult
+	decodeResult(t, start, &started)
+	waitForNotificationSet(t, server, "turn/completed")
+
+	retry := server.HandleRequest(ctx, request("turn/retry", map[string]any{"turnId": started.Turn.ID}))
+	if retry.Error != nil {
+		t.Fatalf("turn/retry error: %v", retry.Error)
+	}
+	var retried protocol.TurnRunRetryResult
+	decodeResult(t, retry, &retried)
+	waitForNotificationSet(t, server, "turn/completed")
+
+	persisted, err := st.GetTurn(ctx, retried.Turn.ID)
+	if err != nil {
+		t.Fatalf("GetTurn retry: %v", err)
+	}
+	var input runtimeTurnInput
+	if err := json.Unmarshal(persisted.Input, &input); err != nil {
+		t.Fatalf("decode retry input: %v", err)
+	}
+	if !sameIntPointer(input.MaxTokens, intPointer(maxTokens)) ||
+		!sameFloat64Pointer(input.Temperature, float64Pointer(temperature)) ||
+		!sameFloat64Pointer(input.TopP, float64Pointer(topP)) {
+		t.Fatalf("retry input settings = %#v, want max=%d temperature=%g topP=%g", input, maxTokens, temperature, topP)
+	}
+	calls := model.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("model calls = %d, want 2", len(calls))
+	}
+	if calls[1].Settings == nil ||
+		!sameIntPointer(calls[1].Settings.MaxTokens, intPointer(maxTokens)) ||
+		!sameFloat64Pointer(calls[1].Settings.Temperature, float64Pointer(temperature)) ||
+		!sameFloat64Pointer(calls[1].Settings.TopP, float64Pointer(topP)) {
+		t.Fatalf("retry model settings = %#v, want max=%d temperature=%g topP=%g", calls[1].Settings, maxTokens, temperature, topP)
+	}
+}
+
 func TestServerRuntimeReasoningSummaryFailsClosedAndSurvivesRetry(t *testing.T) {
 	ctx := context.Background()
 	st := newRuntimeTestStore(t)
@@ -731,6 +796,21 @@ func sameBoolPointer(got, want *bool) bool {
 		return got == want
 	}
 	return *got == *want
+}
+
+func sameFloat64Pointer(got, want *float64) bool {
+	if got == nil || want == nil {
+		return got == want
+	}
+	return *got == *want
+}
+
+func intPointer(value int) *int {
+	return &value
+}
+
+func float64Pointer(value float64) *float64 {
+	return &value
 }
 
 func TestServerRuntimeSelectionValidatorFailsClosedBeforeThreadCreation(t *testing.T) {

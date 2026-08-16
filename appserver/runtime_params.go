@@ -141,6 +141,9 @@ func runtimeModelSettingsFromInput(input json.RawMessage) core.ModelSettings {
 		return core.ModelSettings{}
 	}
 	settings := core.ModelSettings{
+		MaxTokens:          cloneInt(stored.MaxTokens),
+		Temperature:        cloneFloat64(stored.Temperature),
+		TopP:               cloneFloat64(stored.TopP),
 		ThinkingBudget:     cloneInt(stored.ThinkingBudget),
 		AdaptiveThinking:   cloneBool(stored.AdaptiveThinking),
 		ReasoningSummary:   cloneString(stored.ReasoningSummary),
@@ -169,6 +172,14 @@ func cloneInt(value *int) *int {
 	return &cloned
 }
 
+func cloneFloat64(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
 func cloneString(value string) *string {
 	if value == "" {
 		return nil
@@ -190,6 +201,15 @@ func runtimeModelSettingsWithThreadDefaults(
 }
 
 func mergeRuntimeModelSettings(primary, fallback core.ModelSettings) core.ModelSettings {
+	if primary.MaxTokens == nil {
+		primary.MaxTokens = cloneInt(fallback.MaxTokens)
+	}
+	if primary.Temperature == nil {
+		primary.Temperature = cloneFloat64(fallback.Temperature)
+	}
+	if primary.TopP == nil {
+		primary.TopP = cloneFloat64(fallback.TopP)
+	}
 	if primary.ThinkingBudget == nil {
 		primary.ThinkingBudget = cloneInt(fallback.ThinkingBudget)
 	}
