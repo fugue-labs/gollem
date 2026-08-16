@@ -22,6 +22,7 @@ import (
 // a matching deterministic fixture and this verification passes.
 type Claims struct {
 	ToolCalls             bool
+	ToolSearch            bool
 	StructuredOutput      bool
 	Vision                bool
 	CacheReadUsage        bool
@@ -40,7 +41,8 @@ type Claims struct {
 
 // Expectations declares the normalized outputs a deterministic fixture
 // produces. ToolName, ToolCallID, and ToolArgumentsJSON are required when
-// Claims.ToolCalls is true. StructuredOutputValue is required when
+// Claims.ToolCalls is true. ToolSearchText is required when Claims.ToolSearch
+// is true. StructuredOutputValue is required when
 // Claims.StructuredOutput is true. VisionText is required when Claims.Vision
 // is true. CacheReadTokens is required when Claims.CacheReadUsage is true.
 // StreamText is required when
@@ -50,6 +52,7 @@ type Expectations struct {
 	ToolName              string
 	ToolCallID            string
 	ToolArgumentsJSON     string
+	ToolSearchText        string
 	StructuredOutputValue string
 	VisionText            string
 	CacheReadTokens       int
@@ -71,7 +74,9 @@ type Driver struct {
 	CancellationReady     <-chan struct{}
 	RequestTimeoutReady   <-chan struct{}
 	ReasoningModel        core.Model
+	ToolSearchModel       core.Model
 	PromptCacheActivation func() error
+	ToolSearchActivation  func() error
 }
 
 // Verify exercises the claimed common model surface through core.Model. It is
@@ -91,6 +96,15 @@ func Verify(ctx context.Context, driver Driver) error {
 	}
 	if driver.Claims.ToolCalls && strings.TrimSpace(driver.Expectations.ToolArgumentsJSON) == "" {
 		return fmt.Errorf("provider conformance: %s tool-capable fixture must expect tool arguments", driver.Name)
+	}
+	if driver.Claims.ToolSearch && driver.ToolSearchModel == nil {
+		return fmt.Errorf("provider conformance: %s tool-search-capable fixture must supply a tool-search model", driver.Name)
+	}
+	if driver.Claims.ToolSearch && strings.TrimSpace(driver.Expectations.ToolSearchText) == "" {
+		return fmt.Errorf("provider conformance: %s tool-search fixture must expect a response", driver.Name)
+	}
+	if driver.Claims.ToolSearch && driver.ToolSearchActivation == nil {
+		return fmt.Errorf("provider conformance: %s tool-search fixture must observe deferred-tool activation", driver.Name)
 	}
 	if driver.Claims.StructuredOutput && strings.TrimSpace(driver.Expectations.StructuredOutputValue) == "" {
 		return fmt.Errorf("provider conformance: %s structured-output fixture must expect a typed value", driver.Name)
@@ -170,6 +184,11 @@ func Verify(ctx context.Context, driver Driver) error {
 	}
 	if driver.Claims.Vision {
 		if err := verifyVision(ctx, driver); err != nil {
+			return err
+		}
+	}
+	if driver.Claims.ToolSearch {
+		if err := verifyToolSearch(ctx, driver); err != nil {
 			return err
 		}
 	}
@@ -285,6 +304,34 @@ func verifyVision(ctx context.Context, driver Driver) error {
 	}
 	if got := response.TextContent(); got != driver.Expectations.VisionText {
 		return fmt.Errorf("provider conformance: %s vision text = %q, want %q", driver.Name, got, driver.Expectations.VisionText)
+	}
+	return nil
+}
+
+// verifyToolSearch exercises deferred tool definitions through the public
+// model boundary. The driver-owned fixture then verifies its native search
+// primitive and per-tool defer-loading representation.
+func verifyToolSearch(ctx context.Context, driver Driver) error {
+	response, err := driver.ToolSearchModel.Request(ctx, toolSearchMessages(), nil, &core.ModelRequestParameters{
+		AllowTextOutput: true,
+		FunctionTools: []core.ToolDefinition{{
+			Name:             "conformance_deferred",
+			Description:      "A deferred tool used only for provider conformance.",
+			ParametersSchema: core.Schema{"type": "object"},
+			DeferLoading:     true,
+		}},
+	})
+	if err != nil {
+		return fmt.Errorf("provider conformance: %s tool-search request: %w", driver.Name, err)
+	}
+	if response == nil {
+		return fmt.Errorf("provider conformance: %s tool-search request returned a nil response", driver.Name)
+	}
+	if got := response.TextContent(); got != driver.Expectations.ToolSearchText {
+		return fmt.Errorf("provider conformance: %s tool-search text = %q, want %q", driver.Name, got, driver.Expectations.ToolSearchText)
+	}
+	if err := driver.ToolSearchActivation(); err != nil {
+		return fmt.Errorf("provider conformance: %s tool-search activation: %w", driver.Name, err)
 	}
 	return nil
 }
@@ -595,6 +642,12 @@ func visionMessages() []core.ModelMessage {
 			core.UserPromptPart{Content: "vision conformance"},
 			core.ImagePart{URL: core.BinaryContent([]byte{1, 2, 3}, "image/png"), MIMEType: "image/png", Detail: "low"},
 		}},
+	}
+}
+
+func toolSearchMessages() []core.ModelMessage {
+	return []core.ModelMessage{
+		core.ModelRequest{Parts: []core.ModelRequestPart{core.UserPromptPart{Content: "tool search conformance"}}},
 	}
 }
 

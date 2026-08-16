@@ -376,7 +376,6 @@ func (c *Catalog) defaultProviders() []Provider {
 				Vision:             true,
 				Streaming:          true,
 				PromptCache:        true,
-				ToolSearch:         true,
 				Reasoning:          true,
 				ReasoningEfforts:   []string{"minimal", "low", "medium", "high"},
 				ReasoningSummaries: true,
@@ -387,7 +386,7 @@ func (c *Catalog) defaultProviders() []Provider {
 				model(ProviderOpenAI, openaiprovider.GPT5, "GPT-5", "OpenAI reasoning model with strong coding and tool-use support.", false, textAndImage(), false, capabilities(true, true, true, true, true, true, false), []string{"minimal", "low", "medium", "high"}, "medium"),
 				model(ProviderOpenAI, openaiprovider.GPT5Mini, "GPT-5 mini", "Lower-latency GPT-5 family model.", false, textAndImage(), false, capabilities(true, true, true, true, true, true, false), []string{"minimal", "low", "medium", "high"}, "medium"),
 				model(ProviderOpenAI, openaiprovider.GPT5Nano, "GPT-5 nano", "Small GPT-5 family model for fast utility work.", true, textAndImage(), false, capabilities(true, true, true, true, true, true, false), []string{"minimal", "low", "medium", "high"}, "low"),
-				model(ProviderOpenAI, openaiprovider.GPT5Codex, "GPT-5 Codex", "OpenAI coding-specialized model exposed through Gollem's neutral model controls.", false, textAndImage(), false, capabilities(true, true, true, true, true, true, true), []string{"minimal", "low", "medium", "high"}, "medium"),
+				model(ProviderOpenAI, openaiprovider.GPT5Codex, "GPT-5 Codex", "OpenAI coding-specialized model exposed through Gollem's neutral model controls.", false, textAndImage(), false, capabilities(true, true, true, true, true, true, false), []string{"minimal", "low", "medium", "high"}, "medium"),
 			},
 		},
 		{

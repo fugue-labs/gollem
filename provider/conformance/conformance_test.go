@@ -19,16 +19,18 @@ import (
 
 func TestDeterministicProviderDriverConformance(t *testing.T) {
 	openAIPromptCache := &promptCacheFixture{}
+	openAIToolSearch := &toolSearchFixture{}
 	openAICancellationReady := make(chan struct{})
 	openAIRetry := newRetryFixture()
 	openAITimeout := newTimeoutFixture()
-	openAIServer := httptest.NewServer(openAIConformanceFixture(t, openAIPromptCache, openAICancellationReady, openAIRetry, openAITimeout))
+	openAIServer := httptest.NewServer(openAIConformanceFixture(t, openAIPromptCache, openAIToolSearch, openAICancellationReady, openAIRetry, openAITimeout))
 	defer openAIServer.Close()
 	anthropicPromptCache := &promptCacheFixture{}
+	anthropicToolSearch := &toolSearchFixture{}
 	anthropicCancellationReady := make(chan struct{})
 	anthropicRetry := newRetryFixture()
 	anthropicTimeout := newTimeoutFixture()
-	anthropicServer := httptest.NewServer(anthropicConformanceFixture(t, anthropicPromptCache, anthropicCancellationReady, anthropicRetry, anthropicTimeout))
+	anthropicServer := httptest.NewServer(anthropicConformanceFixture(t, anthropicPromptCache, anthropicToolSearch, anthropicCancellationReady, anthropicRetry, anthropicTimeout))
 	defer anthropicServer.Close()
 
 	cases := []struct {
@@ -42,8 +44,10 @@ func TestDeterministicProviderDriverConformance(t *testing.T) {
 					Name:                  "native OpenAI",
 					Model:                 openai.New(openai.WithAPIKey("test-openai-key"), openai.WithBaseURL(openAIServer.URL), openai.WithModel("gpt-4o"), openai.WithPromptCacheKey("conformance-cache"), openai.WithPromptCacheRetention("24h")),
 					ReasoningModel:        openai.New(openai.WithAPIKey("test-openai-key"), openai.WithBaseURL(openAIServer.URL), openai.WithModel("gpt-5")),
-					Claims:                conformance.Claims{ToolCalls: true, StructuredOutput: true, Vision: true, CacheReadUsage: true, PromptCacheActivation: true, Streaming: true, Usage: true, Cancellation: true, PartialStream: true, MalformedStream: true, DisconnectStream: true, Retryability: true, RequestTimeout: true, StreamTimeout: true, ReasoningVisibility: true},
+					ToolSearchModel:       openai.New(openai.WithAPIKey("test-openai-key"), openai.WithBaseURL(openAIServer.URL), openai.WithModel("gpt-5.4")),
+					Claims:                conformance.Claims{ToolCalls: true, ToolSearch: true, StructuredOutput: true, Vision: true, CacheReadUsage: true, PromptCacheActivation: true, Streaming: true, Usage: true, Cancellation: true, PartialStream: true, MalformedStream: true, DisconnectStream: true, Retryability: true, RequestTimeout: true, StreamTimeout: true, ReasoningVisibility: true},
 					PromptCacheActivation: openAIPromptCache.verify,
+					ToolSearchActivation:  openAIToolSearch.verifyOpenAI,
 					CancellationReady:     openAICancellationReady,
 					RequestTimeoutReady:   openAITimeout.readyFor("gpt-4o"),
 					Expectations: conformance.Expectations{
@@ -51,6 +55,7 @@ func TestDeterministicProviderDriverConformance(t *testing.T) {
 						ToolName:              "conformance_echo",
 						ToolCallID:            "call_openai",
 						ToolArgumentsJSON:     `{"value":"ok"}`,
+						ToolSearchText:        "openai tool search",
 						StructuredOutputValue: "openai structured",
 						VisionText:            "openai vision",
 						CacheReadTokens:       2,
@@ -103,8 +108,10 @@ func TestDeterministicProviderDriverConformance(t *testing.T) {
 					Name:                  "native Anthropic",
 					Model:                 model,
 					ReasoningModel:        model,
-					Claims:                conformance.Claims{ToolCalls: true, StructuredOutput: true, Vision: true, CacheReadUsage: true, PromptCacheActivation: true, Streaming: true, Usage: true, Cancellation: true, PartialStream: true, MalformedStream: true, DisconnectStream: true, Retryability: true, RequestTimeout: true, StreamTimeout: true, ReasoningVisibility: true},
+					ToolSearchModel:       model,
+					Claims:                conformance.Claims{ToolCalls: true, ToolSearch: true, StructuredOutput: true, Vision: true, CacheReadUsage: true, PromptCacheActivation: true, Streaming: true, Usage: true, Cancellation: true, PartialStream: true, MalformedStream: true, DisconnectStream: true, Retryability: true, RequestTimeout: true, StreamTimeout: true, ReasoningVisibility: true},
 					PromptCacheActivation: anthropicPromptCache.verify,
+					ToolSearchActivation:  anthropicToolSearch.verifyAnthropic,
 					CancellationReady:     anthropicCancellationReady,
 					RequestTimeoutReady:   anthropicTimeout.readyFor(anthropic.ClaudeSonnet46),
 					Expectations: conformance.Expectations{
@@ -112,6 +119,7 @@ func TestDeterministicProviderDriverConformance(t *testing.T) {
 						ToolName:              "conformance_echo",
 						ToolCallID:            "call_anthropic",
 						ToolArgumentsJSON:     `{"value":"ok"}`,
+						ToolSearchText:        "anthropic tool search",
 						StructuredOutputValue: "anthropic structured",
 						VisionText:            "anthropic vision",
 						CacheReadTokens:       2,
@@ -165,6 +173,42 @@ func (f *promptCacheFixture) verify() error {
 	return nil
 }
 
+type toolSearchFixture struct {
+	mu        sync.Mutex
+	openAI    bool
+	anthropic bool
+}
+
+func (f *toolSearchFixture) recordOpenAI() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.openAI = true
+}
+
+func (f *toolSearchFixture) recordAnthropic() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.anthropic = true
+}
+
+func (f *toolSearchFixture) verifyOpenAI() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.openAI {
+		return fmt.Errorf("OpenAI fixture did not observe deferred-tool activation")
+	}
+	return nil
+}
+
+func (f *toolSearchFixture) verifyAnthropic() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.anthropic {
+		return fmt.Errorf("Anthropic fixture did not observe deferred-tool activation")
+	}
+	return nil
+}
+
 func TestVerifyRejectsUnprovenClaims(t *testing.T) {
 	err := conformance.Verify(context.Background(), conformance.Driver{
 		Name:   "missing structured-output fixture",
@@ -181,6 +225,24 @@ func TestVerifyRejectsUnprovenClaims(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Verify accepted a vision claim without an expected response")
+	}
+	err = conformance.Verify(context.Background(), conformance.Driver{
+		Name:   "missing tool-search model",
+		Model:  openai.New(openai.WithAPIKey("test-key")),
+		Claims: conformance.Claims{ToolSearch: true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "tool-search model") {
+		t.Fatalf("Verify missing tool-search model error = %v", err)
+	}
+	err = conformance.Verify(context.Background(), conformance.Driver{
+		Name:            "missing tool-search fixture",
+		Model:           openai.New(openai.WithAPIKey("test-key")),
+		ToolSearchModel: openai.New(openai.WithAPIKey("test-key")),
+		Claims:          conformance.Claims{ToolSearch: true},
+		Expectations:    conformance.Expectations{ToolSearchText: "expected"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "deferred-tool activation") {
+		t.Fatalf("Verify missing tool-search fixture error = %v", err)
 	}
 	err = conformance.Verify(context.Background(), conformance.Driver{
 		Name:   "missing cache-read fixture",
@@ -377,11 +439,11 @@ func TestVerifyRejectsStructuredOutputValueMismatch(t *testing.T) {
 	}
 }
 
-func openAIConformanceFixture(t *testing.T, promptCache *promptCacheFixture, cancellationReady chan<- struct{}, retry *retryFixture, timeout *timeoutFixture) http.Handler {
+func openAIConformanceFixture(t *testing.T, promptCache *promptCacheFixture, toolSearch *toolSearchFixture, cancellationReady chan<- struct{}, retry *retryFixture, timeout *timeoutFixture) http.Handler {
 	t.Helper()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/responses" {
-			openAIReasoningConformanceFixture(t, w, r)
+			openAIResponsesConformanceFixture(t, w, r, toolSearch)
 			return
 		}
 		if r.URL.Path != "/v1/chat/completions" {
@@ -480,7 +542,7 @@ data: [DONE]
 	})
 }
 
-func openAIReasoningConformanceFixture(t *testing.T, w http.ResponseWriter, r *http.Request) {
+func openAIResponsesConformanceFixture(t *testing.T, w http.ResponseWriter, r *http.Request, toolSearch *toolSearchFixture) {
 	t.Helper()
 	if r.Header.Get("Authorization") == "" {
 		t.Fatal("OpenAI reasoning fixture request had no authorization header")
@@ -495,6 +557,16 @@ func openAIReasoningConformanceFixture(t *testing.T, w http.ResponseWriter, r *h
 	}
 	if err := json.Unmarshal(body, &request); err != nil {
 		t.Fatalf("decode OpenAI reasoning request: %v", err)
+	}
+	if strings.Contains(string(body), "tool search conformance") {
+		if request.Model != "gpt-5.4" || request.Stream {
+			t.Fatalf("unexpected OpenAI tool-search request: model=%q stream=%t", request.Model, request.Stream)
+		}
+		assertOpenAIToolSearchRequest(t, body)
+		toolSearch.recordOpenAI()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"resp-tool-search","model":"gpt-5.4","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"openai tool search"}]}],"usage":{"input_tokens":3,"output_tokens":2}}`)
+		return
 	}
 	if request.Model != "gpt-5" || !request.Stream || !strings.Contains(string(body), "reasoning conformance") {
 		t.Fatalf("unexpected OpenAI reasoning request: model=%q stream=%t body=%s", request.Model, request.Stream, body)
@@ -515,7 +587,7 @@ data: [DONE]
 `)
 }
 
-func anthropicConformanceFixture(t *testing.T, promptCache *promptCacheFixture, cancellationReady chan<- struct{}, retry *retryFixture, timeout *timeoutFixture) http.Handler {
+func anthropicConformanceFixture(t *testing.T, promptCache *promptCacheFixture, toolSearch *toolSearchFixture, cancellationReady chan<- struct{}, retry *retryFixture, timeout *timeoutFixture) http.Handler {
 	t.Helper()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages" {
@@ -599,6 +671,16 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 			assertAnthropicVisionRequest(t, body)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprint(w, `{"id":"msg-vision","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"anthropic vision"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}`)
+			return
+		}
+		if strings.Contains(string(body), "tool search conformance") {
+			if request.Stream {
+				t.Fatal("Anthropic tool-search request was unexpectedly streaming")
+			}
+			assertAnthropicToolSearchRequest(t, request.Tools)
+			toolSearch.recordAnthropic()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"id":"msg-tool-search","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"anthropic tool search"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}`)
 			return
 		}
 		if strings.Contains(string(body), "reasoning conformance") {
@@ -740,6 +822,46 @@ func assertAnthropicStructuredOutputTool(t *testing.T, raw json.RawMessage) {
 		}
 	}
 	t.Fatalf("Anthropic structured-output request omitted %q tool: %s", core.DefaultOutputToolName, raw)
+}
+
+func assertOpenAIToolSearchRequest(t *testing.T, body []byte) {
+	t.Helper()
+	var request struct {
+		Tools []struct {
+			Type         string `json:"type"`
+			Name         string `json:"name"`
+			DeferLoading bool   `json:"defer_loading"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatalf("decode OpenAI tool-search request: %v", err)
+	}
+	if len(request.Tools) != 2 || request.Tools[0].Type != "tool_search" {
+		t.Fatalf("OpenAI tool-search tools = %#v, want built-in plus deferred tool", request.Tools)
+	}
+	deferred := request.Tools[1]
+	if deferred.Type != "function" || deferred.Name != "conformance_deferred" || !deferred.DeferLoading {
+		t.Fatalf("OpenAI deferred tool = %#v, want conformance deferred function", deferred)
+	}
+}
+
+func assertAnthropicToolSearchRequest(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	var tools []struct {
+		Type         string `json:"type"`
+		Name         string `json:"name"`
+		DeferLoading bool   `json:"defer_loading"`
+	}
+	if err := json.Unmarshal(raw, &tools); err != nil {
+		t.Fatalf("decode Anthropic tool-search tools: %v", err)
+	}
+	if len(tools) != 2 || tools[0].Type != "tool_search_tool_regex_20251119" || tools[0].Name != "tool_search_tool_regex" {
+		t.Fatalf("Anthropic tool-search tools = %#v, want regex primitive plus deferred tool", tools)
+	}
+	deferred := tools[1]
+	if deferred.Name != "conformance_deferred" || !deferred.DeferLoading {
+		t.Fatalf("Anthropic deferred tool = %#v, want conformance deferred tool", deferred)
+	}
 }
 
 func assertOpenAIVisionRequest(t *testing.T, body []byte) {

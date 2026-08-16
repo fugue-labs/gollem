@@ -94,6 +94,19 @@ func TestProviderCapabilities(t *testing.T) {
 	if caps.Configured {
 		t.Fatal("openai capabilities reported configured without env")
 	}
+	if caps.ToolSearch {
+		t.Fatal("openai catalog advertised tool search without a catalog-listed proven model")
+	}
+	openAI := findProvider(t, c.ListProviders(ProviderListParams{}).Data, ProviderOpenAI)
+	for _, model := range openAI.Models {
+		if model.Capabilities.ToolSearch {
+			t.Fatalf("OpenAI model %q advertised tool search without deterministic catalog proof", model.Model)
+		}
+	}
+	anthropic := findProvider(t, c.ListProviders(ProviderListParams{}).Data, ProviderAnthropic)
+	if !anthropic.Capabilities.ToolSearch {
+		t.Fatal("anthropic catalog did not advertise proven tool search")
+	}
 
 	aggregate, err := c.ProviderCapabilities("")
 	if err != nil {
