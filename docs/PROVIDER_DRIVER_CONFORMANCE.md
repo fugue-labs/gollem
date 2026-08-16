@@ -36,6 +36,19 @@ provider default, `true` requests its configured native cache control, and
 cache entries, guarantee a cache hit, disable opaque provider-side automatic
 caching, or authorize a local response replay.
 
+## Vertex Catalog Profiles
+
+The hidden Vertex profiles remain catalog-visible through the app-server API,
+so their advertised capabilities require the same deterministic evidence as
+the visible providers. Their package-local fixtures use static test tokens and
+an in-process HTTP server; they do not create Google credentials or contact a
+remote endpoint.
+
+| Profile | Catalog-supported behavior | Evidence |
+| --- | --- | --- |
+| Vertex AI Gemini | Function tools, native structured output, inline image input, streaming, terminal usage, and configured cached-content attachment | `provider/vertexai` calls `provider/conformance.Verify`; the fixture asserts Gemini function declarations, `inlineData`, cached-content on normal and streaming requests, and normalized responses |
+| Vertex AI Anthropic | Function tools, schema-backed `final_result` output, base64 image input, streaming, terminal usage, prompt-cache activation, and reasoning visibility | `provider/vertexai_anthropic` calls `provider/conformance.Verify`; the fixture asserts Messages-tool/cache/image wire forms plus normalized `ThinkingPart` start, delta, and final retention |
+
 `Catalog-supported` means the catalog may expose the capability only for the
 listed provider/model profile. It does not make that behavior part of the common
 driver contract until a deterministic conformance scenario covers it.
