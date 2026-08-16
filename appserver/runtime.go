@@ -502,7 +502,12 @@ func (s *RuntimeService) run(ctx context.Context, st store.Store, notifier runti
 	})
 	defer unsubscribeDelta()
 	unsubscribeError := core.Subscribe(bus, func(event core.ErrorRaisedEvent) {
-		publishRuntimeError(notifier, turn, event.Error)
+		if event.Cause == nil {
+			// Preserve the redacted fallback for legacy string-only publishers.
+			publishRuntimeError(notifier, turn, event.Error)
+			return
+		}
+		publishPublicRuntimeError(notifier, turn, runtimePublicError(event.Cause))
 	})
 	defer unsubscribeError()
 	toolItems := newRuntimeToolItemTracker(st, notifier, turn, s.tools)
@@ -885,7 +890,14 @@ func publishRuntimeError(notifier runtimeNotifier, turn *store.Turn, text string
 	if notifier == nil || text == "" {
 		return
 	}
-	params := runtimeErrorNotificationParams{Error: runtimePublicErrorFailed, At: time.Now().UTC()}
+	publishPublicRuntimeError(notifier, turn, runtimePublicErrorFailed)
+}
+
+func publishPublicRuntimeError(notifier runtimeNotifier, turn *store.Turn, message string) {
+	if notifier == nil || message == "" {
+		return
+	}
+	params := runtimeErrorNotificationParams{Error: message, At: time.Now().UTC()}
 	if turn != nil {
 		params.ThreadID = turn.ThreadID
 		params.TurnID = turn.ID

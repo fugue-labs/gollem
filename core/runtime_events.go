@@ -476,7 +476,11 @@ type ErrorRaisedEvent struct {
 	ToolName    string
 	ToolCallID  string
 	Error       string
-	RaisedAt    time.Time
+	// Cause retains the original error for in-process subscribers that need to
+	// classify it. It is unsafe for persistence, logging, or network transport;
+	// consumers must project it to a public-safe value before exposing it.
+	Cause    error
+	RaisedAt time.Time
 }
 
 func (e ErrorRaisedEvent) RuntimeEventType() string     { return RuntimeEventTypeErrorRaised }

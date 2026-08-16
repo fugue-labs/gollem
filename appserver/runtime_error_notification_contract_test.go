@@ -118,3 +118,12 @@ func TestPublishRuntimeErrorNoopGuards(t *testing.T) {
 		t.Fatalf("unexpected notification %q %#v", notifier.method, notifier.params)
 	}
 }
+
+func TestPublishPublicRuntimeErrorUsesProjectedMessage(t *testing.T) {
+	notifier := &runtimeErrorCaptureNotifier{}
+	publishPublicRuntimeError(notifier, &store.Turn{ID: "turn", ThreadID: "thread"}, runtimePublicErrorInterrupted)
+	params, ok := notifier.params.(runtimeErrorNotificationParams)
+	if notifier.method != "error" || !ok || params.Error != runtimePublicErrorInterrupted {
+		t.Fatalf("notification = %q %#v", notifier.method, notifier.params)
+	}
+}

@@ -1,7 +1,9 @@
 package core
 
 import (
+	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -13,6 +15,22 @@ func (testDeferredRunError) deferredRunError()    {}
 func (testDeferredRunError) Is(target error) bool { return target == errDeferredSentinel }
 
 var errDeferredSentinel = errors.New("deferred sentinel")
+
+type errorRaisedEventTestModel struct {
+	err error
+}
+
+func (m errorRaisedEventTestModel) Request(context.Context, []ModelMessage, *ModelSettings, *ModelRequestParameters) (*ModelResponse, error) {
+	return nil, m.err
+}
+
+func (m errorRaisedEventTestModel) RequestStream(context.Context, []ModelMessage, *ModelSettings, *ModelRequestParameters) (StreamedResponse, error) {
+	return nil, m.err
+}
+
+func (errorRaisedEventTestModel) ModelName() string {
+	return "error-raised-event-test"
+}
 
 func TestRuntimeEventsExposeCanonicalMetadata(t *testing.T) {
 	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
@@ -67,6 +85,35 @@ func TestRuntimeEventsExposeCanonicalMetadata(t *testing.T) {
 		if !event.RuntimeOccurredAt().Equal(now) && !event.RuntimeOccurredAt().Equal(now.Add(time.Second)) {
 			t.Fatalf("unexpected occurrence time %s for %#v", event.RuntimeOccurredAt(), event)
 		}
+	}
+}
+
+func TestAgentErrorRaisedEventRetainsOriginalCauseForInProcessSubscribers(t *testing.T) {
+	bus := NewEventBus()
+	defer bus.Close()
+
+	cause := &ModelHTTPError{
+		Message:    "Authorization: Bearer super-secret",
+		StatusCode: 429,
+		Body:       "prompt=super-secret",
+	}
+	var received ErrorRaisedEvent
+	Subscribe(bus, func(event ErrorRaisedEvent) {
+		received = event
+	})
+
+	agent := NewAgent[string](errorRaisedEventTestModel{err: cause}, WithEventBus[string](bus))
+	_, err := agent.Run(context.Background(), "fail")
+	if !errors.Is(err, cause) {
+		t.Fatalf("Run error = %v, want %v", err, cause)
+	}
+
+	var httpErr *ModelHTTPError
+	if !errors.As(received.Cause, &httpErr) || httpErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("Cause = %#v, want HTTP 429 error", received.Cause)
+	}
+	if received.Error != err.Error() {
+		t.Fatalf("Error = %q, want %q", received.Error, err.Error())
 	}
 }
 

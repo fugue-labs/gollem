@@ -172,6 +172,59 @@ func TestServerRuntimeFailureRedactsPersistedAndNotifiedErrors(t *testing.T) {
 	t.Fatal("runtime error notification missing")
 }
 
+func TestServerRuntimeHTTPFailureClassifiesLiveNotificationWithoutProviderDetails(t *testing.T) {
+	const secret = "https://provider.invalid/v1?api_key=super-secret"
+	ctx := context.Background()
+	st := newRuntimeTestStore(t)
+	server := readyServer(
+		WithStore(st),
+		WithRuntimeService(NewRuntimeService(WithRuntimeModel(
+			runtimeFailingModel{err: &core.ModelHTTPError{
+				Message:    "Authorization: Bearer super-secret for " + secret,
+				StatusCode: 429,
+				Body:       "prompt=super-secret",
+			}},
+			RuntimeModelInfo{ProviderID: "test", Model: "failing"},
+		))),
+	)
+
+	response := server.HandleRequest(ctx, request("thread/start", map[string]any{
+		"prompt": "do not disclose this prompt",
+	}))
+	if response.Error != nil {
+		t.Fatalf("thread/start error: %v", response.Error)
+	}
+	var started protocol.ThreadRunStartResult
+	decodeResult(t, response, &started)
+	notifications := waitForNotificationSet(t, server, "error", "turn/completed")
+
+	persisted, err := st.GetTurn(ctx, started.Turn.ID)
+	if err != nil {
+		t.Fatalf("GetTurn: %v", err)
+	}
+	want := "Provider request failed (HTTP 429)."
+	if persisted.Status != store.TurnFailed || persisted.Error != want {
+		t.Fatalf("persisted turn = %#v, want safely classified failed turn", persisted)
+	}
+	for _, notification := range notifications {
+		if notification.Method != "error" {
+			continue
+		}
+		var params runtimeErrorNotificationParams
+		if err := json.Unmarshal(notification.Params, &params); err != nil {
+			t.Fatalf("decode error notification: %v", err)
+		}
+		if params.Error != want || params.ThreadID != started.Thread.ID || params.TurnID != started.Turn.ID {
+			t.Fatalf("error notification = %#v", params)
+		}
+		if strings.Contains(params.Error, "super-secret") || strings.Contains(params.Error, "provider.invalid") {
+			t.Fatalf("notification error exposed provider detail: %q", params.Error)
+		}
+		return
+	}
+	t.Fatal("runtime error notification missing")
+}
+
 func TestRuntimeStartPersistsExplicitReasoningEffort(t *testing.T) {
 	ctx := context.Background()
 	st := newRuntimeTestStore(t)

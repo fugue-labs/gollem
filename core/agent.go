@@ -393,6 +393,7 @@ func (a *Agent[T]) endRun(ctx context.Context, state *agentRunState, deps any, p
 				ParentRunID: state.parentRunID,
 				TurnNumber:  state.runStep,
 				Error:       runErr.Error(),
+				Cause:       runErr,
 				RaisedAt:    time.Now(),
 			})
 		}
