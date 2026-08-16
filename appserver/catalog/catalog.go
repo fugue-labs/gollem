@@ -575,6 +575,14 @@ func tool(id, displayName, description, category string, methods []string, confi
 }
 
 func model(providerID, name, displayName, description string, hidden bool, modalities []string, personality bool, caps ModelCapabilities, efforts []string, defaultEffort string) Model {
+	var (
+		supportedEfforts []ReasoningEffortOption
+		defaultOption    *string
+	)
+	if caps.Reasoning {
+		supportedEfforts = effortOptions(efforts)
+		defaultOption = stringPointer(defaultEffort)
+	}
 	return Model{
 		ID:                        modelID(providerID, name),
 		ProviderID:                providerID,
@@ -582,14 +590,18 @@ func model(providerID, name, displayName, description string, hidden bool, modal
 		DisplayName:               displayName,
 		Description:               description,
 		Hidden:                    hidden,
-		SupportedReasoningEfforts: effortOptions(efforts),
-		DefaultReasoningEffort:    defaultEffort,
+		SupportedReasoningEfforts: supportedEfforts,
+		DefaultReasoningEffort:    defaultOption,
 		InputModalities:           append([]string(nil), modalities...),
 		SupportsPersonality:       personality,
 		AdditionalSpeedTiers:      []string{},
 		ServiceTiers:              []ModelServiceTier{},
 		Capabilities:              caps,
 	}
+}
+
+func stringPointer(value string) *string {
+	return &value
 }
 
 func capabilities(toolCalls, structured, vision, streaming, promptCache, reasoning, toolSearch bool) ModelCapabilities {

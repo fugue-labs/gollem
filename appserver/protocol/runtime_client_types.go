@@ -91,7 +91,7 @@ type ModelCatalogEntry struct {
 	Description               string                              `json:"description"`
 	Hidden                    bool                                `json:"hidden"`
 	SupportedReasoningEfforts []ModelCatalogReasoningEffortOption `json:"supportedReasoningEfforts"`
-	DefaultReasoningEffort    string                              `json:"defaultReasoningEffort"`
+	DefaultReasoningEffort    *string                             `json:"defaultReasoningEffort"`
 	InputModalities           []string                            `json:"inputModalities"`
 	SupportsPersonality       bool                                `json:"supportsPersonality"`
 	AdditionalSpeedTiers      []string                            `json:"additionalSpeedTiers"`

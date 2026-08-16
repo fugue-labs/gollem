@@ -119,6 +119,21 @@ func TestModelCatalogCapabilitiesExposeThinkingModes(t *testing.T) {
 	}
 }
 
+func TestModelCatalogDefaultReasoningEffortIsNullable(t *testing.T) {
+	defs := JSONSchema()["$defs"].(Schema)
+	properties := defs["ModelCatalogEntry"].(Schema)["properties"].(Schema)
+	if got := properties["defaultReasoningEffort"]; !reflect.DeepEqual(got, nullableStringSchema()) {
+		t.Fatalf("ModelCatalogEntry.defaultReasoningEffort = %#v, want nullable string", got)
+	}
+	generated, err := MarshalTypeScript()
+	if err != nil {
+		t.Fatalf("MarshalTypeScript: %v", err)
+	}
+	if want := `"defaultReasoningEffort": string | null;`; !strings.Contains(string(generated), want) {
+		t.Errorf("ModelCatalogEntry TypeScript missing %q", want)
+	}
+}
+
 func TestRuntimeClientSchemasAreClosedAndCredentialFree(t *testing.T) {
 	defs := JSONSchema()["$defs"].(Schema)
 	names := []string{

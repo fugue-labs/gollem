@@ -2780,7 +2780,7 @@ export type ModelCatalogEntry = {
   "additionalSpeedTiers": Array<string> | null;
   "availabilityNux": ModelCatalogAvailabilityNux | null;
   "capabilities": ModelCatalogCapabilities;
-  "defaultReasoningEffort": string;
+  "defaultReasoningEffort": string | null;
   "defaultServiceTier": string | null;
   "description": string;
   "displayName": string;

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -198,6 +199,36 @@ func TestReasoningSummaryCapabilityIsModelSpecific(t *testing.T) {
 	}
 }
 
+func TestReasoningEffortMetadataIsModelSpecific(t *testing.T) {
+	c := NewDefault(WithEnvLookup(mapEnv(nil)))
+	for _, provider := range c.providers {
+		for _, model := range provider.Models {
+			name := provider.ID + "/" + model.Model
+			if !model.Capabilities.Reasoning {
+				if len(model.SupportedReasoningEfforts) != 0 {
+					t.Errorf("%s exposes reasoning efforts without reasoning capability: %#v", name, model.SupportedReasoningEfforts)
+				}
+				if model.DefaultReasoningEffort != nil {
+					t.Errorf("%s exposes default reasoning effort without reasoning capability: %q", name, *model.DefaultReasoningEffort)
+				}
+				continue
+			}
+			if len(model.SupportedReasoningEfforts) == 0 {
+				t.Errorf("%s advertises reasoning without effort options", name)
+			}
+			if model.DefaultReasoningEffort == nil {
+				t.Errorf("%s advertises reasoning without a default effort", name)
+				continue
+			}
+			if !slices.ContainsFunc(model.SupportedReasoningEfforts, func(option ReasoningEffortOption) bool {
+				return option.ReasoningEffort == *model.DefaultReasoningEffort
+			}) {
+				t.Errorf("%s default reasoning effort %q is absent from %#v", name, *model.DefaultReasoningEffort, model.SupportedReasoningEfforts)
+			}
+		}
+	}
+}
+
 func TestValidateAgentRuntimeSelection(t *testing.T) {
 	c := NewDefault(WithEnvLookup(mapEnv(map[string]string{
 		"OPENAI_API_KEY": "configured",
@@ -289,8 +320,8 @@ func TestLocalOpenAICompatibleProviderUsesExplicitSafeConfiguration(t *testing.T
 	if len(models.Data) != 1 || models.Data[0].Model != model || !models.Data[0].Capabilities.ToolCalls || !models.Data[0].Capabilities.Streaming {
 		t.Fatalf("local provider models = %#v", models.Data)
 	}
-	if models.Data[0].DefaultReasoningEffort != "low" {
-		t.Fatalf("local provider default reasoning effort = %q, want low", models.Data[0].DefaultReasoningEffort)
+	if models.Data[0].DefaultReasoningEffort != nil || len(models.Data[0].SupportedReasoningEfforts) != 0 {
+		t.Fatalf("local provider reasoning metadata = default %#v, efforts %#v; want unavailable", models.Data[0].DefaultReasoningEffort, models.Data[0].SupportedReasoningEfforts)
 	}
 
 	encoded, err := json.Marshal(provider)
