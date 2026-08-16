@@ -309,6 +309,93 @@ func TestServerRuntimeReasoningEffortFailsClosedAgainstModelCatalog(t *testing.T
 	}
 }
 
+func TestServerRuntimePromptCacheFailsClosedAgainstModelCatalog(t *testing.T) {
+	cacheEnabled := true
+	cacheDisabled := false
+	for _, tc := range []struct {
+		name       string
+		providerID string
+		model      string
+		cache      *bool
+		wantReason string
+	}{
+		{
+			name:       "local model does not advertise cache control",
+			providerID: "openai-compatible-local",
+			model:      "llama3",
+			cache:      &cacheEnabled,
+			wantReason: "does not advertise prompt caching",
+		},
+		{
+			name:       "local model rejects explicit disable too",
+			providerID: "openai-compatible-local",
+			model:      "llama3",
+			cache:      &cacheDisabled,
+			wantReason: "does not advertise prompt caching",
+		},
+		{
+			name:       "unknown model cannot persist cache control",
+			providerID: "openai",
+			model:      "future-model",
+			cache:      &cacheEnabled,
+			wantReason: "model capability is unavailable",
+		},
+		{
+			name:       "catalog-supported model",
+			providerID: "openai",
+			model:      "gpt-4o",
+			cache:      &cacheDisabled,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := newRuntimeTestStore(t)
+			server := readyServer(
+				WithStore(st),
+				WithRuntimeService(NewRuntimeService(WithRuntimeModel(
+					core.NewTestModel(core.TextResponse("done")),
+					RuntimeModelInfo{ProviderID: tc.providerID, Model: tc.model},
+				))),
+			)
+			response := server.HandleRequest(ctx, request("thread/start", map[string]any{
+				"workspace":          t.TempDir(),
+				"prompt":             "use prompt cache control",
+				"providerId":         tc.providerID,
+				"model":              tc.model,
+				"promptCacheEnabled": *tc.cache,
+			}))
+			if tc.wantReason != "" {
+				if response.Error == nil || response.Error.Code != protocol.CodeInvalidParams {
+					t.Fatalf("thread/start error = %#v, want invalid params", response.Error)
+				}
+				if !strings.Contains(response.Error.Message, tc.wantReason) {
+					t.Fatalf("thread/start error = %q, want %q", response.Error.Message, tc.wantReason)
+				}
+				threads, err := st.ListThreads(ctx, store.ThreadFilter{})
+				if err != nil {
+					t.Fatalf("ListThreads: %v", err)
+				}
+				if len(threads) != 0 {
+					t.Fatalf("invalid prompt-cache selection created %d threads", len(threads))
+				}
+				return
+			}
+			if response.Error != nil {
+				t.Fatalf("thread/start error: %v", response.Error)
+			}
+			var result protocol.ThreadRunStartResult
+			decodeResult(t, response, &result)
+			var input runtimeTurnInput
+			if err := json.Unmarshal(result.Turn.Input, &input); err != nil {
+				t.Fatalf("decode turn input: %v", err)
+			}
+			if input.PromptCacheEnabled == nil || *input.PromptCacheEnabled != *tc.cache {
+				t.Fatalf("turn prompt-cache setting = %#v, want %t", input.PromptCacheEnabled, *tc.cache)
+			}
+		})
+	}
+}
+
 func TestServerRuntimeThinkingModesFailClosedAgainstModelCatalog(t *testing.T) {
 	on := true
 	budget := 2048
@@ -1278,11 +1365,13 @@ func TestServerRuntimeTurnRetryBranchesBeforeSourceTurn(t *testing.T) {
 	)
 	server := readyServer(
 		WithStore(st),
-		WithRuntimeService(NewRuntimeService(WithRuntimeModel(model, RuntimeModelInfo{ProviderID: "test", Model: "test-model"}))),
+		WithRuntimeService(NewRuntimeService(WithRuntimeModel(model, RuntimeModelInfo{ProviderID: "openai", Model: "gpt-4o"}))),
 	)
 
 	startResp := server.HandleRequest(ctx, request("thread/start", map[string]any{
 		"prompt":             "original prompt",
+		"providerId":         "openai",
+		"model":              "gpt-4o",
 		"promptCacheEnabled": false,
 	}))
 	if startResp.Error != nil {
