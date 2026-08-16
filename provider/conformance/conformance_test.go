@@ -1,12 +1,14 @@
 package conformance_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -242,6 +244,100 @@ func TestCatalogAnthropicProfileConformance(t *testing.T) {
 	}
 }
 
+func TestCatalogOpenAIProfileConformance(t *testing.T) {
+	// Keep these profiles in lockstep with appserver/catalog. The broader
+	// native OpenAI fixture covers transport failures and provider-level
+	// built-ins, but it does not prove that every catalog-visible model accepts
+	// its own advertised core request shape.
+	for _, tc := range []struct {
+		model     string
+		reasoning bool
+	}{
+		{openai.GPT4o, false},
+		{openai.GPT4oMini, false},
+		{openai.GPT5, true},
+		{openai.GPT5Mini, true},
+		{openai.GPT5Nano, true},
+		{openai.GPT5Codex, true},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			promptCache := &promptCacheFixture{}
+			fixture := &openAICatalogProfileFixture{
+				t:           t,
+				model:       tc.model,
+				promptCache: promptCache,
+			}
+			server := httptest.NewServer(http.HandlerFunc(fixture.serveHTTP))
+			defer server.Close()
+
+			model := openai.New(
+				openai.WithAPIKey("catalog-conformance-key"),
+				openai.WithBaseURL("https://api.openai.com"),
+				openai.WithHTTPClient(openAIEndpointFixtureClient(t, server)),
+				openai.WithModel(tc.model),
+				openai.WithPromptCacheKey("conformance-cache"),
+				openai.WithPromptCacheRetention("24h"),
+			)
+			driver := conformance.Driver{
+				Name:  "native OpenAI " + tc.model,
+				Model: model,
+				Claims: conformance.Claims{
+					ToolCalls:             true,
+					StructuredOutput:      true,
+					Vision:                true,
+					CacheReadUsage:        true,
+					PromptCacheActivation: true,
+					Streaming:             true,
+					Usage:                 true,
+					ReasoningVisibility:   tc.reasoning,
+				},
+				PromptCacheActivation: promptCache.verify,
+				Expectations: conformance.Expectations{
+					ResponseText:          "openai response",
+					ToolName:              "conformance_echo",
+					ToolCallID:            "call_openai",
+					ToolArgumentsJSON:     `{"value":"ok"}`,
+					StructuredOutputValue: "openai structured",
+					VisionText:            "openai vision",
+					CacheReadTokens:       2,
+					StreamText:            "openai stream",
+					ReasoningText:         "openai reasoning",
+				},
+			}
+			if tc.reasoning {
+				driver.ReasoningModel = model
+			}
+			if err := conformance.Verify(t.Context(), driver); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func openAIEndpointFixtureClient(t *testing.T, server *httptest.Server) *http.Client {
+	t.Helper()
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse loopback OpenAI fixture URL: %v", err)
+	}
+	return &http.Client{Transport: openAIEndpointFixtureTransport{target: target}}
+}
+
+type openAIEndpointFixtureTransport struct {
+	target *url.URL
+}
+
+func (t openAIEndpointFixtureTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	cloned := request.Clone(request.Context())
+	target := *t.target
+	target.Path = request.URL.Path
+	target.RawPath = request.URL.RawPath
+	target.RawQuery = request.URL.RawQuery
+	cloned.URL = &target
+	cloned.Host = target.Host
+	return http.DefaultTransport.RoundTrip(cloned)
+}
+
 type promptCacheFixture struct {
 	mu      sync.Mutex
 	request bool
@@ -326,6 +422,137 @@ func (f *toolSearchFixture) verifyAnthropic() error {
 type namespaceToolsFixture struct {
 	mu       sync.Mutex
 	observed bool
+}
+
+type openAICatalogProfileFixture struct {
+	t           *testing.T
+	model       string
+	promptCache *promptCacheFixture
+}
+
+func (f *openAICatalogProfileFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	f.t.Helper()
+	if r.Header.Get("Authorization") != "Bearer catalog-conformance-key" {
+		f.t.Errorf("Authorization = %q, want static bearer token", r.Header.Get("Authorization"))
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		f.t.Fatalf("read OpenAI catalog request: %v", err)
+	}
+	var request struct {
+		Model  string `json:"model"`
+		Stream bool   `json:"stream"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		f.t.Fatalf("decode OpenAI catalog request: %v", err)
+	}
+	if request.Model != f.model {
+		f.t.Fatalf("OpenAI request model = %q, want %q", request.Model, f.model)
+	}
+	if strings.Contains(string(body), "run conformance") {
+		assertOpenAIPromptCache(f.t, body)
+		f.promptCache.record(request.Stream)
+	}
+	switch r.URL.Path {
+	case "/v1/chat/completions":
+		if openAIProfileUsesResponses(f.model) {
+			f.t.Fatalf("OpenAI model %q unexpectedly used Chat Completions", f.model)
+		}
+		f.serveChat(w, body, request.Stream)
+	case "/v1/responses":
+		if !openAIProfileUsesResponses(f.model) {
+			f.t.Fatalf("OpenAI model %q unexpectedly used Responses", f.model)
+		}
+		f.serveResponses(w, body, request.Stream)
+	default:
+		f.t.Fatalf("OpenAI path = %q, want a catalog model endpoint", r.URL.Path)
+	}
+}
+
+func openAIProfileUsesResponses(model string) bool {
+	return strings.HasPrefix(model, "gpt-5")
+}
+
+func (f *openAICatalogProfileFixture) serveChat(w http.ResponseWriter, body []byte, stream bool) {
+	f.t.Helper()
+	if strings.Contains(string(body), "structured output conformance") {
+		var request struct {
+			ResponseFormat json.RawMessage `json:"response_format"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			f.t.Fatalf("decode OpenAI structured-output request: %v", err)
+		}
+		assertOpenAIStructuredOutputFormat(f.t, request.ResponseFormat)
+		f.writeChatResponse(w, `{"value":"openai structured"}`)
+		return
+	}
+	if strings.Contains(string(body), "vision conformance") {
+		assertOpenAIVisionRequest(f.t, body)
+		f.writeChatResponse(w, "openai vision")
+		return
+	}
+	if stream {
+		f.writeChatStream(w, "openai stream")
+		return
+	}
+	if !bytes.Contains(body, []byte(`"tools"`)) {
+		f.t.Fatal("tool-capable OpenAI catalog request did not include tools")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = fmt.Fprintf(w, `{"id":"chatcmpl-catalog","object":"chat.completion","model":%q,"choices":[{"message":{"role":"assistant","content":"openai response","tool_calls":[{"id":"call_openai","type":"function","function":{"name":"conformance_echo","arguments":"{\"value\":\"ok\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":2}}}`+"\n", f.model)
+}
+
+func (f *openAICatalogProfileFixture) serveResponses(w http.ResponseWriter, body []byte, stream bool) {
+	f.t.Helper()
+	if strings.Contains(string(body), "reasoning conformance") {
+		if !stream {
+			f.t.Fatal("OpenAI reasoning request was not streaming")
+		}
+		f.writeResponsesReasoningStream(w)
+		return
+	}
+	if strings.Contains(string(body), "structured output conformance") {
+		f.writeResponsesText(w, `{"value":"openai structured"}`)
+		return
+	}
+	if strings.Contains(string(body), "vision conformance") {
+		f.writeResponsesText(w, "openai vision")
+		return
+	}
+	if stream {
+		f.writeResponsesStream(w, "openai stream")
+		return
+	}
+	if !bytes.Contains(body, []byte(`"tools"`)) {
+		f.t.Fatal("tool-capable OpenAI catalog request did not include tools")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = fmt.Fprintf(w, `{"id":"resp-catalog","model":%q,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"openai response"}]},{"type":"function_call","name":"conformance_echo","call_id":"call_openai","arguments":"{\"value\":\"ok\"}"}],"usage":{"input_tokens":3,"output_tokens":2,"input_tokens_details":{"cached_tokens":2}}}`+"\n", f.model)
+}
+
+func (f *openAICatalogProfileFixture) writeChatResponse(w http.ResponseWriter, text string) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = fmt.Fprintf(w, `{"id":"chatcmpl-catalog","object":"chat.completion","model":%q,"choices":[{"message":{"role":"assistant","content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`+"\n", f.model, text)
+}
+
+func (f *openAICatalogProfileFixture) writeChatStream(w http.ResponseWriter, text string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-catalog\",\"object\":\"chat.completion.chunk\",\"model\":%q,\"choices\":[{\"index\":0,\"delta\":{\"content\":%q},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n", f.model, text)
+}
+
+func (f *openAICatalogProfileFixture) writeResponsesText(w http.ResponseWriter, text string) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = fmt.Fprintf(w, `{"id":"resp-catalog","model":%q,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":%q}]}],"usage":{"input_tokens":3,"output_tokens":2}}`+"\n", f.model, text)
+}
+
+func (f *openAICatalogProfileFixture) writeResponsesStream(w http.ResponseWriter, text string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":%q}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-catalog\",\"model\":%q,\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":%q}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}}\n\ndata: [DONE]\n\n", text, f.model, text)
+}
+
+func (f *openAICatalogProfileFixture) writeResponsesReasoningStream(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"summary\":[]}}\n\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":0,\"delta\":\"openai reasoning\"}\n\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"openai reasoning\"}]}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"openai reasoning answer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-reasoning\",\"model\":%q,\"output\":[{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"openai reasoning\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"openai reasoning answer\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}}\n\ndata: [DONE]\n\n", f.model)
 }
 
 func (f *namespaceToolsFixture) record() {

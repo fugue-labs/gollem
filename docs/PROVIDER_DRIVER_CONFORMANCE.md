@@ -55,6 +55,13 @@ remote endpoint.
 listed provider/model profile. It does not make that behavior part of the common
 driver contract until a deterministic conformance scenario covers it.
 
+Native OpenAI follows the same exact-profile rule: `provider/conformance`
+exercises every catalog-listed GPT-4o and GPT-5 profile through the matching
+Chat Completions or Responses route. The fixture requires the exact advertised
+model identifier, validates the profile's common capability surface, and runs
+reasoning visibility only for the catalog-enabled GPT-5 profiles. Provider-wide
+tool-search and namespace grouping remain outside these catalog-profile claims.
+
 Reasoning summary is model-bound rather than inferred from provider-level
 thinking visibility. The current catalog exposes it only for OpenAI GPT-5
 Responses profiles. Anthropic and Vertex Anthropic retain their proven
