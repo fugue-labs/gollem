@@ -160,7 +160,7 @@ export const protocolMethods = [
   { "method": "command/exec/outputDelta", "surface": "server-notification", "state": "implemented", "source": "json schema:ServerNotification, protocol crate:common.rs:1639, typescript:ServerNotification.ts" },
   { "method": "configWarning", "surface": "server-notification", "state": "blocked", "source": "json schema:ServerNotification, protocol crate:common.rs:1675, typescript:ServerNotification.ts" },
   { "method": "deprecationNotice", "surface": "server-notification", "state": "implemented", "source": "json schema:ServerNotification, protocol crate:common.rs:1674, typescript:ServerNotification.ts" },
-  { "method": "error", "surface": "server-notification", "state": "blocked", "source": "json schema:ServerNotification, protocol crate:common.rs:1609, typescript:ServerNotification.ts" },
+  { "method": "error", "surface": "server-notification", "state": "implemented", "source": "json schema:ServerNotification, protocol crate:common.rs:1609, typescript:ServerNotification.ts" },
   { "method": "externalAgentConfig/import/completed", "surface": "server-notification", "state": "deferred-stub", "source": "json schema:ServerNotification, protocol crate:common.rs:1660, typescript:ServerNotification.ts" },
   { "method": "externalAgentConfig/import/progress", "surface": "server-notification", "state": "deferred-stub", "source": "json schema:ServerNotification, protocol crate:common.rs:1659, typescript:ServerNotification.ts" },
   { "method": "fs/changed", "surface": "server-notification", "state": "implemented", "source": "json schema:ServerNotification, protocol crate:common.rs:1661, typescript:ServerNotification.ts" },

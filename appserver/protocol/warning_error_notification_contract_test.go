@@ -157,11 +157,14 @@ func TestWarningErrorNotificationContractsRemainStandalone(t *testing.T) {
 			}
 		}
 	}
-	for _, method := range []string{"warning", "guardianWarning", "error"} {
+	for _, method := range []string{"warning", "guardianWarning"} {
 		info, ok := LookupMethod(method)
 		if !ok || info.State != MethodBlocked {
 			t.Errorf("%s = %#v, %v; want blocked", method, info, ok)
 		}
+	}
+	if info, ok := LookupMethod("error"); !ok || info.State != MethodImplemented {
+		t.Fatalf("error method = %#v, found=%v; want implemented", info, ok)
 	}
 	if got := len(JSONSchema()["$defs"].(Schema)); got != 673 {
 		t.Fatalf("definition count = %d, want 673", got)

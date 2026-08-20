@@ -161,11 +161,11 @@ func TestServerRuntimeFailureRedactsPersistedAndNotifiedErrors(t *testing.T) {
 		if err := json.Unmarshal(notification.Params, &params); err != nil {
 			t.Fatalf("decode error notification: %v", err)
 		}
-		if params.Error != runtimePublicErrorFailed || params.ThreadID != started.Thread.ID || params.TurnID != started.Turn.ID {
+		if params.Error.Message != runtimePublicErrorFailed || params.ThreadID != started.Thread.ID || params.TurnID != started.Turn.ID {
 			t.Fatalf("error notification = %#v", params)
 		}
-		if strings.Contains(params.Error, secret) {
-			t.Fatalf("notification error exposed %q: %q", secret, params.Error)
+		if strings.Contains(params.Error.Message, secret) {
+			t.Fatalf("notification error exposed %q: %q", secret, params.Error.Message)
 		}
 		return
 	}
@@ -214,11 +214,11 @@ func TestServerRuntimeHTTPFailureClassifiesLiveNotificationWithoutProviderDetail
 		if err := json.Unmarshal(notification.Params, &params); err != nil {
 			t.Fatalf("decode error notification: %v", err)
 		}
-		if params.Error != want || params.ThreadID != started.Thread.ID || params.TurnID != started.Turn.ID {
+		if params.Error.Message != want || params.ThreadID != started.Thread.ID || params.TurnID != started.Turn.ID {
 			t.Fatalf("error notification = %#v", params)
 		}
-		if strings.Contains(params.Error, "super-secret") || strings.Contains(params.Error, "provider.invalid") {
-			t.Fatalf("notification error exposed provider detail: %q", params.Error)
+		if strings.Contains(params.Error.Message, "super-secret") || strings.Contains(params.Error.Message, "provider.invalid") {
+			t.Fatalf("notification error exposed provider detail: %q", params.Error.Message)
 		}
 		return
 	}

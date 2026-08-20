@@ -137,7 +137,7 @@ var methodRegistry = []MethodInfo{
 	{Method: "command/exec/outputDelta", Surface: SurfaceServerNotification, State: MethodImplemented, Source: "json schema:ServerNotification, protocol crate:common.rs:1639, typescript:ServerNotification.ts"},
 	{Method: "configWarning", Surface: SurfaceServerNotification, State: MethodBlocked, Source: "json schema:ServerNotification, protocol crate:common.rs:1675, typescript:ServerNotification.ts"},
 	{Method: "deprecationNotice", Surface: SurfaceServerNotification, State: MethodImplemented, Source: "json schema:ServerNotification, protocol crate:common.rs:1674, typescript:ServerNotification.ts"},
-	{Method: "error", Surface: SurfaceServerNotification, State: MethodBlocked, Source: "json schema:ServerNotification, protocol crate:common.rs:1609, typescript:ServerNotification.ts"},
+	{Method: "error", Surface: SurfaceServerNotification, State: MethodImplemented, Source: "json schema:ServerNotification, protocol crate:common.rs:1609, typescript:ServerNotification.ts"},
 	{Method: "externalAgentConfig/import/completed", Surface: SurfaceServerNotification, State: MethodDeferredStub, Source: "json schema:ServerNotification, protocol crate:common.rs:1660, typescript:ServerNotification.ts"},
 	{Method: "externalAgentConfig/import/progress", Surface: SurfaceServerNotification, State: MethodDeferredStub, Source: "json schema:ServerNotification, protocol crate:common.rs:1659, typescript:ServerNotification.ts"},
 	{Method: "fs/changed", Surface: SurfaceServerNotification, State: MethodImplemented, Source: "json schema:ServerNotification, protocol crate:common.rs:1661, typescript:ServerNotification.ts"},

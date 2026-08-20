@@ -26518,7 +26518,7 @@
     {
       "method": "error",
       "surface": "server-notification",
-      "state": "blocked",
+      "state": "implemented",
       "source": "json schema:ServerNotification, protocol crate:common.rs:1609, typescript:ServerNotification.ts"
     },
     {

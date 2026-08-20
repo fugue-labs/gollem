@@ -770,12 +770,7 @@ type runtimeItemNotificationParams = protocol.ItemLifecycleNotificationParams
 
 type runtimeDeltaNotificationParams = protocol.RuntimeDeltaNotification
 
-type runtimeErrorNotificationParams struct {
-	ThreadID string    `json:"threadId,omitempty"`
-	TurnID   string    `json:"turnId,omitempty"`
-	Error    string    `json:"error"`
-	At       time.Time `json:"at"`
-}
+type runtimeErrorNotificationParams = protocol.ErrorNotification
 
 type threadTokenUsageUpdatedNotificationParams = protocol.ThreadTokenUsageUpdatedNotification
 type threadTokenUsagePayload = protocol.ThreadTokenUsage
@@ -894,15 +889,19 @@ func publishRuntimeError(notifier runtimeNotifier, turn *store.Turn, text string
 }
 
 func publishPublicRuntimeError(notifier runtimeNotifier, turn *store.Turn, message string) {
-	if notifier == nil || message == "" {
+	if notifier == nil || turn == nil || turn.ThreadID == "" || turn.ID == "" || message == "" {
 		return
 	}
-	params := runtimeErrorNotificationParams{Error: message, At: time.Now().UTC()}
-	if turn != nil {
-		params.ThreadID = turn.ThreadID
-		params.TurnID = turn.ID
-	}
-	notifier.PublishNotification("error", params)
+	notifier.PublishNotification("error", runtimeErrorNotificationParams{
+		Error: protocol.TurnError{
+			Message:           message,
+			CodexErrorInfo:    nil,
+			AdditionalDetails: nil,
+		},
+		WillRetry: false,
+		ThreadID:  turn.ThreadID,
+		TurnID:    turn.ID,
+	})
 }
 
 func runtimeUsageMap(usage core.RunUsage) map[string]any {

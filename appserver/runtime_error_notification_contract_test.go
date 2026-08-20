@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -24,52 +22,35 @@ func (n *runtimeErrorCaptureNotifier) PublishNotification(method string, params 
 	n.params = params
 }
 
-func TestPublishRuntimeErrorRetainsLiveExtensionShape(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		turn     *store.Turn
-		wantKeys []string
-	}{
-		{"thread turn", &store.Turn{ID: "turn", ThreadID: "thread"}, []string{"at", "error", "threadId", "turnId"}},
-		{"global", nil, []string{"at", "error"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			notifier := &runtimeErrorCaptureNotifier{}
-			publishRuntimeError(notifier, tc.turn, "boom")
-			if notifier.method != "error" {
-				t.Fatalf("method = %q", notifier.method)
-			}
-			params, ok := notifier.params.(runtimeErrorNotificationParams)
-			if !ok || params.Error != runtimePublicErrorFailed || params.At.IsZero() {
-				t.Fatalf("params = %#v (%T)", notifier.params, notifier.params)
-			}
-			if tc.turn != nil && (params.ThreadID != "thread" || params.TurnID != "turn") {
-				t.Fatalf("correlated ids = %q/%q", params.ThreadID, params.TurnID)
-			}
-			if tc.turn == nil && (params.ThreadID != "" || params.TurnID != "") {
-				t.Fatalf("global ids = %q/%q", params.ThreadID, params.TurnID)
-			}
-			encoded, err := json.Marshal(params)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var payload map[string]json.RawMessage
-			if err := json.Unmarshal(encoded, &payload); err != nil {
-				t.Fatal(err)
-			}
-			keys := make([]string, 0, len(payload))
-			for key := range payload {
-				keys = append(keys, key)
-			}
-			slices.Sort(keys)
-			if !reflect.DeepEqual(keys, tc.wantKeys) {
-				t.Fatalf("keys = %v, want %v", keys, tc.wantKeys)
-			}
-			var exact protocol.ErrorNotification
-			if err := json.Unmarshal(encoded, &exact); err == nil {
-				t.Fatal("incompatible live extension decoded as exact public error")
-			}
-		})
+func TestPublishRuntimeErrorUsesExactPublicShape(t *testing.T) {
+	notifier := &runtimeErrorCaptureNotifier{}
+	publishRuntimeError(notifier, &store.Turn{ID: "turn", ThreadID: "thread"}, "boom")
+	if notifier.method != "error" {
+		t.Fatalf("method = %q", notifier.method)
+	}
+	params, ok := notifier.params.(protocol.ErrorNotification)
+	if !ok {
+		t.Fatalf("params = %#v (%T), want protocol.ErrorNotification", notifier.params, notifier.params)
+	}
+	if params.Error.Message != runtimePublicErrorFailed || params.Error.CodexErrorInfo != nil || params.Error.AdditionalDetails != nil {
+		t.Fatalf("error = %#v", params.Error)
+	}
+	if params.WillRetry || params.ThreadID != "thread" || params.TurnID != "turn" {
+		t.Fatalf("params = %#v", params)
+	}
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exact protocol.ErrorNotification
+	if err := json.Unmarshal(encoded, &exact); err != nil {
+		t.Fatalf("exact public error notification rejected %s: %v", encoded, err)
+	}
+
+	notifier = &runtimeErrorCaptureNotifier{}
+	publishRuntimeError(notifier, nil, "boom")
+	if notifier.method != "" || notifier.params != nil {
+		t.Fatalf("uncorrelated error notification = %q %#v", notifier.method, notifier.params)
 	}
 }
 
@@ -123,7 +104,7 @@ func TestPublishPublicRuntimeErrorUsesProjectedMessage(t *testing.T) {
 	notifier := &runtimeErrorCaptureNotifier{}
 	publishPublicRuntimeError(notifier, &store.Turn{ID: "turn", ThreadID: "thread"}, runtimePublicErrorInterrupted)
 	params, ok := notifier.params.(runtimeErrorNotificationParams)
-	if notifier.method != "error" || !ok || params.Error != runtimePublicErrorInterrupted {
+	if notifier.method != "error" || !ok || params.Error.Message != runtimePublicErrorInterrupted {
 		t.Fatalf("notification = %q %#v", notifier.method, notifier.params)
 	}
 }
