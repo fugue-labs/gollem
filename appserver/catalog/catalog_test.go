@@ -90,7 +90,7 @@ func TestProviderCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProviderCapabilities(openai): %v", err)
 	}
-	if !caps.NamespaceTools || !caps.ToolCalls || !caps.StructuredOutput || !caps.Vision || !caps.Streaming {
+	if !caps.NamespaceTools || !caps.ToolCalls || !caps.StructuredOutput || !caps.Vision || !caps.Streaming || !caps.Sampling {
 		t.Fatalf("openai capabilities missing expected feature: %#v", caps)
 	}
 	if caps.Configured {
@@ -114,7 +114,7 @@ func TestProviderCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProviderCapabilities(aggregate): %v", err)
 	}
-	if !aggregate.NamespaceTools || !aggregate.ToolCalls || !aggregate.Reasoning {
+	if !aggregate.NamespaceTools || !aggregate.ToolCalls || !aggregate.Reasoning || !aggregate.Sampling {
 		t.Fatalf("aggregate capabilities missing expected feature: %#v", aggregate)
 	}
 
@@ -197,6 +197,52 @@ func TestStopSequenceCapabilitiesAreModelSpecific(t *testing.T) {
 		if provider.Capabilities.StopSequences != tc.want {
 			t.Errorf("provider %q stop sequence capability = %t, want %t", tc.provider, provider.Capabilities.StopSequences, tc.want)
 		}
+	}
+}
+
+func TestSamplingCapabilitiesAreModelSpecific(t *testing.T) {
+	c := NewDefault(WithEnvLookup(mapEnv(nil)))
+	for _, tc := range []struct {
+		provider string
+		model    string
+		want     bool
+	}{
+		{ProviderOpenAI, "gpt-4o", true},
+		{ProviderOpenAI, "gpt-4o-mini", true},
+		{ProviderOpenAI, "gpt-5", false},
+		{ProviderOpenAI, "gpt-5-mini", false},
+		{ProviderOpenAI, "gpt-5-nano", false},
+		{ProviderOpenAI, "gpt-5-codex", false},
+		{ProviderOpenAICompatibleLocal, "llama3", false},
+		{ProviderAnthropic, "claude-sonnet-4-6", true},
+		{ProviderAnthropic, "claude-opus-4-6", true},
+		{ProviderAnthropic, "claude-opus-4-7", false},
+		{ProviderAnthropic, "claude-opus-4-8", false},
+		{ProviderAnthropic, "claude-fable-5", false},
+		{ProviderAnthropic, "claude-haiku-4-5-20251001", true},
+		{ProviderVertexAI, vertexprovider.Gemini25Flash, true},
+		{ProviderVertexAI, vertexprovider.Gemini25Pro, true},
+		{ProviderVertexAI, vertexprovider.Gemini31ProPreview, true},
+		{ProviderVertexAI, vertexprovider.Gemini3FlashPreview, true},
+		{ProviderVertexAI, vertexprovider.Gemini20Flash, true},
+		{ProviderVertexAIAnthropic, "claude-sonnet-4-6", true},
+		{ProviderVertexAIAnthropic, "claude-opus-4-6", true},
+		{ProviderVertexAIAnthropic, "claude-opus-4-7", false},
+		{ProviderVertexAIAnthropic, "claude-haiku-4-5", true},
+	} {
+		t.Run(tc.provider+"/"+tc.model, func(t *testing.T) {
+			provider := findProvider(t, c.providers, tc.provider)
+			for _, model := range provider.Models {
+				if model.Model != tc.model {
+					continue
+				}
+				if model.Capabilities.Sampling != tc.want {
+					t.Fatalf("sampling capability = %t, want %t", model.Capabilities.Sampling, tc.want)
+				}
+				return
+			}
+			t.Fatalf("model %q missing from provider %#v", tc.model, provider.Models)
+		})
 	}
 }
 

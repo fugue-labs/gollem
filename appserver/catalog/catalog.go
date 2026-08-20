@@ -240,6 +240,7 @@ func (c *Catalog) ProviderCapabilities(providerID string) (ProviderCapabilities,
 		aggregate.Vision = aggregate.Vision || provider.Capabilities.Vision
 		aggregate.Streaming = aggregate.Streaming || provider.Capabilities.Streaming
 		aggregate.PromptCache = aggregate.PromptCache || provider.Capabilities.PromptCache
+		aggregate.Sampling = aggregate.Sampling || provider.Capabilities.Sampling
 		aggregate.StopSequences = aggregate.StopSequences || provider.Capabilities.StopSequences
 		aggregate.ToolSearch = aggregate.ToolSearch || provider.Capabilities.ToolSearch
 		aggregate.Reasoning = aggregate.Reasoning || provider.Capabilities.Reasoning
@@ -377,13 +378,14 @@ func (c *Catalog) defaultProviders() []Provider {
 				Vision:             true,
 				Streaming:          true,
 				PromptCache:        true,
+				Sampling:           true,
 				Reasoning:          true,
 				ReasoningEfforts:   []string{"minimal", "low", "medium", "high"},
 				ReasoningSummaries: true,
 			},
 			Models: []Model{
-				model(ProviderOpenAI, openaiprovider.GPT4o, "GPT-4o", "General-purpose multimodal OpenAI model.", false, textAndImage(), false, capabilities(true, true, true, true, true, false, false), []string{"low", "medium", "high"}, "medium"),
-				model(ProviderOpenAI, openaiprovider.GPT4oMini, "GPT-4o mini", "Smaller OpenAI multimodal model for lower-latency turns.", false, textAndImage(), false, capabilities(true, true, true, true, true, false, false), []string{"low", "medium", "high"}, "medium"),
+				model(ProviderOpenAI, openaiprovider.GPT4o, "GPT-4o", "General-purpose multimodal OpenAI model.", false, textAndImage(), false, capabilities(true, true, true, true, true, false, false, true), []string{"low", "medium", "high"}, "medium"),
+				model(ProviderOpenAI, openaiprovider.GPT4oMini, "GPT-4o mini", "Smaller OpenAI multimodal model for lower-latency turns.", false, textAndImage(), false, capabilities(true, true, true, true, true, false, false, true), []string{"low", "medium", "high"}, "medium"),
 				model(ProviderOpenAI, openaiprovider.GPT5, "GPT-5", "OpenAI reasoning model with strong coding and tool-use support.", false, textAndImage(), false, reasoningSummaryCapabilities(capabilities(true, true, true, true, true, true, false), true), []string{"minimal", "low", "medium", "high"}, "medium"),
 				model(ProviderOpenAI, openaiprovider.GPT5Mini, "GPT-5 mini", "Lower-latency GPT-5 family model.", false, textAndImage(), false, reasoningSummaryCapabilities(capabilities(true, true, true, true, true, true, false), true), []string{"minimal", "low", "medium", "high"}, "medium"),
 				model(ProviderOpenAI, openaiprovider.GPT5Nano, "GPT-5 nano", "Small GPT-5 family model for fast utility work.", true, textAndImage(), false, reasoningSummaryCapabilities(capabilities(true, true, true, true, true, true, false), true), []string{"minimal", "low", "medium", "high"}, "low"),
@@ -437,6 +439,7 @@ func (c *Catalog) defaultProviders() []Provider {
 				Vision:           true,
 				Streaming:        true,
 				PromptCache:      true,
+				Sampling:         true,
 				StopSequences:    true,
 				ToolSearch:       true,
 				Reasoning:        true,
@@ -445,12 +448,12 @@ func (c *Catalog) defaultProviders() []Provider {
 				ManualThinking:   true,
 			},
 			Models: []Model{
-				model(ProviderAnthropic, anthropicprovider.ClaudeSonnet46, "Claude Sonnet 4.6", "Anthropic balanced coding and agentic workflow model.", false, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, true), true, true), true), []string{"low", "medium", "high", "max"}, "medium"),
-				model(ProviderAnthropic, anthropicprovider.ClaudeOpus46, "Claude Opus 4.6", "Anthropic high-capability reasoning model.", false, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, true), true, true), true), []string{"low", "medium", "high", "max"}, "medium"),
+				model(ProviderAnthropic, anthropicprovider.ClaudeSonnet46, "Claude Sonnet 4.6", "Anthropic balanced coding and agentic workflow model.", false, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, true, true), true, true), true), []string{"low", "medium", "high", "max"}, "medium"),
+				model(ProviderAnthropic, anthropicprovider.ClaudeOpus46, "Claude Opus 4.6", "Anthropic high-capability reasoning model.", false, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, true, true), true, true), true), []string{"low", "medium", "high", "max"}, "medium"),
 				model(ProviderAnthropic, anthropicprovider.ClaudeOpus47, "Claude Opus 4.7", "Anthropic flagship adaptive-thinking model.", false, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, true), true, false), true), []string{"low", "medium", "high", "xhigh", "max"}, "high"),
 				model(ProviderAnthropic, anthropicprovider.ClaudeOpus48, "Claude Opus 4.8", "Anthropic flagship adaptive-thinking model.", false, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, true), true, false), true), []string{"low", "medium", "high", "xhigh", "max"}, "high"),
 				model(ProviderAnthropic, anthropicprovider.ClaudeFable5, "Claude Fable 5", "Anthropic Fable tier model for high-end reasoning workflows.", true, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, false), true, false), true), []string{"low", "medium", "high", "xhigh", "max"}, "high"),
-				model(ProviderAnthropic, anthropicprovider.ClaudeHaiku45, "Claude Haiku 4.5", "Anthropic lower-latency utility model.", false, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false), true), []string{"low", "medium", "high"}, "medium"),
+				model(ProviderAnthropic, anthropicprovider.ClaudeHaiku45, "Claude Haiku 4.5", "Anthropic lower-latency utility model.", false, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false, true), true), []string{"low", "medium", "high"}, "medium"),
 			},
 		},
 		{
@@ -470,14 +473,15 @@ func (c *Catalog) defaultProviders() []Provider {
 				Vision:           true,
 				Streaming:        true,
 				PromptCache:      true,
+				Sampling:         true,
 				StopSequences:    true,
 			},
 			Models: []Model{
-				model(ProviderVertexAI, vertexprovider.Gemini25Flash, "Gemini 2.5 Flash", "Google Gemini fast multimodal model through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false), true), nil, "medium"),
-				model(ProviderVertexAI, vertexprovider.Gemini25Pro, "Gemini 2.5 Pro", "Google Gemini Pro multimodal model through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false), true), nil, "medium"),
-				model(ProviderVertexAI, vertexprovider.Gemini31ProPreview, "Gemini 3.1 Pro Preview", "Google Gemini preview model through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false), true), nil, "medium"),
-				model(ProviderVertexAI, vertexprovider.Gemini3FlashPreview, "Gemini 3 Flash Preview", "Google Gemini preview flash model through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false), true), nil, "medium"),
-				model(ProviderVertexAI, vertexprovider.Gemini20Flash, "Gemini 2.0 Flash", "Google Gemini 2.0 Flash model through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false), true), nil, "medium"),
+				model(ProviderVertexAI, vertexprovider.Gemini25Flash, "Gemini 2.5 Flash", "Google Gemini fast multimodal model through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false, true), true), nil, "medium"),
+				model(ProviderVertexAI, vertexprovider.Gemini25Pro, "Gemini 2.5 Pro", "Google Gemini Pro multimodal model through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false, true), true), nil, "medium"),
+				model(ProviderVertexAI, vertexprovider.Gemini31ProPreview, "Gemini 3.1 Pro Preview", "Google Gemini preview model through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false, true), true), nil, "medium"),
+				model(ProviderVertexAI, vertexprovider.Gemini3FlashPreview, "Gemini 3 Flash Preview", "Google Gemini preview flash model through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false, true), true), nil, "medium"),
+				model(ProviderVertexAI, vertexprovider.Gemini20Flash, "Gemini 2.0 Flash", "Google Gemini 2.0 Flash model through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false, true), true), nil, "medium"),
 			},
 		},
 		{
@@ -497,6 +501,7 @@ func (c *Catalog) defaultProviders() []Provider {
 				Vision:           true,
 				Streaming:        true,
 				PromptCache:      true,
+				Sampling:         true,
 				StopSequences:    true,
 				Reasoning:        true,
 				ReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"},
@@ -504,10 +509,10 @@ func (c *Catalog) defaultProviders() []Provider {
 				ManualThinking:   true,
 			},
 			Models: []Model{
-				model(ProviderVertexAIAnthropic, vertexanthropicprovider.ClaudeSonnet46, "Claude Sonnet 4.6 on Vertex AI", "Anthropic Sonnet through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, false), true, true), true), []string{"low", "medium", "high", "max"}, "medium"),
-				model(ProviderVertexAIAnthropic, vertexanthropicprovider.ClaudeOpus46, "Claude Opus 4.6 on Vertex AI", "Anthropic Opus through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, false), true, true), true), []string{"low", "medium", "high", "max"}, "medium"),
+				model(ProviderVertexAIAnthropic, vertexanthropicprovider.ClaudeSonnet46, "Claude Sonnet 4.6 on Vertex AI", "Anthropic Sonnet through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, false, true), true, true), true), []string{"low", "medium", "high", "max"}, "medium"),
+				model(ProviderVertexAIAnthropic, vertexanthropicprovider.ClaudeOpus46, "Claude Opus 4.6 on Vertex AI", "Anthropic Opus through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, false, true), true, true), true), []string{"low", "medium", "high", "max"}, "medium"),
 				model(ProviderVertexAIAnthropic, vertexanthropicprovider.ClaudeOpus47, "Claude Opus 4.7 on Vertex AI", "Anthropic Opus through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, false), true, false), true), []string{"low", "medium", "high", "xhigh", "max"}, "high"),
-				model(ProviderVertexAIAnthropic, vertexanthropicprovider.ClaudeHaiku45, "Claude Haiku 4.5 on Vertex AI", "Anthropic Haiku through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false), true), []string{"low", "medium", "high"}, "medium"),
+				model(ProviderVertexAIAnthropic, vertexanthropicprovider.ClaudeHaiku45, "Claude Haiku 4.5 on Vertex AI", "Anthropic Haiku through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false, true), true), []string{"low", "medium", "high"}, "medium"),
 			},
 		},
 	}
@@ -608,13 +613,14 @@ func stringPointer(value string) *string {
 	return &value
 }
 
-func capabilities(toolCalls, structured, vision, streaming, promptCache, reasoning, toolSearch bool) ModelCapabilities {
+func capabilities(toolCalls, structured, vision, streaming, promptCache, reasoning, toolSearch bool, sampling ...bool) ModelCapabilities {
 	return ModelCapabilities{
 		ToolCalls:        toolCalls,
 		StructuredOutput: structured,
 		Vision:           vision,
 		Streaming:        streaming,
 		PromptCache:      promptCache,
+		Sampling:         len(sampling) == 1 && sampling[0],
 		Reasoning:        reasoning,
 		ToolSearch:       toolSearch,
 	}

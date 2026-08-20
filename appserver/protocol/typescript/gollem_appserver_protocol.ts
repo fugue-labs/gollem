@@ -2769,6 +2769,7 @@ export type ModelCatalogCapabilities = {
   "promptCache": boolean;
   "reasoning": boolean;
   "reasoningSummaries": boolean;
+  "sampling": boolean;
   "stopSequences": boolean;
   "streaming": boolean;
   "structuredOutput": boolean;
@@ -3156,6 +3157,7 @@ export type ProviderCatalogCapabilities = {
   "reasoningEfforts"?: Array<string> | null;
   "reasoningSummaries"?: boolean;
   "requiresConfigurationEnv"?: Array<string> | null;
+  "sampling": boolean;
   "stopSequences": boolean;
   "streaming": boolean;
   "structuredOutput": boolean;

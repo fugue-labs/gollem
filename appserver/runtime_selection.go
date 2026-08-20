@@ -17,6 +17,9 @@ func (s *Server) validateRuntimeSelection(selection RuntimeModelSelection, setti
 	if err := validateRuntimePromptCacheSelection(s.catalog, selection, settings); err != nil {
 		return err
 	}
+	if err := validateRuntimeSamplingSelection(s.catalog, selection, settings); err != nil {
+		return err
+	}
 	if err := validateRuntimeStopSequenceSelection(s.catalog, selection, settings); err != nil {
 		return err
 	}

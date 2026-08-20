@@ -99,14 +99,16 @@ func TestRuntimeModelParamsExposePromptCacheAndReasoningSummarySettings(t *testi
 func TestModelCatalogCapabilitiesExposeRuntimeControls(t *testing.T) {
 	defs := JSONSchema()["$defs"].(Schema)
 	properties := defs["ModelCatalogCapabilities"].(Schema)["properties"].(Schema)
-	for _, name := range []string{"adaptiveThinking", "manualThinking", "reasoningSummaries", "stopSequences"} {
+	for _, name := range []string{"adaptiveThinking", "manualThinking", "reasoningSummaries", "sampling", "stopSequences"} {
 		if _, ok := properties[name]; !ok {
 			t.Fatalf("ModelCatalogCapabilities schema omitted %s", name)
 		}
 	}
 	providerProperties := defs["ProviderCatalogCapabilities"].(Schema)["properties"].(Schema)
-	if _, ok := providerProperties["stopSequences"]; !ok {
-		t.Fatal("ProviderCatalogCapabilities schema omitted stopSequences")
+	for _, name := range []string{"sampling", "stopSequences"} {
+		if _, ok := providerProperties[name]; !ok {
+			t.Fatalf("ProviderCatalogCapabilities schema omitted %s", name)
+		}
 	}
 	generated, err := MarshalTypeScript()
 	if err != nil {
@@ -116,6 +118,7 @@ func TestModelCatalogCapabilitiesExposeRuntimeControls(t *testing.T) {
 		`"adaptiveThinking": boolean;`,
 		`"manualThinking": boolean;`,
 		`"reasoningSummaries": boolean;`,
+		`"sampling": boolean;`,
 		`"stopSequences": boolean;`,
 	} {
 		if !strings.Contains(string(generated), want) {

@@ -502,6 +502,96 @@ func TestServerRuntimePromptCacheFailsClosedAgainstModelCatalog(t *testing.T) {
 	}
 }
 
+func TestServerRuntimeSamplingFailsClosedAgainstModelCatalog(t *testing.T) {
+	temperature := 0.7
+	topP := 0.9
+	thinkingBudget := 1024
+	for _, tc := range []struct {
+		name           string
+		providerID     string
+		model          string
+		thinkingBudget *int
+		wantReason     string
+	}{
+		{
+			name:       "OpenAI Responses model does not advertise sampling",
+			providerID: "openai",
+			model:      "gpt-5",
+			wantReason: "does not advertise sampling",
+		},
+		{
+			name:       "Anthropic adaptive model does not advertise sampling",
+			providerID: "anthropic",
+			model:      "claude-opus-4-7",
+			wantReason: "does not advertise sampling",
+		},
+		{
+			name:           "Anthropic manual thinking cannot combine sampling",
+			providerID:     "anthropic",
+			model:          "claude-sonnet-4-6",
+			thinkingBudget: &thinkingBudget,
+			wantReason:     "does not advertise sampling with thinking",
+		},
+		{
+			name:       "catalog-supported chat completion model",
+			providerID: "openai",
+			model:      "gpt-4o",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := newRuntimeTestStore(t)
+			server := readyServer(
+				WithStore(st),
+				WithRuntimeService(NewRuntimeService(WithRuntimeModel(
+					core.NewTestModel(core.TextResponse("done")),
+					RuntimeModelInfo{ProviderID: tc.providerID, Model: tc.model},
+				))),
+			)
+			params := map[string]any{
+				"workspace":   t.TempDir(),
+				"prompt":      "apply deterministic sampling",
+				"providerId":  tc.providerID,
+				"model":       tc.model,
+				"temperature": temperature,
+				"topP":        topP,
+			}
+			if tc.thinkingBudget != nil {
+				params["thinkingBudget"] = *tc.thinkingBudget
+			}
+			response := server.HandleRequest(ctx, request("thread/start", params))
+			if tc.wantReason != "" {
+				if response.Error == nil || response.Error.Code != protocol.CodeInvalidParams {
+					t.Fatalf("thread/start error = %#v, want invalid params", response.Error)
+				}
+				if !strings.Contains(response.Error.Message, tc.wantReason) {
+					t.Fatalf("thread/start error = %q, want %q", response.Error.Message, tc.wantReason)
+				}
+				threads, err := st.ListThreads(ctx, store.ThreadFilter{})
+				if err != nil {
+					t.Fatalf("ListThreads: %v", err)
+				}
+				if len(threads) != 0 {
+					t.Fatalf("unsupported sampling created %d threads", len(threads))
+				}
+				return
+			}
+			if response.Error != nil {
+				t.Fatalf("thread/start error: %v", response.Error)
+			}
+			var result protocol.ThreadRunStartResult
+			decodeResult(t, response, &result)
+			var input runtimeTurnInput
+			if err := json.Unmarshal(result.Turn.Input, &input); err != nil {
+				t.Fatalf("decode turn input: %v", err)
+			}
+			if input.Temperature == nil || *input.Temperature != temperature || input.TopP == nil || *input.TopP != topP {
+				t.Fatalf("turn sampling = %#v, want temperature=%v topP=%v", input, temperature, topP)
+			}
+		})
+	}
+}
+
 func TestServerRuntimeStopSequencesFailClosedAndSurviveRetry(t *testing.T) {
 	ctx := context.Background()
 	st := newRuntimeTestStore(t)
