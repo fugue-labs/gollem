@@ -1205,6 +1205,7 @@ func TestCLIAppServerRuntimeUsesScopedProcessAndGitTools(t *testing.T) {
 func TestCLIAppServerRuntimeUsesMCPAndSharedInteractionTools(t *testing.T) {
 	model := core.NewTestModel(
 		core.ToolCallResponseWithID("mcp_list_servers", `{}`, "call-cli-mcp-list"),
+		core.ToolCallResponseWithID("update_plan", `{"explanation":"Use the available tools","plan":[{"step":"Inspect MCP","status":"completed"},{"step":"Ask the client","status":"inProgress"}]}`, "call-cli-plan"),
 		core.ToolCallResponseWithID("curr_time", `{}`, "call-cli-current-time"),
 		core.ToolCallResponseWithID("request_user_input", `{"prompt":"Choose","options":["one","two"]}`, "call-cli-input"),
 		core.TextResponse("interaction complete"),
@@ -1300,6 +1301,9 @@ func TestCLIAppServerRuntimeUsesMCPAndSharedInteractionTools(t *testing.T) {
 		t.Fatalf("thread/items/list error: %v", itemsResp.Error)
 	}
 	if !strings.Contains(string(itemsResp.Result), `"tool":"mcp_list_servers"`) ||
+		!strings.Contains(string(itemsResp.Result), `"tool":"update_plan"`) ||
+		!strings.Contains(string(itemsResp.Result), `"kind":"plan"`) ||
+		!strings.Contains(string(itemsResp.Result), `"step":"Ask the client","status":"inProgress"`) ||
 		!strings.Contains(string(itemsResp.Result), `"tool":"curr_time"`) ||
 		!strings.Contains(string(itemsResp.Result), `It is 2026-06-17 17:34:15 UTC.`) ||
 		!strings.Contains(string(itemsResp.Result), `"tool":"request_user_input"`) {

@@ -44,8 +44,8 @@ func TestExperimentalFeatureContractsRemainStandalone(t *testing.T) {
 	if got := len(JSONSchema()["$defs"].(Schema)); got != 675 {
 		t.Fatalf("definition count = %d, want 675", got)
 	}
-	if len(Methods()) != 229 || len(WireTypeBindings()) != 85 || len(ItemPayloadBindings()) != 5 {
-		t.Fatalf("counts = %d/%d/%d, want 229/85/5", len(Methods()), len(WireTypeBindings()), len(ItemPayloadBindings()))
+	if len(Methods()) != 229 || len(WireTypeBindings()) != 86 || len(ItemPayloadBindings()) != 5 {
+		t.Fatalf("counts = %d/%d/%d, want 229/86/5", len(Methods()), len(WireTypeBindings()), len(ItemPayloadBindings()))
 	}
 }
 

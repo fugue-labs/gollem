@@ -199,21 +199,31 @@ func TestTurnPlanUpdatedNotificationRejectsMalformedForms(t *testing.T) {
 	}
 }
 
-func TestTurnPlanContractsRemainStandalone(t *testing.T) {
+func TestTurnPlanContractsAreBoundToLiveProducer(t *testing.T) {
+	var found bool
 	for _, binding := range WireTypeBindings() {
-		if binding.Method == "turn/plan/updated" {
-			t.Fatalf("turn/plan/updated unexpectedly bound: %#v", binding)
+		if binding.Method != "turn/plan/updated" {
+			continue
+		}
+		found = true
+		if binding.Surface != SurfaceServerNotification ||
+			!reflect.DeepEqual(binding.Params, []string{"TurnPlanUpdatedNotification"}) ||
+			len(binding.Result) != 0 {
+			t.Fatalf("turn/plan/updated binding = %#v", binding)
 		}
 	}
+	if !found {
+		t.Fatal("turn/plan/updated binding missing")
+	}
 	info, ok := LookupMethod("turn/plan/updated")
-	if !ok || info.State != MethodBlocked {
-		t.Fatalf("turn/plan/updated method = %#v, %v; want blocked", info, ok)
+	if !ok || info.Surface != SurfaceServerNotification || info.State != MethodImplemented {
+		t.Fatalf("turn/plan/updated method = %#v, %v; want implemented server notification", info, ok)
 	}
 	if got := len(JSONSchema()["$defs"].(Schema)); got != 675 {
 		t.Fatalf("definition count = %d, want 675", got)
 	}
-	if got := len(WireTypeBindings()); got != 85 || len(ItemPayloadBindings()) != 5 {
-		t.Fatalf("bindings = %d methods/%d items, want 85/5", got, len(ItemPayloadBindings()))
+	if got := len(WireTypeBindings()); got != 86 || len(ItemPayloadBindings()) != 5 {
+		t.Fatalf("bindings = %d methods/%d items, want 86/5", got, len(ItemPayloadBindings()))
 	}
 }
 

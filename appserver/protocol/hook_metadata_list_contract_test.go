@@ -355,8 +355,8 @@ func TestHookMetadataListContractsStayStandalone(t *testing.T) {
 	if got := len(JSONSchema()["$defs"].(Schema)); got != 675 {
 		t.Errorf("definition count = %d, want 675", got)
 	}
-	if got := len(WireTypeBindings()); got != 85 {
-		t.Errorf("wire binding count = %d, want 85", got)
+	if got := len(WireTypeBindings()); got != 86 {
+		t.Errorf("wire binding count = %d, want 86", got)
 	}
 	if got := len(ItemPayloadBindings()); got != 5 {
 		t.Errorf("item binding count = %d, want 5", got)

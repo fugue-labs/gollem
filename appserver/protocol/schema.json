@@ -26913,7 +26913,7 @@
     {
       "method": "turn/plan/updated",
       "surface": "server-notification",
-      "state": "blocked",
+      "state": "implemented",
       "source": "json schema:ServerNotification, protocol crate:common.rs:1628, typescript:ServerNotification.ts"
     },
     {
@@ -27862,6 +27862,13 @@
       ],
       "result": [
         "TurnRunInterruptResult"
+      ]
+    },
+    {
+      "method": "turn/plan/updated",
+      "surface": "server-notification",
+      "params": [
+        "TurnPlanUpdatedNotification"
       ]
     },
     {

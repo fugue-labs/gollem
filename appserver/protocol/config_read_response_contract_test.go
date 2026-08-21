@@ -206,8 +206,8 @@ func TestConfigReadResponseRemainsStandalone(t *testing.T) {
 	if got := len(Methods()); got != 229 {
 		t.Fatalf("methods = %d, want 229", got)
 	}
-	if got := len(WireTypeBindings()); got != 85 || len(ItemPayloadBindings()) != 5 {
-		t.Fatalf("bindings = %d methods/%d items, want 85/5", got, len(ItemPayloadBindings()))
+	if got := len(WireTypeBindings()); got != 86 || len(ItemPayloadBindings()) != 5 {
+		t.Fatalf("bindings = %d methods/%d items, want 86/5", got, len(ItemPayloadBindings()))
 	}
 }
 

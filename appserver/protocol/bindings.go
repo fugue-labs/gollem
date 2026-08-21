@@ -98,6 +98,7 @@ var wireTypeBindings = []WireTypeBinding{
 	{Method: "turn/completed", Surface: SurfaceServerNotification, Params: []string{"RuntimeTurnNotification"}},
 	{Method: "turn/diff/updated", Surface: SurfaceServerNotification, Params: []string{"TurnDiffUpdatedNotification"}},
 	{Method: "turn/interrupt", Surface: SurfaceClientRequest, Params: []string{"TurnRunInterruptParams"}, Result: []string{"TurnRunInterruptResult"}},
+	{Method: "turn/plan/updated", Surface: SurfaceServerNotification, Params: []string{"TurnPlanUpdatedNotification"}},
 	{Method: "turn/retry", Surface: SurfaceGollemExtension, Params: []string{"TurnRunRetryParams"}, Result: []string{"TurnRunRetryResult"}},
 	{Method: "turn/start", Surface: SurfaceClientRequest, Params: []string{"TurnRunStartParams"}, Result: []string{"TurnRunStartResult"}},
 	{Method: "turn/started", Surface: SurfaceServerNotification, Params: []string{"RuntimeTurnNotification"}},

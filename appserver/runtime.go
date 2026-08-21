@@ -478,6 +478,11 @@ func (s *RuntimeService) run(ctx context.Context, st store.Store, notifier runti
 	}()
 
 	ctx = withRuntimeTurnContext(ctx, turn.ThreadID, turn.ID)
+	ctx = withRuntimeToolDependencies(ctx, runtimeToolDependencies{
+		store:    st,
+		notifier: notifier,
+		turn:     turn,
+	})
 	model, info, err := s.modelFactory(ctx, req.Selection)
 	if err == nil && model == nil {
 		err = ErrRuntimeNotConfigured

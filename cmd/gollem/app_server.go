@@ -333,6 +333,7 @@ func newCLIAppServerWithRuntimeFactoryAndSelectionValidation(
 	}
 	runtimeTools = append(runtimeTools, appserver.MCPRuntimeTools(mcpSvc, approvals)...)
 	runtimeTools = append(runtimeTools, appserver.InteractionRuntimeTools(interactionSvc)...)
+	runtimeTools = append(runtimeTools, appserver.PlanRuntimeTools()...)
 	cacheSvc := appcache.NewService()
 	runtimeSvc := appserver.NewRuntimeService(
 		appserver.WithRuntimeModelFactory(runtimeFactory),

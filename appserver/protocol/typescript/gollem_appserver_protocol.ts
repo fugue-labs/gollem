@@ -217,7 +217,7 @@ export const protocolMethods = [
   { "method": "turn/completed", "surface": "server-notification", "state": "implemented", "source": "json schema:ServerNotification, protocol crate:common.rs:1625, typescript:ServerNotification.ts" },
   { "method": "turn/diff/updated", "surface": "server-notification", "state": "implemented", "source": "json schema:ServerNotification, protocol crate:common.rs:1627, typescript:ServerNotification.ts" },
   { "method": "turn/moderationMetadata", "surface": "server-notification", "state": "blocked", "source": "json schema:ServerNotification, protocol crate:common.rs:1670, typescript:ServerNotification.ts" },
-  { "method": "turn/plan/updated", "surface": "server-notification", "state": "blocked", "source": "json schema:ServerNotification, protocol crate:common.rs:1628, typescript:ServerNotification.ts" },
+  { "method": "turn/plan/updated", "surface": "server-notification", "state": "implemented", "source": "json schema:ServerNotification, protocol crate:common.rs:1628, typescript:ServerNotification.ts" },
   { "method": "turn/started", "surface": "server-notification", "state": "implemented", "source": "json schema:ServerNotification, protocol crate:common.rs:1623, typescript:ServerNotification.ts" },
   { "method": "warning", "surface": "server-notification", "state": "blocked", "source": "json schema:ServerNotification, protocol crate:common.rs:1672, typescript:ServerNotification.ts" },
   { "method": "windows/worldWritableWarning", "surface": "server-notification", "state": "deferred-stub", "source": "json schema:ServerNotification, protocol crate:common.rs:1696, typescript:ServerNotification.ts" },
@@ -4965,6 +4965,7 @@ export const wireTypeBindings = [
   { "method": "turn/completed", "surface": "server-notification", "params": ["RuntimeTurnNotification"] },
   { "method": "turn/diff/updated", "surface": "server-notification", "params": ["TurnDiffUpdatedNotification"] },
   { "method": "turn/interrupt", "surface": "client-request", "params": ["TurnRunInterruptParams"], "result": ["TurnRunInterruptResult"] },
+  { "method": "turn/plan/updated", "surface": "server-notification", "params": ["TurnPlanUpdatedNotification"] },
   { "method": "turn/retry", "surface": "gollem-extension", "params": ["TurnRunRetryParams"], "result": ["TurnRunRetryResult"] },
   { "method": "turn/start", "surface": "client-request", "params": ["TurnRunStartParams"], "result": ["TurnRunStartResult"] },
   { "method": "turn/started", "surface": "server-notification", "params": ["RuntimeTurnNotification"] },
@@ -5053,6 +5054,7 @@ export interface MethodParamsByName {
   "turn/completed": RuntimeTurnNotification;
   "turn/diff/updated": TurnDiffUpdatedNotification;
   "turn/interrupt": TurnRunInterruptParams;
+  "turn/plan/updated": TurnPlanUpdatedNotification;
   "turn/retry": TurnRunRetryParams;
   "turn/start": TurnRunStartParams;
   "turn/started": RuntimeTurnNotification;

@@ -194,7 +194,7 @@ var methodRegistry = []MethodInfo{
 	{Method: "turn/completed", Surface: SurfaceServerNotification, State: MethodImplemented, Source: "json schema:ServerNotification, protocol crate:common.rs:1625, typescript:ServerNotification.ts"},
 	{Method: "turn/diff/updated", Surface: SurfaceServerNotification, State: MethodImplemented, Source: "json schema:ServerNotification, protocol crate:common.rs:1627, typescript:ServerNotification.ts"},
 	{Method: "turn/moderationMetadata", Surface: SurfaceServerNotification, State: MethodBlocked, Source: "json schema:ServerNotification, protocol crate:common.rs:1670, typescript:ServerNotification.ts"},
-	{Method: "turn/plan/updated", Surface: SurfaceServerNotification, State: MethodBlocked, Source: "json schema:ServerNotification, protocol crate:common.rs:1628, typescript:ServerNotification.ts"},
+	{Method: "turn/plan/updated", Surface: SurfaceServerNotification, State: MethodImplemented, Source: "json schema:ServerNotification, protocol crate:common.rs:1628, typescript:ServerNotification.ts"},
 	{Method: "turn/started", Surface: SurfaceServerNotification, State: MethodImplemented, Source: "json schema:ServerNotification, protocol crate:common.rs:1623, typescript:ServerNotification.ts"},
 	{Method: "warning", Surface: SurfaceServerNotification, State: MethodBlocked, Source: "json schema:ServerNotification, protocol crate:common.rs:1672, typescript:ServerNotification.ts"},
 	{Method: "windows/worldWritableWarning", Surface: SurfaceServerNotification, State: MethodDeferredStub, Source: "json schema:ServerNotification, protocol crate:common.rs:1696, typescript:ServerNotification.ts"},

@@ -57,7 +57,6 @@ func (s *TurnPlanStep) UnmarshalJSON(data []byte) error {
 }
 
 // TurnPlanUpdatedNotification is the exact fixed public turn-plan snapshot.
-// It remains standalone until Gollem has an exact live producer.
 type TurnPlanUpdatedNotification struct {
 	ThreadID    string         `json:"threadId"`
 	TurnID      string         `json:"turnId"`

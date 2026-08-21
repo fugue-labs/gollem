@@ -390,8 +390,8 @@ func TestThreadItemTypeScriptShapeAndBindingsRemainStandalone(t *testing.T) {
 	if len(JSONSchema()["$defs"].(Schema)) != 675 {
 		t.Fatalf("definition count = %d, want 675", len(JSONSchema()["$defs"].(Schema)))
 	}
-	if len(WireTypeBindings()) != 85 || len(ItemPayloadBindings()) != 5 {
-		t.Fatalf("bindings = %d methods/%d items, want 85/5", len(WireTypeBindings()), len(ItemPayloadBindings()))
+	if len(WireTypeBindings()) != 86 || len(ItemPayloadBindings()) != 5 {
+		t.Fatalf("bindings = %d methods/%d items, want 86/5", len(WireTypeBindings()), len(ItemPayloadBindings()))
 	}
 	for _, binding := range WireTypeBindings() {
 		if slices.Contains(binding.Params, "ThreadItem") || slices.Contains(binding.Result, "ThreadItem") {
