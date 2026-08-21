@@ -203,7 +203,7 @@ var methodRegistry = []MethodInfo{
 	{Method: "account/chatgptAuthTokens/refresh", Surface: SurfaceServerRequest, State: MethodDeferredStub, Source: "json schema:ServerRequest, protocol crate:common.rs:1492, typescript:ServerRequest.ts"},
 	{Method: "applyPatchApproval", Surface: SurfaceServerRequest, State: MethodDeferredStub, Source: "json schema:ServerRequest, typescript:ServerRequest.ts"},
 	{Method: "attestation/generate", Surface: SurfaceServerRequest, State: MethodBlocked, Source: "json schema:ServerRequest, protocol crate:common.rs:1498, typescript:ServerRequest.ts"},
-	{Method: "currentTime/read", Surface: SurfaceServerRequest, State: MethodBlocked, Source: "protocol crate:common.rs:1505"},
+	{Method: "currentTime/read", Surface: SurfaceServerRequest, State: MethodImplemented, Source: "protocol crate:common.rs:1505"},
 	{Method: "execCommandApproval", Surface: SurfaceServerRequest, State: MethodDeferredStub, Source: "json schema:ServerRequest, typescript:ServerRequest.ts"},
 	{Method: "item/commandExecution/requestApproval", Surface: SurfaceServerRequest, State: MethodImplemented, Source: "json schema:ServerRequest, protocol crate:common.rs:1456, typescript:ServerRequest.ts"},
 	{Method: "item/fileChange/requestApproval", Surface: SurfaceServerRequest, State: MethodImplemented, Source: "json schema:ServerRequest, protocol crate:common.rs:1463, typescript:ServerRequest.ts"},

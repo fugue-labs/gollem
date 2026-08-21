@@ -201,11 +201,11 @@ func TestModelListContractsRemainStandalone(t *testing.T) {
 			t.Fatalf("model-list type unexpectedly bound: %#v", binding)
 		}
 	}
-	if got := len(JSONSchema()["$defs"].(Schema)); got != 673 {
-		t.Fatalf("definition count = %d, want 673", got)
+	if got := len(JSONSchema()["$defs"].(Schema)); got != 675 {
+		t.Fatalf("definition count = %d, want 675", got)
 	}
-	if got := len(WireTypeBindings()); got != 84 || len(ItemPayloadBindings()) != 5 {
-		t.Fatalf("bindings = %d methods/%d items, want 84/5", got, len(ItemPayloadBindings()))
+	if got := len(WireTypeBindings()); got != 85 || len(ItemPayloadBindings()) != 5 {
+		t.Fatalf("bindings = %d methods/%d items, want 85/5", got, len(ItemPayloadBindings()))
 	}
 }
 

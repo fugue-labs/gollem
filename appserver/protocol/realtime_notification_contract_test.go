@@ -224,11 +224,11 @@ func TestRealtimeNotificationsFailClosedAndRemainStandalone(t *testing.T) {
 			t.Fatalf("%s unexpectedly bound to item %s", binding.Type, binding.Kind)
 		}
 	}
-	if got := len(JSONSchema()["$defs"].(Schema)); got != 673 {
-		t.Fatalf("definition count = %d, want 673", got)
+	if got := len(JSONSchema()["$defs"].(Schema)); got != 675 {
+		t.Fatalf("definition count = %d, want 675", got)
 	}
-	if len(Methods()) != 229 || len(WireTypeBindings()) != 84 || len(ItemPayloadBindings()) != 5 {
-		t.Fatalf("counts = %d methods/%d method bindings/%d item bindings; want 229/84/5", len(Methods()), len(WireTypeBindings()), len(ItemPayloadBindings()))
+	if len(Methods()) != 229 || len(WireTypeBindings()) != 85 || len(ItemPayloadBindings()) != 5 {
+		t.Fatalf("counts = %d methods/%d method bindings/%d item bindings; want 229/85/5", len(Methods()), len(WireTypeBindings()), len(ItemPayloadBindings()))
 	}
 }
 

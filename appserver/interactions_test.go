@@ -636,9 +636,18 @@ func TestToolListIncludesInteractions(t *testing.T) {
 	if err := json.Unmarshal(resp.Result, &tools); err != nil {
 		t.Fatalf("decode tool/list: %v", err)
 	}
-	if !containsCatalogTool(tools.Data, "interactions") {
-		t.Fatalf("tool/list missing interactions tool: %#v", tools.Data)
+	for _, tool := range tools.Data {
+		if tool.ID != "interactions" {
+			continue
+		}
+		for _, method := range tool.Methods {
+			if method == InteractionCurrentTimeRead {
+				return
+			}
+		}
+		t.Fatalf("interactions tool missing %q: %#v", InteractionCurrentTimeRead, tool)
 	}
+	t.Fatalf("tool/list missing interactions tool: %#v", tools.Data)
 }
 
 type interactionResult struct {
@@ -653,13 +662,4 @@ func mustInteractionJSON(t *testing.T, value any) json.RawMessage {
 		t.Fatalf("Marshal: %v", err)
 	}
 	return data
-}
-
-func containsCatalogTool(tools []catalog.Tool, id string) bool {
-	for _, tool := range tools {
-		if tool.ID == id {
-			return true
-		}
-	}
-	return false
 }

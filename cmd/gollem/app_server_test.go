@@ -1205,6 +1205,7 @@ func TestCLIAppServerRuntimeUsesScopedProcessAndGitTools(t *testing.T) {
 func TestCLIAppServerRuntimeUsesMCPAndSharedInteractionTools(t *testing.T) {
 	model := core.NewTestModel(
 		core.ToolCallResponseWithID("mcp_list_servers", `{}`, "call-cli-mcp-list"),
+		core.ToolCallResponseWithID("curr_time", `{}`, "call-cli-current-time"),
 		core.ToolCallResponseWithID("request_user_input", `{"prompt":"Choose","options":["one","two"]}`, "call-cli-input"),
 		core.TextResponse("interaction complete"),
 	)
@@ -1241,8 +1242,30 @@ func TestCLIAppServerRuntimeUsesMCPAndSharedInteractionTools(t *testing.T) {
 		t.Fatal("timed out waiting for runtime interaction")
 	}
 	requests := server.DrainRequests()
-	if len(requests) != 1 || requests[0].Method != appserver.InteractionRequestUserInput {
+	if len(requests) != 1 || requests[0].Method != appserver.InteractionCurrentTimeRead {
 		t.Fatalf("runtime interaction requests = %#v", requests)
+	}
+	var currentTimeParams protocol.CurrentTimeReadParams
+	if err := json.Unmarshal(requests[0].Params, &currentTimeParams); err != nil {
+		t.Fatalf("decode runtime current-time request: %v", err)
+	}
+	if currentTimeParams.ThreadID != started.Thread.ID || string(requests[0].Params) != `{"threadId":"`+started.Thread.ID+`"}` {
+		t.Fatalf("runtime current-time request = %#v raw=%s", currentTimeParams, requests[0].Params)
+	}
+	if err := server.HandleResponse(context.Background(), protocol.Response{
+		ID:     requests[0].ID,
+		Result: json.RawMessage(`{"currentTimeAt":1781717655}`),
+	}); err != nil {
+		t.Fatalf("HandleResponse current time: %v", err)
+	}
+	select {
+	case <-server.RequestSignal():
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for runtime user input")
+	}
+	requests = server.DrainRequests()
+	if len(requests) != 1 || requests[0].Method != appserver.InteractionRequestUserInput {
+		t.Fatalf("runtime user-input requests = %#v", requests)
 	}
 	var inputParams protocol.ToolRequestUserInputParams
 	if err := json.Unmarshal(requests[0].Params, &inputParams); err != nil {
@@ -1276,7 +1299,10 @@ func TestCLIAppServerRuntimeUsesMCPAndSharedInteractionTools(t *testing.T) {
 	if itemsResp.Error != nil {
 		t.Fatalf("thread/items/list error: %v", itemsResp.Error)
 	}
-	if !strings.Contains(string(itemsResp.Result), `"tool":"mcp_list_servers"`) || !strings.Contains(string(itemsResp.Result), `"tool":"request_user_input"`) {
+	if !strings.Contains(string(itemsResp.Result), `"tool":"mcp_list_servers"`) ||
+		!strings.Contains(string(itemsResp.Result), `"tool":"curr_time"`) ||
+		!strings.Contains(string(itemsResp.Result), `It is 2026-06-17 17:34:15 UTC.`) ||
+		!strings.Contains(string(itemsResp.Result), `"tool":"request_user_input"`) {
 		t.Fatalf("runtime MCP/interaction items = %s", itemsResp.Result)
 	}
 }

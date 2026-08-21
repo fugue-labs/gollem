@@ -24,6 +24,31 @@ func NewModelRetryError(msg string) *ModelRetryError {
 	return &ModelRetryError{Message: msg}
 }
 
+// FatalToolError is returned by a tool handler when its failure must terminate
+// the agent run instead of becoming a tool result sent back to the model.
+type FatalToolError struct {
+	Err error
+}
+
+func (e *FatalToolError) Error() string {
+	if e == nil || e.Err == nil {
+		return "fatal tool error"
+	}
+	return e.Err.Error()
+}
+
+func (e *FatalToolError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// NewFatalToolError marks err as fatal to the current agent run.
+func NewFatalToolError(err error) *FatalToolError {
+	return &FatalToolError{Err: err}
+}
+
 // UserError represents a developer usage mistake.
 type UserError struct {
 	Message string

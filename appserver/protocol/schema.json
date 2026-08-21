@@ -6966,6 +6966,34 @@
       ],
       "type": "object"
     },
+    "CurrentTimeReadParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "CurrentTimeReadParams",
+      "type": "object"
+    },
+    "CurrentTimeReadResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "currentTimeAt": {
+          "description": "Current time as whole Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "currentTimeAt"
+      ],
+      "title": "CurrentTimeReadResponse",
+      "type": "object"
+    },
     "DaemonShutdownParams": {
       "additionalProperties": false,
       "properties": {
@@ -19229,6 +19257,31 @@
           "type": "object"
         },
         {
+          "description": "Read the current time from an external clock owned by the client.",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/RequestId"
+            },
+            "method": {
+              "enum": [
+                "currentTime/read"
+              ],
+              "title": "CurrentTime/readRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/$defs/CurrentTimeReadParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "CurrentTime/readRequest",
+          "type": "object"
+        },
+        {
           "description": "DEPRECATED APIs below Request to approve a patch. This request is used for Turns started via the legacy APIs (i.e. SendUserTurn, SendUserMessage).",
           "properties": {
             "id": {
@@ -26914,7 +26967,7 @@
     {
       "method": "currentTime/read",
       "surface": "server-request",
-      "state": "blocked",
+      "state": "implemented",
       "source": "protocol crate:common.rs:1505"
     },
     {
@@ -27441,6 +27494,16 @@
       ],
       "result": [
         "McpServerElicitationRequestResponse"
+      ]
+    },
+    {
+      "method": "currentTime/read",
+      "surface": "server-request",
+      "params": [
+        "CurrentTimeReadParams"
+      ],
+      "result": [
+        "CurrentTimeReadResponse"
       ]
     },
     {

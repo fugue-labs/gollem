@@ -811,6 +811,14 @@ type deferredToolPart struct {
 
 func (d deferredToolPart) requestPartKind() string { return "deferred-tool" }
 
+// fatalToolPart carries a fatal handler error through the tool scheduler. It is
+// intercepted before request parts are appended to conversation history.
+type fatalToolPart struct {
+	Err error
+}
+
+func (f fatalToolPart) requestPartKind() string { return "fatal-tool" }
+
 // processResponse handles a model response: executes tool calls or extracts final result.
 //
 //nolint:cyclop
@@ -1247,6 +1255,11 @@ func (a *Agent[T]) executeFunctionTools(
 				}(ic)
 			}
 			wg.Wait()
+			for _, ic := range batch.calls {
+				if fatal, ok := results[ic.idx].(fatalToolPart); ok {
+					return nil, fatal.Err
+				}
+			}
 			continue
 		}
 
@@ -1255,7 +1268,11 @@ func (a *Agent[T]) executeFunctionTools(
 				publishPendingFailures(pendingCallsFrom(batchIdx, callIdx), err.Error())
 				return nil, err
 			}
-			results[ic.idx] = a.executeSingleTool(ctx, state, ic.call, ic.tool, deps, prompt)
+			part := a.executeSingleTool(ctx, state, ic.call, ic.tool, deps, prompt)
+			if fatal, ok := part.(fatalToolPart); ok {
+				return nil, fatal.Err
+			}
+			results[ic.idx] = part
 		}
 	}
 
@@ -1508,6 +1525,13 @@ func (a *Agent[T]) executeSingleTool(
 	}
 
 	if err != nil {
+		// Fatal tool failures terminate the run without exposing the failure to
+		// the model or issuing another model request.
+		var fatalErr *FatalToolError
+		if errors.As(err, &fatalErr) {
+			return fatalToolPart{Err: fatalErr}
+		}
+
 		// Check for CallDeferred.
 		var deferredErr *CallDeferred
 		if errors.As(err, &deferredErr) {

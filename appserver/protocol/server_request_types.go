@@ -62,6 +62,11 @@ var serverRequestVariants = []serverRequestVariant{
 		ParamType:   "AttestationGenerateParams",
 	},
 	{
+		Method: "currentTime/read", Title: "CurrentTime/readRequest",
+		Description: "Read the current time from an external clock owned by the client.",
+		ParamType:   "CurrentTimeReadParams",
+	},
+	{
 		Method: "applyPatchApproval", Title: "ApplyPatchApprovalRequest",
 		Description: "DEPRECATED APIs below Request to approve a patch. This request is used for Turns started via the legacy APIs (i.e. SendUserTurn, SendUserMessage).",
 		ParamType:   "ApplyPatchApprovalParams",
@@ -132,6 +137,8 @@ func canonicalServerRequestParams(method string, raw json.RawMessage) (json.RawM
 		return decodeServerRequestParams[ChatgptAuthTokensRefreshParams](method, raw)
 	case "attestation/generate":
 		return decodeServerRequestParams[AttestationGenerateParams](method, raw)
+	case "currentTime/read":
+		return decodeServerRequestParams[CurrentTimeReadParams](method, raw)
 	case "applyPatchApproval":
 		return decodeServerRequestParams[ApplyPatchApprovalParams](method, raw)
 	case "execCommandApproval":

@@ -8,17 +8,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fugue-labs/gollem/appserver/protocol"
 	"github.com/fugue-labs/gollem/core"
 )
 
 const (
 	runtimeInteractionToolNamespace   = "interactions"
+	runtimeCurrentTimeToolNamespace   = "clock"
+	runtimeCurrentTimeToolName        = "curr_time"
 	runtimeInteractionPayloadMaxBytes = 64 * 1024
 	runtimeInteractionPromptMaxBytes  = 8 * 1024
 	runtimeInteractionMaxOptions      = 64
 	runtimeInteractionDefaultTimeout  = 5 * time.Minute
 	runtimeInteractionMaxTimeout      = 15 * time.Minute
+	runtimeCurrentTimeRequestTimeout  = 10 * time.Second
 )
+
+type runtimeCurrentTimeParams struct{}
 
 type runtimeUserInputParams struct {
 	Prompt         string         `json:"prompt"`
@@ -58,6 +64,29 @@ func InteractionRuntimeTools(service *InteractionService) []core.Tool {
 		return nil
 	}
 	tools := []core.Tool{
+		core.FuncTool[runtimeCurrentTimeParams](
+			runtimeCurrentTimeToolName,
+			"Return the current time in UTC.",
+			func(ctx context.Context, _ *core.RunContext, _ runtimeCurrentTimeParams) (string, error) {
+				turn := runtimeTurnContextFrom(ctx)
+				if strings.TrimSpace(turn.ThreadID) == "" {
+					return "", fatalCurrentTimeError(errors.New("current-time tool requires an active thread"))
+				}
+				requestCtx, cancel := context.WithTimeout(ctx, runtimeCurrentTimeRequestTimeout)
+				defer cancel()
+				response, err := service.RequestCurrentTime(requestCtx, CurrentTimeRequest{ThreadID: turn.ThreadID})
+				if err != nil {
+					return "", fatalCurrentTimeError(err)
+				}
+				var result protocol.CurrentTimeReadResponse
+				if err := json.Unmarshal(response.Result, &result); err != nil {
+					return "", fatalCurrentTimeError(fmt.Errorf("decode current-time response: %w", err))
+				}
+				return time.Unix(result.CurrentTimeAt, 0).UTC().Format("It is 2006-01-02 15:04:05 UTC."), nil
+			},
+			core.WithToolSequential(true),
+			core.WithToolTimeout(runtimeCurrentTimeRequestTimeout+time.Second),
+		),
 		core.FuncTool[runtimeUserInputParams](
 			"request_user_input",
 			"Request structured input from the connected client and wait for its JSON response.",
@@ -177,9 +206,17 @@ func InteractionRuntimeTools(service *InteractionService) []core.Tool {
 		),
 	}
 	for i := range tools {
-		tools[i].Definition.Namespace = runtimeInteractionToolNamespace
+		if tools[i].Definition.Name == runtimeCurrentTimeToolName {
+			tools[i].Definition.Namespace = runtimeCurrentTimeToolNamespace
+		} else {
+			tools[i].Definition.Namespace = runtimeInteractionToolNamespace
+		}
 	}
 	return tools
+}
+
+func fatalCurrentTimeError(err error) error {
+	return core.NewFatalToolError(fmt.Errorf("current_time failed: %w", err))
 }
 
 func validateRuntimeInteractionPayload(value any) error {

@@ -123,6 +123,7 @@ func TestMethodRegistryCountsAndKeyMethods(t *testing.T) {
 	assertMethod(t, "item/tool/call", SurfaceServerRequest, MethodImplemented)
 	assertMethod(t, "item/tool/requestUserInput", SurfaceServerRequest, MethodImplemented)
 	assertMethod(t, "mcpServer/elicitation/request", SurfaceServerRequest, MethodImplemented)
+	assertMethod(t, "currentTime/read", SurfaceServerRequest, MethodImplemented)
 	assertMethod(t, "approval/respond", SurfaceGollemExtension, MethodImplemented)
 	assertMethod(t, "feedback/upload", SurfaceClientRequest, MethodNotApplicable)
 	assertMethod(t, "initialized", SurfaceClientNotification, MethodImplemented)

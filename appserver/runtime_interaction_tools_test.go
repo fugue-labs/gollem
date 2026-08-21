@@ -15,24 +15,199 @@ import (
 
 func TestInteractionRuntimeToolsExposeStructuredRequests(t *testing.T) {
 	tools := InteractionRuntimeTools(NewInteractionService())
-	want := map[string]struct{}{
-		"request_user_input":      {},
-		"call_client_tool":        {},
-		"request_mcp_elicitation": {},
+	want := map[string]string{
+		"curr_time":               runtimeCurrentTimeToolNamespace,
+		"request_user_input":      runtimeInteractionToolNamespace,
+		"call_client_tool":        runtimeInteractionToolNamespace,
+		"request_mcp_elicitation": runtimeInteractionToolNamespace,
 	}
 	if len(tools) != len(want) {
 		t.Fatalf("runtime interaction tools = %d, want %d", len(tools), len(want))
 	}
 	for _, tool := range tools {
-		if _, ok := want[tool.Definition.Name]; !ok {
+		namespace, ok := want[tool.Definition.Name]
+		if !ok {
 			t.Fatalf("unexpected runtime interaction tool %q", tool.Definition.Name)
 		}
-		if tool.Definition.Namespace != runtimeInteractionToolNamespace || !tool.Definition.Sequential || tool.Definition.ConcurrencySafe {
+		if tool.Definition.Namespace != namespace || !tool.Definition.Sequential || tool.Definition.ConcurrencySafe {
 			t.Fatalf("tool %q namespace/scheduling = %q sequential=%v concurrencySafe=%v", tool.Definition.Name, tool.Definition.Namespace, tool.Definition.Sequential, tool.Definition.ConcurrencySafe)
 		}
 	}
 	if InteractionRuntimeTools(nil) != nil {
 		t.Fatal("nil interaction service should expose no tools")
+	}
+}
+
+func TestInteractionRuntimeCurrentTimeUsesExactRequest(t *testing.T) {
+	interactions := NewInteractionService()
+	server := readyServer(WithInteractionService(interactions))
+	tool := findRuntimeToolByName(t, InteractionRuntimeTools(interactions), runtimeCurrentTimeToolName)
+	resultCh := make(chan struct {
+		result any
+		err    error
+	}, 1)
+	go func() {
+		result, err := tool.Handler(
+			withRuntimeTurnContext(context.Background(), "thread-clock", "turn-clock"),
+			&core.RunContext{ToolCallID: "call-clock", ToolName: runtimeCurrentTimeToolName},
+			`{}`,
+		)
+		resultCh <- struct {
+			result any
+			err    error
+		}{result: result, err: err}
+	}()
+
+	request := waitForServerRequest(t, server)
+	if request.Method != InteractionCurrentTimeRead {
+		t.Fatalf("request method = %q, want %q", request.Method, InteractionCurrentTimeRead)
+	}
+	var params protocol.CurrentTimeReadParams
+	if err := json.Unmarshal(request.Params, &params); err != nil {
+		t.Fatalf("decode current-time params: %v", err)
+	}
+	if params.ThreadID != "thread-clock" || string(request.Params) != `{"threadId":"thread-clock"}` {
+		t.Fatalf("current-time params = %#v raw=%s", params, request.Params)
+	}
+	if err := server.HandleResponse(context.Background(), protocol.Response{
+		ID:     request.ID,
+		Result: json.RawMessage(`{"currentTimeAt":1781717655}`),
+	}); err != nil {
+		t.Fatalf("HandleResponse: %v", err)
+	}
+	got := <-resultCh
+	if got.err != nil {
+		t.Fatalf("current_time: %v", got.err)
+	}
+	result, ok := got.result.(string)
+	if !ok || result != "It is 2026-06-17 17:34:15 UTC." {
+		t.Fatalf("curr_time result = %#v", got.result)
+	}
+}
+
+func TestInteractionRuntimeCurrentTimeRejectsMissingThreadAndMalformedResponse(t *testing.T) {
+	interactions := NewInteractionService()
+	tool := findRuntimeToolByName(t, InteractionRuntimeTools(interactions), runtimeCurrentTimeToolName)
+	if _, err := tool.Handler(
+		context.Background(),
+		&core.RunContext{ToolCallID: "call-no-thread", ToolName: runtimeCurrentTimeToolName},
+		`{}`,
+	); err == nil || !strings.Contains(err.Error(), "thread") {
+		t.Fatalf("missing-thread error = %v", err)
+	}
+
+	server := readyServer(WithInteractionService(interactions))
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := tool.Handler(
+			withRuntimeTurnContext(context.Background(), "thread-clock", "turn-clock"),
+			&core.RunContext{ToolCallID: "call-bad-clock", ToolName: runtimeCurrentTimeToolName},
+			`{}`,
+		)
+		resultCh <- err
+	}()
+	request := waitForServerRequest(t, server)
+	if err := server.HandleResponse(context.Background(), protocol.Response{
+		ID:     request.ID,
+		Result: json.RawMessage(`{"currentTimeAt":1.5}`),
+	}); err == nil {
+		t.Fatal("malformed current-time response succeeded")
+	}
+	if err := <-resultCh; err == nil || !errors.Is(err, ErrInteractionRequestFailed) {
+		t.Fatalf("runtime malformed-response error = %v", err)
+	}
+}
+
+func TestInteractionRuntimeCurrentTimeCancellationIsFatal(t *testing.T) {
+	tool := findRuntimeToolByName(t, InteractionRuntimeTools(NewInteractionService()), runtimeCurrentTimeToolName)
+	tests := []struct {
+		name string
+		ctx  func() (context.Context, context.CancelFunc)
+		want error
+	}{
+		{
+			name: "canceled",
+			ctx: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, func() {}
+			},
+			want: context.Canceled,
+		},
+		{
+			name: "deadline exceeded",
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			},
+			want: context.DeadlineExceeded,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := tt.ctx()
+			defer cancel()
+			_, err := tool.Handler(
+				withRuntimeTurnContext(ctx, "thread-clock", "turn-clock"),
+				&core.RunContext{ToolCallID: "call-clock", ToolName: runtimeCurrentTimeToolName},
+				`{}`,
+			)
+			var fatal *core.FatalToolError
+			if !errors.As(err, &fatal) || !errors.Is(err, tt.want) {
+				t.Fatalf("current_time error = %v, want fatal %v", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestServerRuntimeCurrentTimeFailureStopsTurnBeforeNextModelRequest(t *testing.T) {
+	ctx := context.Background()
+	st := newRuntimeTestStore(t)
+	interactions := NewInteractionService()
+	model := core.NewTestModel(
+		core.ToolCallResponseWithID(runtimeCurrentTimeToolName, `{}`, "call-clock"),
+		core.TextResponse("must not be requested"),
+	)
+	server := readyServer(
+		WithStore(st),
+		WithInteractionService(interactions),
+		WithRuntimeService(NewRuntimeService(
+			WithRuntimeModel(model, RuntimeModelInfo{ProviderID: "test", Model: "test-model"}),
+			WithRuntimeTools(InteractionRuntimeTools(interactions)...),
+		)),
+	)
+
+	resp := server.HandleRequest(ctx, request("thread/start", map[string]any{"prompt": "read the clock"}))
+	if resp.Error != nil {
+		t.Fatalf("thread/start error: %v", resp.Error)
+	}
+	var started struct {
+		Thread *store.Thread `json:"thread"`
+		Turn   *store.Turn   `json:"turn"`
+	}
+	decodeResult(t, resp, &started)
+
+	serverRequest := waitForServerRequest(t, server)
+	if serverRequest.Method != InteractionCurrentTimeRead {
+		t.Fatalf("request method = %q, want %q", serverRequest.Method, InteractionCurrentTimeRead)
+	}
+	if err := server.HandleResponse(ctx, protocol.Response{
+		ID:     serverRequest.ID,
+		Result: json.RawMessage(`{"currentTimeAt":1.5}`),
+	}); err == nil {
+		t.Fatal("malformed current-time response succeeded")
+	}
+	waitForNotificationSet(t, server, "turn/completed")
+
+	turn, err := st.GetTurn(ctx, started.Turn.ID)
+	if err != nil {
+		t.Fatalf("GetTurn: %v", err)
+	}
+	if turn.Status != store.TurnFailed {
+		t.Fatalf("turn status = %q, want failed", turn.Status)
+	}
+	if calls := len(model.Calls()); calls != 1 {
+		t.Fatalf("model calls = %d, want 1", calls)
 	}
 }
 

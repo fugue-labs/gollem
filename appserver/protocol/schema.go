@@ -210,6 +210,8 @@ func wireSchemaDefinitionTypes() []wireSchemaDefinition {
 		{Name: "ConfiguredHookMatcherGroup", Type: reflect.TypeFor[ConfiguredHookMatcherGroup]()},
 		{Name: "ContentItem", Type: reflect.TypeFor[ContentItem]()},
 		{Name: "ConversationTextRole", Type: reflect.TypeFor[ConversationTextRole]()},
+		{Name: "CurrentTimeReadParams", Type: reflect.TypeFor[CurrentTimeReadParams]()},
+		{Name: "CurrentTimeReadResponse", Type: reflect.TypeFor[CurrentTimeReadResponse]()},
 		{Name: "ConsumeAccountRateLimitResetCreditOutcome", Type: reflect.TypeFor[ConsumeAccountRateLimitResetCreditOutcome]()},
 		{Name: "ConsumeAccountRateLimitResetCreditParams", Type: reflect.TypeFor[ConsumeAccountRateLimitResetCreditParams]()},
 		{Name: "ConsumeAccountRateLimitResetCreditResponse", Type: reflect.TypeFor[ConsumeAccountRateLimitResetCreditResponse]()},
@@ -1013,6 +1015,8 @@ func wireSchemasForDefinitions(definitions []wireSchemaDefinition) Schema {
 		"title":   "AttestationGenerateParams",
 		"type":    "object",
 	}
+	schemas["CurrentTimeReadParams"] = currentTimeReadParamsSchema()
+	schemas["CurrentTimeReadResponse"] = currentTimeReadResponseSchema()
 	schemas["AmazonBedrockCredentialSource"] = stringEnumSchema(
 		string(AmazonBedrockCredentialSourceCodexManaged),
 		string(AmazonBedrockCredentialSourceAWSManaged),

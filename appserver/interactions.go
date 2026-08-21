@@ -18,6 +18,7 @@ const (
 	InteractionRequestUserInput = "item/tool/requestUserInput"
 	InteractionToolCall         = "item/tool/call"
 	InteractionMCPElicitation   = "mcpServer/elicitation/request"
+	InteractionCurrentTimeRead  = "currentTime/read"
 )
 
 // InteractionService publishes runtime server-to-client interaction requests
@@ -93,6 +94,10 @@ type MCPElicitationRequest struct {
 	Message  string         `json:"message"`
 	Schema   map[string]any `json:"schema,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+type CurrentTimeRequest struct {
+	ThreadID string `json:"threadId"`
 }
 
 func NewInteractionService() *InteractionService {
@@ -226,6 +231,18 @@ func (s *InteractionService) RequestMCPElicitation(ctx context.Context, req MCPE
 	})
 }
 
+func (s *InteractionService) RequestCurrentTime(ctx context.Context, req CurrentTimeRequest) (InteractionResponse, error) {
+	threadID := strings.TrimSpace(req.ThreadID)
+	if threadID == "" {
+		return InteractionResponse{}, errors.New("current-time request requires a thread id")
+	}
+	return s.Request(ctx, InteractionRequest{
+		Method:   InteractionCurrentTimeRead,
+		ThreadID: threadID,
+		Params:   map[string]any{"threadId": threadID},
+	})
+}
+
 func (s *InteractionService) Request(ctx context.Context, req InteractionRequest) (InteractionResponse, error) {
 	if s == nil || s.requests == nil {
 		return InteractionResponse{}, errors.New("interaction service is not configured")
@@ -253,29 +270,33 @@ func (s *InteractionService) Request(ctx context.Context, req InteractionRequest
 		ItemID:    itemID,
 	}
 	payload := cloneStringAnyMap(req.Params)
-	if method != InteractionRequestUserInput && method != InteractionToolCall && method != InteractionMCPElicitation {
-		payload["requestId"] = requestID
-	}
-	payload["threadId"] = meta.ThreadID
-	if method == InteractionMCPElicitation && meta.TurnID == "" {
-		payload["turnId"] = nil
+	if method == InteractionCurrentTimeRead {
+		payload = map[string]any{"threadId": meta.ThreadID}
 	} else {
-		payload["turnId"] = meta.TurnID
-	}
-	if method != InteractionToolCall && method != InteractionMCPElicitation {
-		payload["itemId"] = meta.ItemID
-	}
-	if method != InteractionRequestUserInput && method != InteractionToolCall && method != InteractionMCPElicitation {
-		payload["startedAtMs"] = time.Now().UnixMilli()
-	}
-	if method == InteractionToolCall {
-		callID, _ := payload["callId"].(string)
-		if strings.TrimSpace(callID) == "" {
-			payload["callId"] = firstNonEmpty(meta.ItemID, requestID)
+		if method != InteractionRequestUserInput && method != InteractionToolCall && method != InteractionMCPElicitation {
+			payload["requestId"] = requestID
 		}
-	}
-	if method != InteractionRequestUserInput && method != InteractionToolCall && method != InteractionMCPElicitation && strings.TrimSpace(req.Reason) != "" {
-		payload["reason"] = strings.TrimSpace(req.Reason)
+		payload["threadId"] = meta.ThreadID
+		if method == InteractionMCPElicitation && meta.TurnID == "" {
+			payload["turnId"] = nil
+		} else {
+			payload["turnId"] = meta.TurnID
+		}
+		if method != InteractionToolCall && method != InteractionMCPElicitation {
+			payload["itemId"] = meta.ItemID
+		}
+		if method != InteractionRequestUserInput && method != InteractionToolCall && method != InteractionMCPElicitation {
+			payload["startedAtMs"] = time.Now().UnixMilli()
+		}
+		if method == InteractionToolCall {
+			callID, _ := payload["callId"].(string)
+			if strings.TrimSpace(callID) == "" {
+				payload["callId"] = firstNonEmpty(meta.ItemID, requestID)
+			}
+		}
+		if method != InteractionRequestUserInput && method != InteractionToolCall && method != InteractionMCPElicitation && strings.TrimSpace(req.Reason) != "" {
+			payload["reason"] = strings.TrimSpace(req.Reason)
+		}
 	}
 
 	pending := pendingInteraction{meta: meta, ch: make(chan InteractionResponse, 1)}
@@ -359,6 +380,11 @@ func validateInteractionResult(method string, result json.RawMessage) error {
 		if err := json.Unmarshal(result, &response); err != nil {
 			return fmt.Errorf("decode MCP elicitation response: %w", err)
 		}
+	case InteractionCurrentTimeRead:
+		var response protocol.CurrentTimeReadResponse
+		if err := json.Unmarshal(result, &response); err != nil {
+			return fmt.Errorf("decode current-time response: %w", err)
+		}
 	}
 	return nil
 }
@@ -372,7 +398,7 @@ func (s *InteractionService) nextRequestID() string {
 
 func isSupportedInteractionMethod(method string) bool {
 	switch method {
-	case InteractionRequestUserInput, InteractionToolCall, InteractionMCPElicitation:
+	case InteractionRequestUserInput, InteractionToolCall, InteractionMCPElicitation, InteractionCurrentTimeRead:
 		return true
 	default:
 		return false

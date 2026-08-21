@@ -55,8 +55,8 @@ func TestW3cTraceContextRemainsStandalone(t *testing.T) {
 			t.Fatalf("W3cTraceContext unexpectedly bound to %s", binding.Method)
 		}
 	}
-	if got := len(JSONSchema()["$defs"].(Schema)); got != 673 {
-		t.Fatalf("definition count = %d, want 673", got)
+	if got := len(JSONSchema()["$defs"].(Schema)); got != 675 {
+		t.Fatalf("definition count = %d, want 675", got)
 	}
 }
 
