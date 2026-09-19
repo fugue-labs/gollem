@@ -995,3 +995,40 @@ func TestNilCatalogMethodsDoNotPanic(t *testing.T) {
 		t.Fatal("nil catalog should expose the default env lookup")
 	}
 }
+
+func TestFilteredModelListMarksProviderDefault(t *testing.T) {
+	c := NewDefault(WithRegistry(sampleRegistry()), WithEnvLookup(mapEnv(nil)))
+	models, err := c.ListModels(ModelListParams{ProviderID: ProviderAnthropic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var defaults []string
+	for _, model := range models.Data {
+		if model.IsDefault {
+			defaults = append(defaults, model.ID)
+		}
+	}
+	if !slices.Equal(defaults, []string{"anthropic/claude-opus-5"}) {
+		t.Fatalf("filtered anthropic defaults = %v, want the provider default", defaults)
+	}
+}
+
+func TestFilteredModelListPrefersConfiguredProviderDefault(t *testing.T) {
+	c := NewDefault(WithRegistry(sampleRegistry()), WithEnvLookup(mapEnv(map[string]string{
+		"OPENAI_API_KEY":   "k",
+		"DEEPSEEK_API_KEY": "k",
+	})))
+	models, err := c.ListModels(ModelListParams{ProviderIDs: []string{ProviderAnthropic, ProviderDeepSeek}, IncludeHidden: boolPointer(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var defaults []string
+	for _, model := range models.Data {
+		if model.IsDefault {
+			defaults = append(defaults, model.ID)
+		}
+	}
+	if !slices.Equal(defaults, []string{"deepseek/deepseek-v4-pro"}) {
+		t.Fatalf("defaults = %v, want the configured deepseek default over unconfigured anthropic", defaults)
+	}
+}

@@ -852,6 +852,29 @@ func markDefaultModel(models []Model, providers []Provider) {
 			}
 		}
 	}
+	if !slices.ContainsFunc(models, func(model Model) bool { return model.ID == defaultID }) && len(models) > 0 {
+		// The global default is not in this (filtered) list. Use the
+		// default of the first configured provider present in the list,
+		// else of the provider the list starts with; never simply the
+		// first row, whose position depends on registry ordering.
+		listed := func(id string) bool {
+			return slices.ContainsFunc(models, func(model Model) bool { return model.ProviderID == id })
+		}
+		fallback := ""
+		for _, provider := range providers {
+			if !listed(provider.ID) {
+				continue
+			}
+			if provider.Configured {
+				fallback = provider.DefaultModelID
+				break
+			}
+			if provider.ID == models[0].ProviderID && fallback == "" {
+				fallback = provider.DefaultModelID
+			}
+		}
+		defaultID = fallback
+	}
 	for i := range models {
 		models[i].IsDefault = models[i].ID == defaultID
 	}
