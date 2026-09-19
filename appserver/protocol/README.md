@@ -786,8 +786,9 @@ The exact standalone `Model` parent composes that leaf layer without binding
 decoding accepts omitted Rust `Option` values and applies the pinned serde
 defaults for modalities, personality support, speed/service tiers, and the
 default service tier. Gollem's live catalog intentionally adds provider ids,
-capabilities, token limits, and provider-filter request extensions. The two
-models remain distinct until an explicit list adapter can preserve those live
+capabilities, token limits, optional list pricing (`pricing`, USD per one
+million tokens as published by the model registry), and provider-filter
+request extensions. The two models remain distinct until an explicit list adapter can preserve those live
 features without claiming that the extended response is the exact public
 contract.
 

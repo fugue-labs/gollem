@@ -26,6 +26,7 @@ import (
 	montygo "github.com/fugue-labs/monty-go"
 	"github.com/google/uuid"
 
+	"github.com/fugue-labs/gollem/appserver/catalog"
 	"github.com/fugue-labs/gollem/core"
 	"github.com/fugue-labs/gollem/ext/codetool"
 	"github.com/fugue-labs/gollem/ext/middleware"
@@ -332,11 +333,7 @@ func runAgent() {
 	}
 	if f.provider == "vertexai-anthropic" {
 		cacheTTL := strings.TrimSpace(os.Getenv("VERTEXAI_ANTHROPIC_PROMPT_CACHE_TTL"))
-		cacheEnabled := false
-		switch strings.ToLower(strings.TrimSpace(os.Getenv("VERTEXAI_ANTHROPIC_PROMPT_CACHE"))) {
-		case "1", "true", "yes", "on":
-			cacheEnabled = true
-		}
+		cacheEnabled := envBool("VERTEXAI_ANTHROPIC_PROMPT_CACHE", false)
 		if cacheTTL != "" {
 			cacheEnabled = true
 		}
@@ -2012,25 +2009,24 @@ func detectProvider() string {
 	if os.Getenv("GOOGLE_CLOUD_PROJECT") != "" {
 		return "vertexai"
 	}
+	if os.Getenv(openai.DeepSeekAPIKeyEnv) != "" {
+		return "deepseek"
+	}
 	return ""
 }
 
 // anthropicModelPrefersAdaptive reports whether the selected Claude model
 // should default to adaptive thinking instead of a manual budget: the 4.6
-// generation and newer (Opus/Sonnet 4.6, Opus 4.7/4.8, Fable, Mythos).
-// Manual budgets are rejected on 4.7+ and deprecated on 4.6. An empty
-// model means the provider default (Sonnet 4.6), which is adaptive-capable.
+// generation and newer (Opus/Sonnet 4.6, Opus 4.7/4.8, Fable, Mythos, and
+// the Claude 5 generation). Manual budgets are rejected on 4.7+ and Claude 5
+// and deprecated on 4.6. An empty model means the provider default, which is
+// adaptive-capable. The rule itself lives in the anthropic provider so the
+// CLI and the app-server catalog cannot drift from the request builder.
 func anthropicModelPrefersAdaptive(model string) bool {
-	m := strings.ToLower(strings.TrimSpace(model))
-	if m == "" || strings.Contains(m, "mythos") || strings.Contains(m, "fable") {
+	if strings.TrimSpace(model) == "" {
 		return true
 	}
-	for _, marker := range []string{"opus-4-6", "sonnet-4-6", "opus-4-7", "opus-4-8"} {
-		if strings.Contains(m, marker) {
-			return true
-		}
-	}
-	return false
+	return anthropic.SupportsAdaptiveThinking(model)
 }
 
 func deriveGeminiMaxOutputTokens() int {
@@ -2137,9 +2133,29 @@ func deriveRequestTimeout(runTimeout time.Duration) time.Duration {
 }
 
 func createModel(provider, modelName, location, project string, requestTimeout time.Duration) (core.Model, error) {
+	return createModelWith(nil, provider, modelName, location, project, requestTimeout)
+}
+
+// createModelWith is createModel with an explicit catalog. The catalog
+// resolves an empty model to the provider's catalog default and backs
+// registry-only providers. A nil catalog uses the process-wide one, built on
+// first use and only when one of those two lookups is needed.
+func createModelWith(catalogSvc *catalog.Catalog, provider, modelName, location, project string, requestTimeout time.Duration) (core.Model, error) {
 	// Use an HTTP client with a bounded per-request timeout so transient
 	// provider hangs fail fast and can be retried within the run budget.
 	httpClient := &http.Client{Timeout: requestTimeout}
+
+	// An empty model means the catalog's advertised default, so the model
+	// that was validated and shown is the one that runs. The test fixture and
+	// the local endpoint carry their own defaults.
+	if modelName == "" && provider != "test" && provider != "openai-compatible-local" {
+		if catalogSvc == nil {
+			catalogSvc = cliCatalog()
+		}
+		if name, ok := catalogSvc.DefaultModelName(provider); ok {
+			modelName = name
+		}
+	}
 
 	switch provider {
 	case "test":
@@ -2183,6 +2199,12 @@ func createModel(provider, modelName, location, project string, requestTimeout t
 			opts = append(opts, openai.WithModel(modelName))
 		}
 		return openai.NewXAI(opts...), nil
+	case "deepseek":
+		opts := []openai.Option{openai.WithHTTPClient(httpClient)}
+		if modelName != "" {
+			opts = append(opts, openai.WithModel(modelName))
+		}
+		return openai.NewDeepSeek(opts...), nil
 	case "vertexai":
 		opts := []vertexai.Option{vertexai.WithHTTPClient(httpClient)}
 		if modelName != "" {
@@ -2208,7 +2230,84 @@ func createModel(provider, modelName, location, project string, requestTimeout t
 		}
 		return vertexai_anthropic.New(opts...), nil
 	default:
-		return nil, fmt.Errorf("provider %q not supported (available: test, anthropic, openai, openai-compatible-local, xai, vertexai, vertexai-anthropic)", provider)
+		if catalogSvc == nil {
+			catalogSvc = cliCatalog()
+		}
+		endpoint, ok := catalogSvc.RuntimeEndpoint(provider)
+		if !ok {
+			return nil, fmt.Errorf("provider %q not supported (available: test, anthropic, openai, openai-compatible-local, xai, vertexai, vertexai-anthropic, deepseek, or a configured model-registry provider such as groq)", provider)
+		}
+		return newRegistryModel(endpoint, modelName, httpClient, catalogSvc.EnvLookup())
+	}
+}
+
+// envBool reads a boolean environment flag: 1/true/yes/on enable,
+// 0/false/no/off disable, anything else (including unset) yields the default.
+func envBool(name string, defaultValue bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultValue
+	}
+}
+
+var (
+	cliCatalogOnce sync.Once
+	cliCatalogSvc  *catalog.Catalog
+)
+
+// cliCatalog is the process-wide catalog for CLI commands that were not given
+// one; it is built at most once per process.
+func cliCatalog() *catalog.Catalog {
+	cliCatalogOnce.Do(func() { cliCatalogSvc = newAppServerCatalog() })
+	return cliCatalogSvc
+}
+
+// newRegistryModel constructs a model for a registry-backed provider that
+// Gollem drives through its generic Anthropic or OpenAI transport. The API
+// key is read from the environment variable the registry names; it is never
+// embedded in the catalog.
+func newRegistryModel(endpoint catalog.RuntimeEndpoint, modelName string, httpClient *http.Client, lookup catalog.EnvLookup) (core.Model, error) {
+	if lookup == nil {
+		lookup = os.LookupEnv
+	}
+	value, _ := lookup(endpoint.APIKeyEnv)
+	apiKey := strings.TrimSpace(value)
+	if apiKey == "" {
+		return nil, fmt.Errorf("provider %q requires %s to be set", endpoint.ProviderID, endpoint.APIKeyEnv)
+	}
+	if modelName == "" {
+		modelName = endpoint.DefaultModel
+	}
+	if modelName == "" {
+		return nil, fmt.Errorf("provider %q has no default model; pass --model", endpoint.ProviderID)
+	}
+	switch endpoint.Family {
+	case catalog.RuntimeFamilyAnthropic:
+		return anthropic.New(
+			anthropic.WithHTTPClient(httpClient),
+			anthropic.WithBaseURL(endpoint.BaseURL),
+			anthropic.WithAPIKey(apiKey),
+			anthropic.WithModel(modelName),
+		), nil
+	case catalog.RuntimeFamilyOpenAI:
+		opts := []openai.Option{
+			openai.WithoutOpenAIEnvironment(),
+			openai.WithHTTPClient(httpClient),
+			openai.WithBaseURL(endpoint.BaseURL),
+			openai.WithAPIKey(apiKey),
+			openai.WithModel(modelName),
+			openai.WithExtraHeaders(endpoint.Headers),
+		}
+		if endpoint.ChatCompletionsOnly {
+			opts = append(opts, openai.WithChatCompletionsOnly())
+		}
+		return openai.New(opts...), nil
+	default:
+		return nil, fmt.Errorf("provider %q uses unsupported transport family %q", endpoint.ProviderID, endpoint.Family)
 	}
 }
 
@@ -2271,8 +2370,10 @@ Usage:
 
 Options:
   --provider <name>        Model provider (auto-detected from API keys if not set)
-                           Available: anthropic, openai, vertexai, vertexai-anthropic
-  --model <name>           Model name (uses provider default if not set)
+                           Available: anthropic, openai, xai, deepseek, vertexai, vertexai-anthropic,
+                           or any model-registry provider whose API key is set (e.g. groq)
+  --model <name>           Model name (uses the model catalog's default for the provider if not set;
+                           anthropic defaults to claude-opus-5)
   --location <region>      GCP region for vertexai providers (default: us-central1)
   --project <id>           GCP project ID for vertexai providers (default: GOOGLE_CLOUD_PROJECT)
   --workdir <path>         Working directory (default: current directory)
@@ -2336,8 +2437,9 @@ Usage:
 Options:
   --port <n>              Local HTTP port to listen on (default: 8080)
   --provider <name>       Model provider (auto-detected from API keys if not set)
-                          Available: anthropic, openai, vertexai, vertexai-anthropic
-  --model <name>          Model name (uses provider default if not set)
+                          Available: anthropic, openai, xai, deepseek, vertexai, vertexai-anthropic,
+                          or any model-registry provider whose API key is set (e.g. groq)
+  --model <name>          Model name (uses the model catalog's default for the provider if not set)
   --location <region>     GCP region for vertexai providers (default: us-central1)
   --project <id>          GCP project ID for vertexai providers (default: GOOGLE_CLOUD_PROJECT)
   --workdir <path>        Working directory for tool-enabled runs (default: current directory)

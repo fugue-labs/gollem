@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -83,6 +84,11 @@ type Provider struct {
 	wsHTTPFallbackSet       bool
 	useResponses            bool
 	forceChatCompletions    bool
+	extraHeaders            map[string]string
+	deepseek                bool
+	noOpenAIKeyFallback     bool
+	ignoreOpenAIEnv         bool
+	maxTokensSet            bool
 	profileOverride         *modelutil.ModelProfile
 	redactEndpointErrors    bool
 	disableToolSearch       bool
@@ -124,6 +130,38 @@ func WithBaseURL(url string) Option {
 	}
 }
 
+// WithExtraHeaders adds static request headers, for example the attribution
+// headers some OpenAI-compatible gateways require. Reserved headers
+// (Authorization, Content-Type) cannot be overridden and are ignored.
+func WithExtraHeaders(headers map[string]string) Option {
+	return func(p *Provider) {
+		if len(headers) == 0 {
+			return
+		}
+		if p.extraHeaders == nil {
+			p.extraHeaders = make(map[string]string, len(headers))
+		}
+		maps.Copy(p.extraHeaders, headers)
+		for name := range p.extraHeaders {
+			switch http.CanonicalHeaderKey(name) {
+			case "Authorization", "Content-Type":
+				delete(p.extraHeaders, name)
+			}
+		}
+	}
+}
+
+// WithChatCompletionsOnly pins the provider to the Chat Completions API. Use
+// it for OpenAI-compatible endpoints that do not implement the Responses API;
+// it also disables the OpenAI-only environment overrides (prompt cache key,
+// service tier, websocket transport, reasoning summaries).
+func WithChatCompletionsOnly() Option {
+	return func(p *Provider) {
+		p.forceChatCompletions = true
+		p.useResponses = false
+	}
+}
+
 // WithHTTPClient sets a custom HTTP client.
 func WithHTTPClient(c *http.Client) Option {
 	return func(p *Provider) {
@@ -135,6 +173,17 @@ func WithHTTPClient(c *http.Client) Option {
 func WithMaxTokens(n int) Option {
 	return func(p *Provider) {
 		p.maxTokens = n
+		p.maxTokensSet = true
+	}
+}
+
+// WithoutOpenAIEnvironment ignores the OPENAI_* environment overrides that
+// only make sense against OpenAI itself (service tier, prompt cache key and
+// retention, websocket transport, reasoning summaries, text verbosity). Use
+// it for third-party endpoints that happen to speak OpenAI's API shape.
+func WithoutOpenAIEnvironment() Option {
+	return func(p *Provider) {
+		p.ignoreOpenAIEnv = true
 	}
 }
 
@@ -315,7 +364,7 @@ func New(opts ...Option) *Provider {
 	for _, opt := range opts {
 		opt(p)
 	}
-	if p.apiKey == "" {
+	if p.apiKey == "" && !p.noOpenAIKeyFallback {
 		p.apiKey = os.Getenv("OPENAI_API_KEY")
 	}
 	// Support OPENAI_BASE_URL env var (standard for OpenAI-compatible APIs).
@@ -325,7 +374,8 @@ func New(opts ...Option) *Provider {
 			p.baseURL = envURL
 		}
 	}
-	if !p.forceChatCompletions {
+	openaiEnv := !p.forceChatCompletions && !p.ignoreOpenAIEnv
+	if openaiEnv {
 		if p.promptCacheKey == "" {
 			p.promptCacheKey = os.Getenv("OPENAI_PROMPT_CACHE_KEY")
 		}
@@ -340,15 +390,15 @@ func New(opts ...Option) *Provider {
 		}
 	}
 	p.transport = normalizeTransport(p.transport)
-	if !p.forceChatCompletions && !p.wsHTTPFallbackSet {
+	if openaiEnv && !p.wsHTTPFallbackSet {
 		if raw := strings.TrimSpace(os.Getenv("OPENAI_WEBSOCKET_HTTP_FALLBACK")); raw != "" {
 			p.wsHTTPFallback = isTruthy(raw)
 		}
 	}
-	if !p.forceChatCompletions && p.reasoningSummary == "" {
+	if openaiEnv && p.reasoningSummary == "" {
 		p.reasoningSummary = os.Getenv("OPENAI_REASONING_SUMMARY")
 	}
-	if !p.forceChatCompletions && p.textVerbosity == "" {
+	if openaiEnv && p.textVerbosity == "" {
 		p.textVerbosity = os.Getenv("OPENAI_TEXT_VERBOSITY")
 	}
 	// OPENAI_REQUEST_TRACE=1 installs the default stderr request observer when
@@ -432,6 +482,11 @@ func (p *Provider) NewSession() core.Model {
 		wsHTTPFallbackSet:       p.wsHTTPFallbackSet,
 		useResponses:            p.useResponses,
 		forceChatCompletions:    p.forceChatCompletions,
+		extraHeaders:            p.extraHeaders,
+		deepseek:                p.deepseek,
+		noOpenAIKeyFallback:     p.noOpenAIKeyFallback,
+		ignoreOpenAIEnv:         p.ignoreOpenAIEnv,
+		maxTokensSet:            p.maxTokensSet,
 		profileOverride:         p.profileOverride,
 		redactEndpointErrors:    p.redactEndpointErrors,
 		disableToolSearch:       p.disableToolSearch,
@@ -485,6 +540,12 @@ func (p *Provider) Request(ctx context.Context, messages []core.ModelMessage, se
 	}
 	p.applyChatPromptCacheSettings(req, settings)
 	req.ServiceTier = p.serviceTier
+	if p.deepseek {
+		if err := applyDeepSeekRequest(req, settings, p.configuredMaxTokens()); err != nil {
+			ri.recordError(err)
+			return nil, deepSeekRequestError(err)
+		}
+	}
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -536,6 +597,13 @@ func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessa
 	}
 	p.applyChatPromptCacheSettings(req, settings)
 	req.ServiceTier = p.serviceTier
+	if p.deepseek {
+		if err := applyDeepSeekRequest(req, settings, p.configuredMaxTokens()); err != nil {
+			ri.recordError(err)
+			ri.finish()
+			return nil, deepSeekRequestError(err)
+		}
+	}
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -562,7 +630,11 @@ func (p *Provider) RequestStream(ctx context.Context, messages []core.ModelMessa
 		return nil, err
 	}
 
-	return newBoundStreamedResponse(resp.Body, p.model, p.resolveResponseModel, ri), nil
+	stream := newBoundStreamedResponse(resp.Body, p.model, p.resolveResponseModel, ri)
+	// DeepSeek interleaves reasoning with text and tool calls within one
+	// response; other Chat Completions servers keep one text part.
+	stream.interleaveParts = p.deepseek
+	return stream, nil
 }
 
 func (p *Provider) promptCacheEnabled(settings *core.ModelSettings) bool {
@@ -591,7 +663,7 @@ func (p *Provider) responsesEP() string {
 // error. Retry logic is handled at the model level by modelutil.RetryModel,
 // which uses this error's RetryAfter field for backoff.
 func (p *Provider) doRequest(ctx context.Context, endpoint string, body []byte, ri *requestInstrumentation) (*http.Response, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+endpoint, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpointURL(endpoint), bytes.NewReader(body))
 	if err != nil {
 		if p.redactEndpointErrors {
 			return nil, ErrLocalEndpointUnavailable
@@ -717,6 +789,9 @@ func (p *Provider) setHeaders(req *http.Request, ri *requestInstrumentation) err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
+	for name, value := range p.extraHeaders {
+		req.Header.Set(name, value)
+	}
 	if p.hasChatGPTAuth() {
 		if p.chatgptAccountID != "" {
 			req.Header.Set("ChatGPT-Account-ID", p.chatgptAccountID)
@@ -837,6 +912,43 @@ func isChatCompletionsMismatch(err error) bool {
 	return false
 }
 
+// endpointURL joins the base URL with an API path. Endpoint paths carry the
+// "/v1" prefix OpenAI uses; when the configured base URL already ends in a
+// version segment (for example ".../paas/v4" or ".../v1beta") that prefix is
+// dropped so the request lands on "<base>/chat/completions".
+func (p *Provider) endpointURL(endpoint string) string {
+	return p.baseURL + p.endpointPath(endpoint)
+}
+
+// endpointPath is the API path to append to the base URL, shared by the HTTP
+// and websocket transports so both reach the same endpoint.
+func (p *Provider) endpointPath(endpoint string) string {
+	if baseURLHasVersionSegment(p.baseURL) {
+		return strings.TrimPrefix(endpoint, "/v1")
+	}
+	return endpoint
+}
+
+// baseURLHasVersionSegment reports whether the last path segment of baseURL
+// looks like an API version ("v1", "v4", "v1beta", ...).
+func baseURLHasVersionSegment(baseURL string) bool {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	last := path[strings.LastIndex(path, "/")+1:]
+	if len(last) < 2 || last[0] != 'v' || last[1] < '0' || last[1] > '9' {
+		return false
+	}
+	for _, r := range last[1:] {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'z') {
+			return false
+		}
+	}
+	return true
+}
+
 // isOpenAIEndpoint reports whether the provider is configured for the
 // official OpenAI API (as opposed to a compatible third-party like xAI).
 func (p *Provider) isOpenAIEndpoint() bool {
@@ -861,6 +973,14 @@ func (p *Provider) hasChatGPTAuth() bool {
 func (p *Provider) Profile() modelutil.ModelProfile {
 	if p.profileOverride != nil {
 		return *p.profileOverride
+	}
+	if p.deepseek {
+		// DeepSeek offers JSON mode but not schema-constrained output.
+		return modelutil.ModelProfile{
+			SupportsToolCalls: true,
+			SupportsStreaming: true,
+			SupportsVision:    DeepSeekModelSupportsVision(p.model),
+		}
 	}
 	return modelutil.ModelProfile{
 		SupportsToolCalls:        true,

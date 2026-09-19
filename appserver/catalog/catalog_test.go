@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	openaiprovider "github.com/fugue-labs/gollem/provider/openai"
-	vertexprovider "github.com/fugue-labs/gollem/provider/vertexai"
 )
 
 func TestProviderListReportsConfigurationWithoutSecretValues(t *testing.T) {
@@ -57,8 +56,8 @@ func TestModelListPaginationFilteringAndDefault(t *testing.T) {
 	if first.NextCursor == nil {
 		t.Fatal("page 1 missing next cursor")
 	}
-	if !first.Data[0].IsDefault {
-		t.Fatalf("configured provider default not marked on first anthropic model: %#v", first.Data[0])
+	if first.Data[0].IsDefault {
+		t.Fatalf("first page model %q marked default; anthropic default is %s", first.Data[0].ID, anthropicDefaultModel)
 	}
 
 	second, err := c.ListModels(ModelListParams{ProviderID: ProviderAnthropic, Limit: &limit, Cursor: first.NextCursor})
@@ -134,9 +133,15 @@ func TestThinkingCapabilitiesAreModelSpecific(t *testing.T) {
 	}{
 		{ProviderAnthropic, "claude-sonnet-4-6", true, true},
 		{ProviderAnthropic, "claude-opus-4-7", true, false},
-		{ProviderAnthropic, "claude-haiku-4-5-20251001", false, false},
+		{ProviderAnthropic, "claude-opus-5", true, false},
+		{ProviderAnthropic, "claude-sonnet-5", true, false},
+		{ProviderAnthropic, "claude-fable-5-1", true, false},
+		{ProviderAnthropic, "claude-haiku-4-5-20251001", false, true},
+		{ProviderAnthropic, "claude-sonnet-4-5-20250929", false, true},
 		{ProviderVertexAIAnthropic, "claude-sonnet-4-6", true, true},
+		{ProviderVertexAIAnthropic, "claude-opus-4-6", true, true},
 		{ProviderVertexAIAnthropic, "claude-opus-4-7", true, false},
+		{ProviderVertexAIAnthropic, "claude-haiku-4-5", false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.provider+"/"+tc.model, func(t *testing.T) {
@@ -166,8 +171,8 @@ func TestStopSequenceCapabilitiesAreModelSpecific(t *testing.T) {
 		{ProviderOpenAICompatibleLocal, "llama3", false},
 		{ProviderAnthropic, "claude-sonnet-4-6", true},
 		{ProviderAnthropic, "claude-haiku-4-5-20251001", true},
-		{ProviderVertexAI, vertexprovider.Gemini25Flash, true},
-		{ProviderVertexAIAnthropic, "claude-opus-4-7", true},
+		{ProviderVertexAI, "gemini-2.5-flash", true},
+		{ProviderVertexAIAnthropic, "claude-opus-4-6", true},
 	} {
 		t.Run(tc.provider+"/"+tc.model, func(t *testing.T) {
 			provider := findProvider(t, c.providers, tc.provider)
@@ -213,18 +218,22 @@ func TestSamplingCapabilitiesAreModelSpecific(t *testing.T) {
 		{ProviderOpenAI, "gpt-5-mini", false},
 		{ProviderOpenAI, "gpt-5-nano", false},
 		{ProviderOpenAI, "gpt-5-codex", false},
+		{ProviderOpenAI, "gpt-5.6-sol", false},
 		{ProviderOpenAICompatibleLocal, "llama3", false},
 		{ProviderAnthropic, "claude-sonnet-4-6", true},
 		{ProviderAnthropic, "claude-opus-4-6", true},
 		{ProviderAnthropic, "claude-opus-4-7", false},
 		{ProviderAnthropic, "claude-opus-4-8", false},
+		{ProviderAnthropic, "claude-opus-5", false},
+		{ProviderAnthropic, "claude-sonnet-5", false},
 		{ProviderAnthropic, "claude-fable-5", false},
+		{ProviderAnthropic, "claude-fable-5-1", false},
 		{ProviderAnthropic, "claude-haiku-4-5-20251001", true},
-		{ProviderVertexAI, vertexprovider.Gemini25Flash, true},
-		{ProviderVertexAI, vertexprovider.Gemini25Pro, true},
-		{ProviderVertexAI, vertexprovider.Gemini31ProPreview, true},
-		{ProviderVertexAI, vertexprovider.Gemini3FlashPreview, true},
-		{ProviderVertexAI, vertexprovider.Gemini20Flash, true},
+		{ProviderVertexAI, "gemini-2.5-flash", true},
+		{ProviderVertexAI, "gemini-2.5-pro", true},
+		{ProviderVertexAI, "gemini-3.1-pro-preview", true},
+		{ProviderVertexAI, "gemini-3-flash-preview", true},
+		{ProviderVertexAI, "gemini-2.0-flash", true},
 		{ProviderVertexAIAnthropic, "claude-sonnet-4-6", true},
 		{ProviderVertexAIAnthropic, "claude-opus-4-6", true},
 		{ProviderVertexAIAnthropic, "claude-opus-4-7", false},

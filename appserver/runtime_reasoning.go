@@ -103,16 +103,20 @@ func selectedRuntimeCatalogModel(catalogService *catalog.Catalog, selection Runt
 	if err != nil {
 		return nil, fmt.Errorf("read model capability: %w", err)
 	}
+	if modelName == "" {
+		// Server defaults (e.g. the CLI --model flag) were already applied by
+		// resolveRuntimeSelection; a still-empty model runs the provider's
+		// catalog default (see createModelWith), so judge that model rather
+		// than whichever entry the list-wide IsDefault flag landed on.
+		defaultName, ok := catalogService.DefaultModelName(providerID)
+		if !ok {
+			return nil, errors.New("model capability is unavailable for the provider default")
+		}
+		modelName = defaultName
+	}
 	var selected *catalog.Model
 	for index := range response.Data {
 		model := &response.Data[index]
-		if modelName == "" {
-			if model.IsDefault {
-				selected = model
-				break
-			}
-			continue
-		}
 		if model.ID == modelName || model.Model == modelName {
 			selected = model
 			break

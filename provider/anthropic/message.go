@@ -183,11 +183,12 @@ func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, pa
 		req.StopSequences = settings.StopSequences
 
 		// Sampling parameters are removed on Opus 4.7+ (4.7, 4.8, Fable,
-		// Mythos): the API returns 400 on temperature/top_p regardless of
-		// the thinking config, and on Fable thinking is always on
-		// server-side. Strip rather than reject so swapping the model
-		// under existing middleware that sets temperature keeps working.
-		if isOpus47(model) || isOpus48OrFable(model) {
+		// Mythos) and the Claude 5 generation: the API returns 400 on
+		// temperature/top_p regardless of the thinking config, and on Fable
+		// thinking is always on server-side. Strip rather than reject so
+		// swapping the model under existing middleware that sets
+		// temperature keeps working.
+		if !supportsSampling(model) {
 			req.Temperature = nil
 			req.TopP = nil
 		}
@@ -450,6 +451,13 @@ func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, pa
 						Input: json.RawMessage(p.ArgsJSON),
 					})
 				case core.ThinkingPart:
+					// Only Claude's own, signed thinking can be replayed;
+					// the API rejects unsigned blocks. Reasoning from other
+					// providers (for example DeepSeek reasoning_content in
+					// a thread that switched to Claude) is dropped.
+					if p.Signature == "" {
+						continue
+					}
 					assistantBlocks = append(assistantBlocks, apiContentBlock{
 						Type:      "thinking",
 						Thinking:  p.Content,

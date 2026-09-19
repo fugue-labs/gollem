@@ -159,7 +159,7 @@ func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, pa
 		// the thinking config, and on Fable thinking is always on
 		// server-side. Strip rather than reject so swapping the model
 		// under existing middleware that sets temperature keeps working.
-		if isOpus47(model) || isOpus48OrFable(model) {
+		if !supportsSampling(model) {
 			req.Temperature = nil
 			req.TopP = nil
 		}
@@ -386,6 +386,13 @@ func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, pa
 						Input: json.RawMessage(p.ArgsJSON),
 					})
 				case core.ThinkingPart:
+					// Only Claude's own, signed thinking can be replayed;
+					// the API rejects unsigned blocks. Reasoning from other
+					// providers (for example DeepSeek reasoning_content in
+					// a thread that switched to Claude) is dropped.
+					if p.Signature == "" {
+						continue
+					}
 					assistantBlocks = append(assistantBlocks, apiContentBlock{
 						Type:      "thinking",
 						Thinking:  p.Content,

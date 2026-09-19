@@ -4,18 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/fugue-labs/gollem/appserver/catalog/catwalk"
 	"github.com/fugue-labs/gollem/appserver/protocol"
-	anthropicprovider "github.com/fugue-labs/gollem/provider/anthropic"
 	openaiprovider "github.com/fugue-labs/gollem/provider/openai"
-	vertexprovider "github.com/fugue-labs/gollem/provider/vertexai"
-	vertexanthropicprovider "github.com/fugue-labs/gollem/provider/vertexai_anthropic"
 )
 
 const (
@@ -34,6 +34,7 @@ type EnvLookup func(string) (string, bool)
 
 type Option func(*Catalog)
 
+// WithEnvLookup overrides how configuration is discovered (tests, sandboxes).
 func WithEnvLookup(lookup EnvLookup) Option {
 	return func(c *Catalog) {
 		if lookup != nil {
@@ -42,22 +43,74 @@ func WithEnvLookup(lookup EnvLookup) Option {
 	}
 }
 
-// WithHTTPClient configures the process-owned client used for bounded local
-// endpoint health probes. It is primarily useful for deterministic tests.
+// WithHTTPClient sets the client used for local endpoint probes and registry
+// refreshes.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *Catalog) {
 		if client != nil {
 			c.httpClient = client
+			c.httpClientSet = true
 		}
 	}
 }
 
-type Catalog struct {
-	env        EnvLookup
-	httpClient *http.Client
-	providers  []Provider
+// WithRegistry replaces the embedded provider registry. It disables the disk
+// cache (neither read nor written) and becomes the trusted snapshot Refresh
+// pins remote data against, so embedders keep control of every endpoint and
+// credential reference they supplied.
+func WithRegistry(providers []catwalk.Provider) Option {
+	return func(c *Catalog) {
+		c.registryOverride = catwalk.FilterSupported(providers)
+		c.registryPinned = true
+	}
 }
 
+// WithRegistryCache stores refreshed registry data at path and prefers it
+// over the embedded snapshot on construction. An empty path disables the
+// cache.
+func WithRegistryCache(path string) Option {
+	return func(c *Catalog) {
+		c.cache = catwalk.NewCache(path)
+	}
+}
+
+// WithRegistryURL selects the registry base URL used by Refresh. An empty
+// value keeps the default ($CATWALK_URL, then the hosted registry).
+func WithRegistryURL(url string) Option {
+	return func(c *Catalog) {
+		c.registryURL = url
+	}
+}
+
+// Catalog exposes providers, models, and runtime endpoints derived from the
+// catwalk registry plus local configuration. It is safe for concurrent use;
+// Refresh swaps the derived data atomically.
+type Catalog struct {
+	env           EnvLookup
+	httpClient    *http.Client
+	httpClientSet bool
+	cache         *catwalk.Cache
+	registryURL   string
+
+	registryPinned   bool
+	registryOverride []catwalk.Provider
+	// trusted is the snapshot remote data is pinned against: the embedded
+	// registry, or the WithRegistry override.
+	trusted []catwalk.Provider
+
+	// refreshMu serializes Refresh so overlapping fetches apply in order.
+	refreshMu sync.Mutex
+
+	mu             sync.RWMutex
+	registry       []catwalk.Provider // merged registry the catalog is built from
+	registrySource string
+	etag           string
+	providers      []Provider
+	endpoints      map[string]RuntimeEndpoint
+}
+
+// NewDefault builds a catalog from the embedded registry snapshot, replaced by
+// a valid on-disk cache when one is configured.
 func NewDefault(opts ...Option) *Catalog {
 	c := &Catalog{
 		env:        os.LookupEnv,
@@ -66,9 +119,246 @@ func NewDefault(opts ...Option) *Catalog {
 	for _, opt := range opts {
 		opt(c)
 	}
-	c.providers = c.defaultProviders()
+	registry := c.registryOverride
+	c.registryOverride = nil
+	c.registrySource = "registry"
+	if c.registryPinned {
+		c.cache = nil
+	} else {
+		registry, c.registrySource = nil, "embedded"
+		if embedded, err := catwalk.Embedded(); err == nil {
+			// The snapshot goes through the same gate as remote data so a
+			// hand-edited or outdated providers.json cannot bypass it.
+			if supported := catwalk.FilterSupported(embedded); validateRegistry(supported) == nil {
+				registry = supported
+			}
+		}
+	}
+	c.trusted = catwalk.Clone(registry)
+	if !c.registryPinned {
+		if entry, err := c.cache.Load(); err == nil {
+			cached := pinTrustedRegistryData(catwalk.FilterSupported(entry.Providers), c.trusted)
+			// A cache only overlays the embedded snapshot when it is both
+			// usable and newer than the snapshot compiled into this build.
+			// It is merged, never substituted: providers or models the
+			// snapshot knows (including ones a newer build added) survive.
+			if validateRegistry(cached) == nil && cacheIsNewerThanEmbedded(entry) {
+				registry = mergeRegistry(registry, cached)
+				c.registrySource = "cache"
+				// An ETag only means something to the registry that issued it.
+				if entry.Source == c.resolvedRegistryURL() {
+					c.etag = entry.ETag
+				}
+			}
+		}
+	}
+	c.registry = registry
+	c.providers, c.endpoints = c.buildProviders(registry)
 	return c
 }
+
+func cacheIsNewerThanEmbedded(entry catwalk.CacheEntry) bool {
+	info, err := catwalk.EmbeddedSnapshot()
+	if err != nil {
+		return true
+	}
+	return entry.FetchedAt.After(info.GeneratedAt)
+}
+
+// EnvLookup returns the configuration lookup the catalog judges providers
+// with, so runtimes read credentials from the same source.
+func (c *Catalog) EnvLookup() EnvLookup {
+	c = ensureCatalog(c)
+	return c.env
+}
+
+// DefaultModelName returns the bare model name the catalog advertises as the
+// provider's default, so runtimes run the model the catalog validated.
+func (c *Catalog) DefaultModelName(providerID string) (string, bool) {
+	c = ensureCatalog(c)
+	providerID = normalizeProviderID(providerID)
+	for _, provider := range c.snapshot() {
+		if provider.ID != providerID || provider.DefaultModelID == "" {
+			continue
+		}
+		return strings.TrimPrefix(provider.DefaultModelID, provider.ID+"/"), true
+	}
+	return "", false
+}
+
+// resolvedRegistryURL is the registry base URL Refresh will use, resolved
+// through the catalog's own configuration lookup.
+func (c *Catalog) resolvedRegistryURL() string {
+	return catwalk.ResolveURL(c.env, c.registryURL)
+}
+
+// refreshClient returns the HTTP client for registry downloads: an explicitly
+// configured client, otherwise the catwalk default (30s timeout). The catalog's
+// own short-timeout client is reserved for local endpoint probes.
+func (c *Catalog) refreshClient() *http.Client {
+	if c.httpClientSet {
+		return c.httpClient
+	}
+	return nil
+}
+
+// snapshot returns the current provider slice. The slice is never mutated in
+// place after publication, so callers may read it without holding the lock.
+func (c *Catalog) snapshot() []Provider {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.providers
+}
+
+// RegistrySource reports where the current registry came from: "embedded",
+// "cache", "registry" (pinned via WithRegistry), or "remote" after a
+// successful Refresh.
+func (c *Catalog) RegistrySource() string {
+	c = ensureCatalog(c)
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.registrySource
+}
+
+// Refresh fetches the registry and, when it changed, rebuilds the catalog and
+// updates the cache. It returns true when new data was applied. A registry
+// that cannot be reached leaves the catalog untouched.
+func (c *Catalog) Refresh(ctx context.Context) (bool, error) {
+	c = ensureCatalog(c)
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+	c.mu.RLock()
+	etag := c.etag
+	c.mu.RUnlock()
+
+	client := catwalk.NewClient(c.resolvedRegistryURL(), c.refreshClient())
+	fetched, newETag, err := client.Fetch(ctx, etag)
+	if errors.Is(err, catwalk.ErrNotModified) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	supported := pinTrustedRegistryData(catwalk.FilterSupported(fetched), c.trusted)
+	if err := validateRegistry(supported); err != nil {
+		return false, err
+	}
+	// Never drop what a running thread may already be bound to: a provider
+	// or model the registry stops listing keeps its last known entry. The
+	// merge happens on registry data so the in-memory catalog and the cache
+	// (and therefore the next process) agree.
+	c.mu.RLock()
+	merged := mergeRegistry(c.registry, supported)
+	c.mu.RUnlock()
+	providers, endpoints := c.buildProviders(merged)
+	c.mu.Lock()
+	c.registry = merged
+	c.etag = newETag
+	c.registrySource = "remote"
+	c.providers = providers
+	c.endpoints = endpoints
+	c.mu.Unlock()
+
+	if err := c.cache.Store(catwalk.CacheEntry{
+		ETag:      newETag,
+		FetchedAt: time.Now().UTC(),
+		Source:    client.BaseURL(),
+		Providers: merged,
+	}); err != nil {
+		return true, fmt.Errorf("catalog: registry applied but not cached: %w", err)
+	}
+	return true, nil
+}
+
+// mergeRegistry overlays incoming registry data on base. Incoming entries win
+// for providers and models they list (fresher metadata); base providers and
+// models missing from incoming are kept, appended after the incoming ones.
+// Neither input is modified.
+func mergeRegistry(base, incoming []catwalk.Provider) []catwalk.Provider {
+	merged := catwalk.Clone(incoming)
+	for _, previous := range base {
+		index := slices.IndexFunc(merged, func(p catwalk.Provider) bool { return p.ID == previous.ID })
+		if index < 0 {
+			merged = append(merged, catwalk.Clone([]catwalk.Provider{previous})...)
+			continue
+		}
+		for _, model := range previous.Models {
+			if !slices.ContainsFunc(merged[index].Models, func(m catwalk.Model) bool { return m.ID == model.ID }) {
+				model.ReasoningLevels = slices.Clone(model.ReasoningLevels)
+				merged[index].Models = append(merged[index].Models, model)
+			}
+		}
+	}
+	return merged
+}
+
+// pinTrustedRegistryData constrains data that arrived over the network or from
+// the on-disk cache. Only providers the embedded snapshot already knows are
+// accepted, and for those the endpoint, credential reference, attribution
+// headers, and default model come from the snapshot: remote data refreshes
+// model metadata (the part that goes stale) but can never introduce a new
+// place to send a credential or silently change which model runs. New
+// providers arrive with a Gollem release that regenerates the snapshot.
+//
+// Any id-derived rule for new providers (for example "$<ID>_API_KEY") is
+// unsafe because the id itself is attacker-chosen: an entry named "github"
+// could claim $GITHUB_TOKEN. So there is no such rule.
+func pinTrustedRegistryData(incoming, trusted []catwalk.Provider) []catwalk.Provider {
+	known := make(map[string]catwalk.Provider, len(trusted))
+	for _, provider := range trusted {
+		known[provider.ID] = provider
+	}
+	out := make([]catwalk.Provider, 0, len(incoming))
+	for _, provider := range incoming {
+		pinned, ok := known[provider.ID]
+		if !ok || pinned.Type != provider.Type {
+			continue
+		}
+		provider.APIEndpoint = pinned.APIEndpoint
+		provider.APIKey = pinned.APIKey
+		provider.DefaultHeaders = pinned.DefaultHeaders
+		if pinned.DefaultLargeModelID != "" {
+			provider.DefaultLargeModelID = pinned.DefaultLargeModelID
+		}
+		out = append(out, provider)
+	}
+	return out
+}
+
+// coreRegistryProviders must be present for a fetched registry to replace the
+// current one; a payload without them is treated as truncated or foreign.
+var coreRegistryProviders = []string{ProviderAnthropic, ProviderOpenAI}
+
+func validateRegistry(providers []catwalk.Provider) error {
+	if len(providers) == 0 {
+		return errors.New("catalog: registry contains no supported providers")
+	}
+	for _, id := range coreRegistryProviders {
+		if !slices.ContainsFunc(providers, func(p catwalk.Provider) bool { return p.ID == id }) {
+			return fmt.Errorf("catalog: registry is missing core provider %q", id)
+		}
+	}
+	return nil
+}
+
+// RuntimeEndpoint returns the endpoint configuration for a registry-backed
+// provider that Gollem drives through a generic Anthropic or OpenAI
+// transport. Built-in providers (anthropic, openai, xai, vertexai, local)
+// have dedicated constructors and report false here.
+func (c *Catalog) RuntimeEndpoint(providerID string) (RuntimeEndpoint, bool) {
+	c = ensureCatalog(c)
+	providerID = normalizeProviderID(providerID)
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	endpoint, ok := c.endpoints[providerID]
+	if !ok {
+		return RuntimeEndpoint{}, false
+	}
+	endpoint.Headers = maps.Clone(endpoint.Headers)
+	return endpoint, true
+}
+
+type protocolPricing = protocol.ModelCatalogPricing
 
 type Provider = protocol.ProviderCatalogEntry
 type ProviderCapabilities = protocol.ProviderCatalogCapabilities
@@ -147,8 +437,9 @@ type ToolListResponse struct {
 func (c *Catalog) ListProviders(params ProviderListParams) ProviderListResponse {
 	c = ensureCatalog(c)
 	includeHidden := boolValue(params.IncludeHidden)
-	providers := make([]Provider, 0, len(c.providers))
-	for _, provider := range c.providers {
+	current := c.snapshot()
+	providers := make([]Provider, 0, len(current))
+	for _, provider := range current {
 		if provider.Hidden && !includeHidden {
 			continue
 		}
@@ -168,8 +459,9 @@ func (c *Catalog) ListModels(params ModelListParams) (ModelListResponse, error) 
 	includeHidden := boolValue(params.IncludeHidden)
 	providerFilter := providerFilter(params.ProviderID, params.ProviderIDs)
 
+	current := c.snapshot()
 	var models []Model
-	for _, provider := range c.providers {
+	for _, provider := range current {
 		if len(providerFilter) > 0 {
 			if _, ok := providerFilter[provider.ID]; !ok {
 				continue
@@ -185,7 +477,7 @@ func (c *Catalog) ListModels(params ModelListParams) (ModelListResponse, error) 
 			models = append(models, cloneModel(model))
 		}
 	}
-	markDefaultModel(models, c.providers)
+	markDefaultModel(models, current)
 
 	total := len(models)
 	if total == 0 {
@@ -218,8 +510,9 @@ func (c *Catalog) ListModels(params ModelListParams) (ModelListResponse, error) 
 func (c *Catalog) ProviderCapabilities(providerID string) (ProviderCapabilities, error) {
 	c = ensureCatalog(c)
 	providerID = normalizeProviderID(providerID)
+	current := c.snapshot()
 	if providerID != "" {
-		for _, provider := range c.providers {
+		for _, provider := range current {
 			if provider.ID == providerID {
 				caps := cloneCapabilities(provider.Capabilities)
 				caps.ProviderID = provider.ID
@@ -231,7 +524,7 @@ func (c *Catalog) ProviderCapabilities(providerID string) (ProviderCapabilities,
 		return ProviderCapabilities{}, fmt.Errorf("%w: %s", ErrProviderNotFound, providerID)
 	}
 	var aggregate ProviderCapabilities
-	for _, provider := range c.providers {
+	for _, provider := range current {
 		aggregate.NamespaceTools = aggregate.NamespaceTools || provider.Capabilities.NamespaceTools
 		aggregate.ImageGeneration = aggregate.ImageGeneration || provider.Capabilities.ImageGeneration
 		aggregate.WebSearch = aggregate.WebSearch || provider.Capabilities.WebSearch
@@ -264,9 +557,10 @@ func (c *Catalog) ValidateAgentRuntimeSelection(providerID, modelName string) er
 		return errors.New("provider selection is unavailable")
 	}
 
+	current := c.snapshot()
 	var selectedProvider *Provider
-	for index := range c.providers {
-		provider := &c.providers[index]
+	for index := range current {
+		provider := &current[index]
 		if provider.ID == providerID {
 			selectedProvider = provider
 			break
@@ -285,7 +579,9 @@ func (c *Catalog) ValidateAgentRuntimeSelection(providerID, modelName string) er
 	for index := range selectedProvider.Models {
 		model := &selectedProvider.Models[index]
 		if modelName == "" {
-			if !model.IsDefault && model.ID != selectedProvider.DefaultModelID {
+			// The runtime runs the provider's DefaultModelID (see
+			// DefaultModelName); validate exactly that model.
+			if model.ID != selectedProvider.DefaultModelID {
 				continue
 			}
 		} else if model.ID != modelName && model.Model != modelName {
@@ -350,174 +646,6 @@ func ListTools(params ToolListParams, services ToolServices) ToolListResponse {
 	}
 }
 
-func (c *Catalog) defaultProviders() []Provider {
-	openaiConfigured := envConfigured(c.env, "OPENAI_API_KEY") || envConfigured(c.env, "CHATGPT_ACCESS_TOKEN")
-	anthropicConfigured := envConfigured(c.env, "ANTHROPIC_API_KEY")
-	vertexConfigured := envConfigured(c.env, "GOOGLE_CLOUD_PROJECT") || envConfigured(c.env, "GOOGLE_APPLICATION_CREDENTIALS")
-	localConfig, localConfigured := c.localEndpointConfig()
-	localModel := "llama3"
-	if localConfigured {
-		localModel = localConfig.Model
-	}
-
-	return []Provider{
-		{
-			ID:              ProviderOpenAI,
-			Name:            "OpenAI",
-			Package:         "github.com/fugue-labs/gollem/provider/openai",
-			Description:     "OpenAI Responses and Chat Completions models through Gollem's provider-neutral core.Model interface.",
-			Configured:      openaiConfigured,
-			DefaultModelID:  modelID(ProviderOpenAI, openaiprovider.GPT4o),
-			RequiredEnvVars: []string{"OPENAI_API_KEY"},
-			OptionalEnvVars: []string{"OPENAI_BASE_URL", "OPENAI_SERVICE_TIER", "CHATGPT_ACCESS_TOKEN"},
-			AuthModes:       []string{"api-key", "chatgpt-subscription"},
-			Capabilities: ProviderCapabilities{
-				NamespaceTools:     true,
-				ToolCalls:          true,
-				StructuredOutput:   true,
-				Vision:             true,
-				Streaming:          true,
-				PromptCache:        true,
-				Sampling:           true,
-				Reasoning:          true,
-				ReasoningEfforts:   []string{"minimal", "low", "medium", "high"},
-				ReasoningSummaries: true,
-			},
-			Models: []Model{
-				model(ProviderOpenAI, openaiprovider.GPT4o, "GPT-4o", "General-purpose multimodal OpenAI model.", false, textAndImage(), false, capabilities(true, true, true, true, true, false, false, true), []string{"low", "medium", "high"}, "medium"),
-				model(ProviderOpenAI, openaiprovider.GPT4oMini, "GPT-4o mini", "Smaller OpenAI multimodal model for lower-latency turns.", false, textAndImage(), false, capabilities(true, true, true, true, true, false, false, true), []string{"low", "medium", "high"}, "medium"),
-				model(ProviderOpenAI, openaiprovider.GPT5, "GPT-5", "OpenAI reasoning model with strong coding and tool-use support.", false, textAndImage(), false, reasoningSummaryCapabilities(capabilities(true, true, true, true, true, true, false), true), []string{"minimal", "low", "medium", "high"}, "medium"),
-				model(ProviderOpenAI, openaiprovider.GPT5Mini, "GPT-5 mini", "Lower-latency GPT-5 family model.", false, textAndImage(), false, reasoningSummaryCapabilities(capabilities(true, true, true, true, true, true, false), true), []string{"minimal", "low", "medium", "high"}, "medium"),
-				model(ProviderOpenAI, openaiprovider.GPT5Nano, "GPT-5 nano", "Small GPT-5 family model for fast utility work.", true, textAndImage(), false, reasoningSummaryCapabilities(capabilities(true, true, true, true, true, true, false), true), []string{"minimal", "low", "medium", "high"}, "low"),
-				model(ProviderOpenAI, openaiprovider.GPT5Codex, "GPT-5 Codex", "OpenAI coding-specialized model exposed through Gollem's neutral model controls.", false, textAndImage(), false, reasoningSummaryCapabilities(capabilities(true, true, true, true, true, true, false), true), []string{"minimal", "low", "medium", "high"}, "medium"),
-			},
-		},
-		{
-			ID:             ProviderOpenAICompatibleLocal,
-			Name:           "Local OpenAI-compatible",
-			Package:        "github.com/fugue-labs/gollem/provider/openai",
-			Description:    "A loopback-only OpenAI Chat Completions endpoint with a configured local model fallback.",
-			Configured:     localConfigured,
-			DefaultModelID: modelID(ProviderOpenAICompatibleLocal, localModel),
-			OptionalEnvVars: []string{
-				openaiprovider.LocalEndpointBaseURLEnv,
-				openaiprovider.LocalEndpointModelEnv,
-				openaiprovider.LocalEndpointAPIKeyEnv,
-			},
-			AuthModes: []string{"local-loopback"},
-			Capabilities: ProviderCapabilities{
-				ToolCalls: true,
-				Streaming: true,
-			},
-			Models: []Model{
-				model(
-					ProviderOpenAICompatibleLocal,
-					localModel,
-					localModel,
-					"Configured local OpenAI-compatible Chat Completions model. Structured output and multimodal capabilities remain unavailable until separately verified.",
-					false,
-					[]string{"text"},
-					false,
-					capabilities(true, false, false, true, false, false, false),
-					nil,
-					"low",
-				),
-			},
-		},
-		{
-			ID:              ProviderAnthropic,
-			Name:            "Anthropic",
-			Package:         "github.com/fugue-labs/gollem/provider/anthropic",
-			Description:     "Anthropic Messages API models through Gollem's provider-neutral core.Model interface.",
-			Configured:      anthropicConfigured,
-			DefaultModelID:  modelID(ProviderAnthropic, anthropicprovider.ClaudeSonnet46),
-			RequiredEnvVars: []string{"ANTHROPIC_API_KEY"},
-			AuthModes:       []string{"api-key"},
-			Capabilities: ProviderCapabilities{
-				ToolCalls:        true,
-				StructuredOutput: true,
-				Vision:           true,
-				Streaming:        true,
-				PromptCache:      true,
-				Sampling:         true,
-				StopSequences:    true,
-				ToolSearch:       true,
-				Reasoning:        true,
-				ReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"},
-				AdaptiveThinking: true,
-				ManualThinking:   true,
-			},
-			Models: []Model{
-				model(ProviderAnthropic, anthropicprovider.ClaudeSonnet46, "Claude Sonnet 4.6", "Anthropic balanced coding and agentic workflow model.", false, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, true, true), true, true), true), []string{"low", "medium", "high", "max"}, "medium"),
-				model(ProviderAnthropic, anthropicprovider.ClaudeOpus46, "Claude Opus 4.6", "Anthropic high-capability reasoning model.", false, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, true, true), true, true), true), []string{"low", "medium", "high", "max"}, "medium"),
-				model(ProviderAnthropic, anthropicprovider.ClaudeOpus47, "Claude Opus 4.7", "Anthropic flagship adaptive-thinking model.", false, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, true), true, false), true), []string{"low", "medium", "high", "xhigh", "max"}, "high"),
-				model(ProviderAnthropic, anthropicprovider.ClaudeOpus48, "Claude Opus 4.8", "Anthropic flagship adaptive-thinking model.", false, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, true), true, false), true), []string{"low", "medium", "high", "xhigh", "max"}, "high"),
-				model(ProviderAnthropic, anthropicprovider.ClaudeFable5, "Claude Fable 5", "Anthropic Fable tier model for high-end reasoning workflows.", true, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, false), true, false), true), []string{"low", "medium", "high", "xhigh", "max"}, "high"),
-				model(ProviderAnthropic, anthropicprovider.ClaudeHaiku45, "Claude Haiku 4.5", "Anthropic lower-latency utility model.", false, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false, true), true), []string{"low", "medium", "high"}, "medium"),
-			},
-		},
-		{
-			ID:              ProviderVertexAI,
-			Name:            "Vertex AI Gemini",
-			Package:         "github.com/fugue-labs/gollem/provider/vertexai",
-			Description:     "Google Gemini models through Vertex AI and Gollem's provider-neutral core.Model interface.",
-			Configured:      vertexConfigured,
-			Hidden:          true,
-			DefaultModelID:  modelID(ProviderVertexAI, vertexprovider.Gemini25Flash),
-			RequiredEnvVars: []string{"GOOGLE_CLOUD_PROJECT"},
-			OptionalEnvVars: []string{"GOOGLE_APPLICATION_CREDENTIALS", "VERTEXAI_CACHED_CONTENT"},
-			AuthModes:       []string{"application-default-credentials", "service-account"},
-			Capabilities: ProviderCapabilities{
-				ToolCalls:        true,
-				StructuredOutput: true,
-				Vision:           true,
-				Streaming:        true,
-				PromptCache:      true,
-				Sampling:         true,
-				StopSequences:    true,
-			},
-			Models: []Model{
-				model(ProviderVertexAI, vertexprovider.Gemini25Flash, "Gemini 2.5 Flash", "Google Gemini fast multimodal model through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false, true), true), nil, "medium"),
-				model(ProviderVertexAI, vertexprovider.Gemini25Pro, "Gemini 2.5 Pro", "Google Gemini Pro multimodal model through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false, true), true), nil, "medium"),
-				model(ProviderVertexAI, vertexprovider.Gemini31ProPreview, "Gemini 3.1 Pro Preview", "Google Gemini preview model through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false, true), true), nil, "medium"),
-				model(ProviderVertexAI, vertexprovider.Gemini3FlashPreview, "Gemini 3 Flash Preview", "Google Gemini preview flash model through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false, true), true), nil, "medium"),
-				model(ProviderVertexAI, vertexprovider.Gemini20Flash, "Gemini 2.0 Flash", "Google Gemini 2.0 Flash model through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false, true), true), nil, "medium"),
-			},
-		},
-		{
-			ID:              ProviderVertexAIAnthropic,
-			Name:            "Vertex AI Anthropic",
-			Package:         "github.com/fugue-labs/gollem/provider/vertexai_anthropic",
-			Description:     "Anthropic Claude models accessed through Google Vertex AI rawPredict.",
-			Configured:      vertexConfigured,
-			Hidden:          true,
-			DefaultModelID:  modelID(ProviderVertexAIAnthropic, vertexanthropicprovider.ClaudeSonnet46),
-			RequiredEnvVars: []string{"GOOGLE_CLOUD_PROJECT"},
-			OptionalEnvVars: []string{"GOOGLE_APPLICATION_CREDENTIALS"},
-			AuthModes:       []string{"application-default-credentials", "service-account"},
-			Capabilities: ProviderCapabilities{
-				ToolCalls:        true,
-				StructuredOutput: true,
-				Vision:           true,
-				Streaming:        true,
-				PromptCache:      true,
-				Sampling:         true,
-				StopSequences:    true,
-				Reasoning:        true,
-				ReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"},
-				AdaptiveThinking: true,
-				ManualThinking:   true,
-			},
-			Models: []Model{
-				model(ProviderVertexAIAnthropic, vertexanthropicprovider.ClaudeSonnet46, "Claude Sonnet 4.6 on Vertex AI", "Anthropic Sonnet through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, false, true), true, true), true), []string{"low", "medium", "high", "max"}, "medium"),
-				model(ProviderVertexAIAnthropic, vertexanthropicprovider.ClaudeOpus46, "Claude Opus 4.6 on Vertex AI", "Anthropic Opus through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, false, true), true, true), true), []string{"low", "medium", "high", "max"}, "medium"),
-				model(ProviderVertexAIAnthropic, vertexanthropicprovider.ClaudeOpus47, "Claude Opus 4.7 on Vertex AI", "Anthropic Opus through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(thinkingCapabilities(capabilities(true, true, true, true, true, true, false), true, false), true), []string{"low", "medium", "high", "xhigh", "max"}, "high"),
-				model(ProviderVertexAIAnthropic, vertexanthropicprovider.ClaudeHaiku45, "Claude Haiku 4.5 on Vertex AI", "Anthropic Haiku through Vertex AI.", true, textAndImage(), false, stopSequenceCapabilities(capabilities(true, true, true, true, true, false, false, true), true), []string{"low", "medium", "high"}, "medium"),
-			},
-		},
-	}
-}
-
 func (c *Catalog) localEndpointConfig() (openaiprovider.LocalEndpointConfig, bool) {
 	config, err := openaiprovider.LocalEndpointConfigFromLookup(c.env)
 	// Merely having a safe default is not evidence that a local server exists.
@@ -531,7 +659,7 @@ func (c *Catalog) localEndpointConfig() (openaiprovider.LocalEndpointConfig, boo
 }
 
 func (c *Catalog) hasProvider(providerID string) bool {
-	for _, provider := range c.providers {
+	for _, provider := range c.snapshot() {
 		if provider.ID == providerID {
 			return true
 		}
@@ -626,22 +754,6 @@ func capabilities(toolCalls, structured, vision, streaming, promptCache, reasoni
 	}
 }
 
-func thinkingCapabilities(caps ModelCapabilities, adaptive, manual bool) ModelCapabilities {
-	caps.AdaptiveThinking = adaptive
-	caps.ManualThinking = manual
-	return caps
-}
-
-func reasoningSummaryCapabilities(caps ModelCapabilities, summaries bool) ModelCapabilities {
-	caps.ReasoningSummaries = summaries
-	return caps
-}
-
-func stopSequenceCapabilities(caps ModelCapabilities, stopSequences bool) ModelCapabilities {
-	caps.StopSequences = stopSequences
-	return caps
-}
-
 func effortOptions(efforts []string) []ReasoningEffortOption {
 	if len(efforts) == 0 {
 		efforts = []string{"low", "medium", "high"}
@@ -677,10 +789,6 @@ func effortDescription(effort string) string {
 
 func modelID(providerID, name string) string {
 	return providerID + "/" + name
-}
-
-func textAndImage() []string {
-	return []string{"text", "image"}
 }
 
 func ensureCatalog(c *Catalog) *Catalog {
@@ -774,6 +882,10 @@ func cloneModel(model Model) Model {
 	model.InputModalities = append([]string(nil), model.InputModalities...)
 	model.AdditionalSpeedTiers = append([]string(nil), model.AdditionalSpeedTiers...)
 	model.ServiceTiers = append([]ModelServiceTier(nil), model.ServiceTiers...)
+	if model.Pricing != nil {
+		pricing := *model.Pricing
+		model.Pricing = &pricing
+	}
 	return model
 }
 

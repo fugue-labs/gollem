@@ -25,6 +25,11 @@ type apiRequest struct {
 	TopP                 *float64           `json:"top_p,omitempty"`
 	ResponseFormat       *apiResponseFormat `json:"response_format,omitempty"`
 	ReasoningEffort      *string            `json:"reasoning_effort,omitempty"`
+	// MaxTokensLegacy and Thinking are only populated for DeepSeek, which
+	// reads max_tokens rather than max_completion_tokens and exposes a
+	// thinking toggle.
+	MaxTokensLegacy int          `json:"max_tokens,omitempty"`
+	Thinking        *apiThinking `json:"thinking,omitempty"`
 }
 
 type apiStreamOptions struct {
@@ -37,6 +42,10 @@ type apiMessage struct {
 	ContentParts []apiContentPart `json:"-"`
 	ToolCalls    []apiToolCall    `json:"tool_calls,omitempty"`
 	ToolCallID   string           `json:"tool_call_id,omitempty"`
+	// ReasoningContent carries an assistant turn's chain of thought. It is
+	// only serialized when emitReasoning is set (DeepSeek tool-call turns).
+	ReasoningContent string `json:"-"`
+	emitReasoning    bool
 }
 
 type apiContentPart struct {
@@ -67,6 +76,9 @@ func (m apiMessage) MarshalJSON() ([]byte, error) {
 	}
 	if m.ToolCallID != "" {
 		payload["tool_call_id"] = m.ToolCallID
+	}
+	if m.emitReasoning && m.ReasoningContent != "" {
+		payload["reasoning_content"] = m.ReasoningContent
 	}
 	return json.Marshal(payload)
 }
@@ -127,10 +139,11 @@ type apiChoice struct {
 }
 
 type apiChatMsg struct {
-	Role      string        `json:"role"`
-	Content   string        `json:"content"`
-	ToolCalls []apiToolCall `json:"tool_calls,omitempty"`
-	Refusal   string        `json:"refusal,omitempty"`
+	Role             string        `json:"role"`
+	Content          string        `json:"content"`
+	ReasoningContent string        `json:"reasoning_content,omitempty"`
+	ToolCalls        []apiToolCall `json:"tool_calls,omitempty"`
+	Refusal          string        `json:"refusal,omitempty"`
 }
 
 type apiUsage struct {
@@ -415,6 +428,8 @@ func buildRequest(messages []core.ModelMessage, settings *core.ModelSettings, pa
 				switch p := part.(type) {
 				case core.TextPart:
 					assistantMsg.Content += p.Content
+				case core.ThinkingPart:
+					assistantMsg.ReasoningContent += p.Content
 				case core.ToolCallPart:
 					assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, apiToolCall{
 						ID:   p.ToolCallID,
@@ -445,6 +460,9 @@ func parseResponse(resp *apiResponse, modelName string) *core.ModelResponse {
 	if len(resp.Choices) > 0 {
 		choice := resp.Choices[0]
 
+		if choice.Message.ReasoningContent != "" {
+			parts = append(parts, core.ThinkingPart{Content: choice.Message.ReasoningContent})
+		}
 		if choice.Message.Refusal != "" {
 			parts = append(parts, core.TextPart{Content: choice.Message.Refusal})
 		} else if choice.Message.Content != "" {

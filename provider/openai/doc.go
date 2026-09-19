@@ -34,6 +34,23 @@
 //   - For long-lived services, call Close() on the provider to release the
 //     websocket connection explicitly.
 //
+// # DeepSeek
+//
+// Use NewDeepSeek for DeepSeek's Chat Completions API
+// (https://api-docs.deepseek.com/). It pins the endpoint and reads
+// DEEPSEEK_API_KEY (DEEPSEEK_BASE_URL overrides the host), and adds what a
+// plain OpenAI-compatible endpoint lacks: the V4 thinking toggle driven by
+// ModelSettings.AdaptiveThinking and ModelSettings.ReasoningEffort
+// ("low", "high", "max"), reasoning_content surfaced as core.ThinkingPart
+// and core.ThinkingPartDelta, replay of reasoning_content on prior
+// assistant turns (required once tools are in play), max_tokens forwarded
+// only when set (capped at DeepSeekMaxOutputTokens), and vision on the
+// Flash line.
+//
+//	model := openai.NewDeepSeek(
+//	    openai.WithModel(openai.DeepSeekV4Pro), // default
+//	)
+//
 // # LiteLLM Proxy
 //
 // Use NewLiteLLM to connect to a LiteLLM proxy:

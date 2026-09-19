@@ -27,6 +27,7 @@ import (
 	toolgit "github.com/fugue-labs/gollem/appserver/tools/git"
 	toolprocess "github.com/fugue-labs/gollem/appserver/tools/process"
 	extmcp "github.com/fugue-labs/gollem/ext/mcp"
+	"slices"
 )
 
 func TestServerHandshakeAndUnavailable(t *testing.T) {
@@ -1385,8 +1386,13 @@ func TestServerCatalogHandlers(t *testing.T) {
 	if len(models.Data) != 2 || models.NextCursor == nil {
 		t.Fatalf("model/list = %#v", models)
 	}
-	if models.Data[0].ProviderID != catalog.ProviderOpenAI || !models.Data[0].IsDefault {
-		t.Fatalf("model/list first model = %#v", models.Data[0])
+	for _, model := range models.Data {
+		if model.ProviderID != catalog.ProviderOpenAI {
+			t.Fatalf("model/list returned foreign provider model = %#v", model)
+		}
+	}
+	if !slices.ContainsFunc(models.Data, func(model catalog.Model) bool { return model.IsDefault }) {
+		t.Fatalf("model/list first page lacks the default model = %#v", models.Data)
 	}
 
 	codexCapsResp := server.HandleRequest(ctx, request("modelProvider/capabilities/read", map[string]any{

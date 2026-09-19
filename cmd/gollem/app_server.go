@@ -18,6 +18,7 @@ import (
 	appserver "github.com/fugue-labs/gollem/appserver"
 	appcache "github.com/fugue-labs/gollem/appserver/cache"
 	"github.com/fugue-labs/gollem/appserver/catalog"
+	"github.com/fugue-labs/gollem/appserver/catalog/catwalk"
 	appconfig "github.com/fugue-labs/gollem/appserver/config"
 	appmcp "github.com/fugue-labs/gollem/appserver/mcp"
 	"github.com/fugue-labs/gollem/appserver/protocol"
@@ -54,6 +55,42 @@ type appServerFlags struct {
 	stdioExplicit   bool
 
 	workspaceCoordinator *appserver.WorkspaceMutationCoordinator
+	catalog              *catalog.Catalog
+}
+
+// registryRefreshEnv turns off the background model-registry refresh when set
+// to 0/false/no/off (air-gapped hosts, deterministic runs).
+const registryRefreshEnv = "GOLLEM_MODEL_REGISTRY_REFRESH"
+
+// registryRefreshTimeout bounds the startup registry fetch.
+const registryRefreshTimeout = 20 * time.Second
+
+func registryRefreshEnabled() bool {
+	return envBool(registryRefreshEnv, true)
+}
+
+// newAppServerCatalog builds the catalog shared by every transport. It loads
+// the per-user registry cache when present so a previous refresh survives a
+// restart.
+func newAppServerCatalog() *catalog.Catalog {
+	return catalog.NewDefault(catalog.WithRegistryCache(catwalk.DefaultCachePath()))
+}
+
+// refreshAppServerCatalog pulls the hosted model registry once in the
+// background. Failures only produce a stderr warning: the embedded snapshot or
+// cache keeps the catalog usable offline.
+func refreshAppServerCatalog(parent context.Context, catalogSvc *catalog.Catalog) {
+	ctx, cancel := context.WithTimeout(parent, registryRefreshTimeout)
+	defer cancel()
+	applied, err := catalogSvc.Refresh(ctx)
+	switch {
+	case err == nil, parent.Err() != nil:
+		// Success, not modified, or the daemon is shutting down.
+	case applied:
+		fmt.Fprintf(os.Stderr, "warning: model registry refreshed but not cached: %v\n", err)
+	default:
+		fmt.Fprintf(os.Stderr, "warning: model registry refresh failed; using %s catalog: %v\n", catalogSvc.RegistrySource(), err)
+	}
 }
 
 func runAppServer() {
@@ -226,6 +263,11 @@ func newCLIAppServer(flags appServerFlags) (*appserver.Server, func(), error) {
 }
 
 func newCLIAppServerWithTransport(flags appServerFlags, transport string) (*appserver.Server, func(), error) {
+	// The runtime factory and the selection validator must consult the same
+	// catalog, including any refresh applied later.
+	if flags.catalog == nil {
+		flags.catalog = newAppServerCatalog()
+	}
 	return newCLIAppServerWithRuntimeFactoryAndSelectionValidation(
 		flags,
 		transport,
@@ -345,8 +387,20 @@ func newCLIAppServerWithRuntimeFactoryAndSelectionValidation(
 	if version == "" {
 		version = "dev"
 	}
-	catalogSvc := catalog.NewDefault()
+	catalogSvc := flags.catalog
+	if catalogSvc == nil {
+		// Direct callers that passed no catalog get the process-wide one, the
+		// same instance createModelWith falls back to, so the selection
+		// validator and the runtime factory never disagree.
+		catalogSvc = cliCatalog()
+	}
 	opts := []appserver.Option{
+		// Mirror appServerRuntimeModelFactory's fallbacks so capability checks
+		// judge the model that actually runs.
+		appserver.WithRuntimeSelectionDefaults(appserver.RuntimeModelSelection{
+			ProviderID: firstNonEmptyAppServer(flags.provider, detectProvider()),
+			Model:      flags.modelName,
+		}),
 		appserver.WithImplementationInfo(protocol.ImplementationInfo{Name: "gollem-appserver", Version: version}),
 		appserver.WithInitializeHome(filepath.Join(workDir, ".gollem")),
 		appserver.WithDaemonService(appserver.NewDaemonService(
@@ -415,9 +469,15 @@ func serveCLIAppServerTransports(ctx context.Context, flags appServerFlags) erro
 	if flags.workspaceCoordinator == nil {
 		flags.workspaceCoordinator = appserver.NewWorkspaceMutationCoordinator()
 	}
+	if flags.catalog == nil {
+		flags.catalog = newAppServerCatalog()
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if registryRefreshEnabled() {
+		go refreshAppServerCatalog(ctx, flags.catalog)
+	}
 	errCh := make(chan error, 3)
 	started := 0
 	if flags.stdio {
@@ -696,7 +756,7 @@ func appServerRuntimeModelFactory(flags appServerFlags) appserver.RuntimeModelFa
 			return nil, appserver.RuntimeModelInfo{}, fmt.Errorf("%w: provider is required for thread/turn runtime", appserver.ErrRuntimeNotConfigured)
 		}
 		modelName := firstNonEmptyAppServer(selection.Model, flags.modelName)
-		base, err := createModel(provider, modelName, flags.location, flags.project, deriveRequestTimeout(0))
+		base, err := createModelWith(flags.catalog, provider, modelName, flags.location, flags.project, deriveRequestTimeout(0))
 		if err != nil {
 			return nil, appserver.RuntimeModelInfo{}, err
 		}

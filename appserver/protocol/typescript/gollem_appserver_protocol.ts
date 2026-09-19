@@ -2801,6 +2801,12 @@ export type ModelCatalogEntry = {
   "maxContextTokens"?: number;
   "maxOutputTokens"?: number;
   "model": string;
+  "pricing"?: {
+    "cachedInputPer1M": number;
+    "cachedOutputPer1M": number;
+    "inputPer1M": number;
+    "outputPer1M": number;
+  } | null;
   "providerId": string;
   "serviceTiers": Array<ModelCatalogServiceTier> | null;
   "supportedReasoningEfforts": Array<ModelCatalogReasoningEffortOption> | null;

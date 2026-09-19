@@ -72,6 +72,7 @@ type Server struct {
 	runtime              *RuntimeService
 	memory               *MemoryService
 	selectionValidator   RuntimeSelectionValidator
+	selectionDefaults    RuntimeModelSelection
 
 	requestSchedulerLimit int
 	threadIdleUnloadAfter time.Duration

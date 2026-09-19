@@ -188,7 +188,7 @@ func (p *Provider) ensureResponsesWebSocketLocked(ctx context.Context, ri *reque
 		p.resetResponsesWebSocketLocked()
 	}
 
-	wsURL, err := responsesWebSocketURL(p.baseURL, p.responsesEP())
+	wsURL, err := responsesWebSocketURL(p.baseURL, p.endpointPath(p.responsesEP()))
 	if err != nil {
 		return nil, err
 	}

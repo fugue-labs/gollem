@@ -105,6 +105,17 @@ type ModelCatalogEntry struct {
 	Capabilities              ModelCatalogCapabilities            `json:"capabilities"`
 	MaxContextTokens          int                                 `json:"maxContextTokens,omitempty"`
 	MaxOutputTokens           int                                 `json:"maxOutputTokens,omitempty"`
+	Pricing                   *ModelCatalogPricing                `json:"pricing,omitempty"`
+}
+
+// ModelCatalogPricing is the list price per one million tokens in US dollars
+// as published by the model registry. It is informational: Gollem never
+// meters spend against it.
+type ModelCatalogPricing struct {
+	InputPer1M        float64 `json:"inputPer1M"`
+	OutputPer1M       float64 `json:"outputPer1M"`
+	CachedInputPer1M  float64 `json:"cachedInputPer1M"`
+	CachedOutputPer1M float64 `json:"cachedOutputPer1M"`
 }
 
 type ProviderListParams struct {

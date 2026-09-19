@@ -41,6 +41,11 @@ type streamedResponse struct {
 	toolCallPartIndex map[int]int
 	nextPartIndex     int
 	pendingEvents     []core.ModelResponseStreamEvent
+
+	// interleaveParts keeps reasoning, text, and tool calls in arrival order
+	// (a new part whenever the kind changes). When false, all text extends
+	// the first text part, the long-standing Chat Completions behavior.
+	interleaveParts bool
 }
 
 func newStreamedResponse(body io.ReadCloser, model string) *streamedResponse {
@@ -91,9 +96,10 @@ type apiChunkChoice struct {
 }
 
 type apiChunkDelta struct {
-	Role      string             `json:"role,omitempty"`
-	Content   string             `json:"content,omitempty"`
-	ToolCalls []apiChunkToolCall `json:"tool_calls,omitempty"`
+	Role             string             `json:"role,omitempty"`
+	Content          string             `json:"content,omitempty"`
+	ReasoningContent string             `json:"reasoning_content,omitempty"`
+	ToolCalls        []apiChunkToolCall `json:"tool_calls,omitempty"`
 }
 
 type apiChunkToolCall struct {
@@ -228,6 +234,13 @@ func (s *streamedResponse) Next() (core.ModelResponseStreamEvent, error) {
 
 		var events []core.ModelResponseStreamEvent
 
+		// Handle reasoning delta (DeepSeek reasoning_content). Thinking
+		// precedes visible text within a turn; an empty string is the
+		// API's block opener and carries nothing.
+		if choice.Delta.ReasoningContent != "" {
+			events = append(events, s.handleThinkingDelta(choice.Delta.ReasoningContent))
+		}
+
 		// Handle text content delta.
 		if choice.Delta.Content != "" {
 			event := s.handleTextDelta(choice.Delta.Content)
@@ -285,16 +298,28 @@ func (s *streamedResponse) finalizeModelIdentity() error {
 	return nil
 }
 
-// handleTextDelta processes a text content delta.
-func (s *streamedResponse) handleTextDelta(content string) core.ModelResponseStreamEvent {
-	// Check if text part already started.
-	textIdx := -1
+// openTextPartIndex returns the index of the text part deltas should extend:
+// the most recently started part, if it is a text part. Text that arrives
+// after thinking or a tool call started begins a new part so interleaved
+// output keeps its order.
+func (s *streamedResponse) openTextPartIndex() int {
+	if s.interleaveParts {
+		if _, ok := s.currentParts[s.nextPartIndex-1].(core.TextPart); ok {
+			return s.nextPartIndex - 1
+		}
+		return -1
+	}
 	for idx, part := range s.currentParts {
 		if _, ok := part.(core.TextPart); ok {
-			textIdx = idx
-			break
+			return idx
 		}
 	}
+	return -1
+}
+
+// handleTextDelta processes a text content delta.
+func (s *streamedResponse) handleTextDelta(content string) core.ModelResponseStreamEvent {
+	textIdx := s.openTextPartIndex()
 
 	if textIdx == -1 {
 		// Start a new text part.
@@ -315,6 +340,44 @@ func (s *streamedResponse) handleTextDelta(content string) core.ModelResponseStr
 	return core.PartDeltaEvent{
 		Index: textIdx,
 		Delta: core.TextPartDelta{ContentDelta: content},
+	}
+}
+
+// handleThinkingDelta processes a reasoning_content delta.
+func (s *streamedResponse) handleThinkingDelta(content string) core.ModelResponseStreamEvent {
+	// Extend the most recently started part only when it is a thinking part;
+	// reasoning that resumes after text or a tool call is a new part.
+	thinkingIdx := -1
+	if s.interleaveParts {
+		if _, ok := s.currentParts[s.nextPartIndex-1].(core.ThinkingPart); ok {
+			thinkingIdx = s.nextPartIndex - 1
+		}
+	} else {
+		for idx, part := range s.currentParts {
+			if _, ok := part.(core.ThinkingPart); ok {
+				thinkingIdx = idx
+				break
+			}
+		}
+	}
+
+	if thinkingIdx == -1 {
+		thinkingIdx = s.nextPartIndex
+		s.nextPartIndex++
+		s.currentParts[thinkingIdx] = core.ThinkingPart{Content: content}
+		return core.PartStartEvent{
+			Index: thinkingIdx,
+			Part:  core.ThinkingPart{Content: content},
+		}
+	}
+
+	if tp, ok := s.currentParts[thinkingIdx].(core.ThinkingPart); ok {
+		tp.Content += content
+		s.currentParts[thinkingIdx] = tp
+	}
+	return core.PartDeltaEvent{
+		Index: thinkingIdx,
+		Delta: core.ThinkingPartDelta{ContentDelta: content},
 	}
 }
 

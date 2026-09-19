@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +25,11 @@ import (
 // WithModel; the provider falls back to the legacy manual-thinking path for
 // those, but does not expose them as symbolic constants.
 const (
+	ClaudeMythos51 = "claude-mythos-5-1"
+	ClaudeFable51  = "claude-fable-5-1"
 	ClaudeFable5   = "claude-fable-5"
+	ClaudeOpus5    = "claude-opus-5"
+	ClaudeSonnet5  = "claude-sonnet-5"
 	ClaudeOpus48   = "claude-opus-4-8"
 	ClaudeOpus47   = "claude-opus-4-7"
 	ClaudeOpus46   = "claude-opus-4-6"
@@ -53,11 +58,8 @@ func supportsToolSearch(model string) bool {
 		return true
 	}
 	for _, family := range []string{"sonnet-", "opus-"} {
-		if idx := strings.Index(m, family); idx >= 0 {
-			rest := m[idx+len(family):]
-			if len(rest) > 0 && rest[0] >= '4' && rest[0] <= '9' {
-				return true
-			}
+		if slices.ContainsFunc(majorVersionsAfter(m, family), func(major byte) bool { return major >= '4' && major <= '9' }) {
+			return true
 		}
 	}
 	return false
@@ -84,6 +86,62 @@ func isOpus48OrFable(model string) bool {
 	return strings.Contains(m, "opus-4-8") || strings.Contains(m, "fable")
 }
 
+// isClaude5Family reports whether the model string identifies the Claude 5
+// generation of the Opus or Sonnet line (claude-opus-5, claude-sonnet-5, and
+// any dated or "@"-suffixed variant). Fable and Mythos are matched by name
+// elsewhere. Claude 5 has the same request surface as Opus 4.7+: adaptive-only
+// thinking, the full effort range including "xhigh" and "max", and no
+// temperature/top_p/top_k sampling controls.
+//
+// The match is anchored on the major version segment so "opus-4-5" (Opus 4.5)
+// never matches "opus-5".
+func isClaude5Family(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return hasMajorVersion(m, "opus-", '5') || hasMajorVersion(m, "sonnet-", '5')
+}
+
+// hasMajorVersion reports whether m contains family immediately followed by
+// the given major-version digit as a complete version segment, i.e. followed
+// by end of string, "-", "@", or ".". This distinguishes "opus-5" and
+// "opus-5-20260401" from "opus-4-5" and "opus-50".
+func hasMajorVersion(m, family string, major byte) bool {
+	return slices.Contains(majorVersionsAfter(m, family), major)
+}
+
+// majorVersionsAfter returns each major-version digit that follows an
+// occurrence of family as a complete version segment (terminated by end of
+// string, "-", "@", or "."). It is the single model-id grammar shared by the
+// family predicates and supportsToolSearch.
+func majorVersionsAfter(m, family string) []byte {
+	var majors []byte
+	for idx := strings.Index(m, family); idx >= 0; {
+		rest := m[idx+len(family):]
+		if len(rest) > 0 && rest[0] >= '0' && rest[0] <= '9' {
+			if len(rest) == 1 {
+				majors = append(majors, rest[0])
+			} else {
+				switch rest[1] {
+				case '-', '@', '.':
+					majors = append(majors, rest[0])
+				}
+			}
+		}
+		next := strings.Index(rest, family)
+		if next < 0 {
+			break
+		}
+		idx += len(family) + next
+	}
+	return majors
+}
+
+// isAdaptiveOnly reports whether the model rejects manual thinking budgets
+// and sampling controls: Opus 4.7, Opus 4.8, Fable, Mythos, and the Claude 5
+// generation.
+func isAdaptiveOnly(model string) bool {
+	return isOpus47(model) || isOpus48OrFable(model) || isClaude5Family(model)
+}
+
 // isOpus46OrSonnet46 reports whether the model string identifies Opus 4.6 or
 // Sonnet 4.6. These models accept both manual and adaptive thinking, and
 // support the "max" effort level.
@@ -93,12 +151,12 @@ func isOpus46OrSonnet46(model string) bool {
 }
 
 // supportsEffort reports whether the given model accepts the output_config.effort
-// parameter. Per Anthropic docs, supported on Fable, Opus 4.8, Opus 4.7
-// (and Mythos), Opus 4.6, Sonnet 4.6, and Opus 4.5. Notably NOT supported
-// on Haiku 4.5 or any 3.x model.
+// parameter. Per Anthropic docs, supported on the Claude 5 generation, Fable,
+// Opus 4.8, Opus 4.7 (and Mythos), Opus 4.6, Sonnet 4.6, and Opus 4.5.
+// Notably NOT supported on Haiku 4.5 or any 3.x model.
 func supportsEffort(model string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
-	if isOpus47(m) || isOpus48OrFable(m) || isOpus46OrSonnet46(m) {
+	if isAdaptiveOnly(m) || isOpus46OrSonnet46(m) {
 		return true
 	}
 	return strings.Contains(m, "opus-4-5")
@@ -106,35 +164,66 @@ func supportsEffort(model string) bool {
 
 // supportsManualThinking reports whether {thinking: {type: "enabled",
 // budget_tokens: N}} is accepted by the model. Opus 4.7+ (4.7, 4.8, Fable,
-// Mythos) rejects it — adaptive thinking is the only mode there. Opus 4.6 /
-// Sonnet 4.6 accept it but deprecate it. Older models continue to accept it.
+// Mythos) and the Claude 5 generation reject it — adaptive thinking is the
+// only mode there. Opus 4.6 / Sonnet 4.6 accept it but deprecate it. Older
+// models continue to accept it.
 func supportsManualThinking(model string) bool {
-	return !isOpus47(model) && !isOpus48OrFable(model)
+	return !isAdaptiveOnly(model)
 }
 
 // supportsAdaptiveThinking reports whether {thinking: {type: "adaptive"}}
 // is accepted by the model: the Claude 4.6 generation and newer (Opus 4.6,
-// Sonnet 4.6, Opus 4.7, Opus 4.8, Fable, Mythos). Models 4.5 and older,
-// and Haiku, only have manual thinking.
+// Sonnet 4.6, Opus 4.7, Opus 4.8, Fable, Mythos, Opus 5, Sonnet 5). Models
+// 4.5 and older, and Haiku, only have manual thinking.
 func supportsAdaptiveThinking(model string) bool {
-	return isOpus47(model) || isOpus48OrFable(model) || isOpus46OrSonnet46(model)
+	return isAdaptiveOnly(model) || isOpus46OrSonnet46(model)
+}
+
+// supportsSampling reports whether the model accepts temperature and top_p.
+// Opus 4.7+ (4.7, 4.8, Fable, Mythos) and the Claude 5 generation return 400
+// on either parameter; every older model accepts them.
+func supportsSampling(model string) bool {
+	return !isAdaptiveOnly(model)
 }
 
 // supportsEffortValue reports whether a given effort value is accepted by the
-// model. "xhigh" requires Opus 4.7+ (4.7, 4.8, Fable, Mythos). "max" requires
-// Opus 4.6+, Sonnet 4.6+, or Opus 4.7+.
+// model. "xhigh" requires Opus 4.7+ (4.7, 4.8, Fable, Mythos) or Claude 5.
+// "max" additionally works on Opus 4.6 / Sonnet 4.6.
 func supportsEffortValue(model, effort string) bool {
 	switch effort {
 	case "low", "medium", "high":
 		return supportsEffort(model)
 	case "xhigh":
-		return isOpus47(model) || isOpus48OrFable(model)
+		return isAdaptiveOnly(model)
 	case "max":
-		return isOpus47(model) || isOpus48OrFable(model) || isOpus46OrSonnet46(model)
+		return isAdaptiveOnly(model) || isOpus46OrSonnet46(model)
 	default:
 		return false
 	}
 }
+
+// SupportsAdaptiveThinking reports whether the model accepts
+// {thinking: {type: "adaptive"}} (Claude 4.6 generation and newer).
+func SupportsAdaptiveThinking(model string) bool { return supportsAdaptiveThinking(model) }
+
+// SupportsManualThinking reports whether the model accepts a manual
+// {thinking: {type: "enabled", budget_tokens: N}} configuration.
+func SupportsManualThinking(model string) bool { return supportsManualThinking(model) }
+
+// SupportsEffort reports whether the model accepts output_config.effort at all.
+func SupportsEffort(model string) bool { return supportsEffort(model) }
+
+// SupportsEffortValue reports whether the model accepts the specific
+// output_config.effort value ("low", "medium", "high", "xhigh", or "max").
+func SupportsEffortValue(model, effort string) bool { return supportsEffortValue(model, effort) }
+
+// SupportsToolSearch reports whether the model supports Anthropic's
+// server-side tool search tool.
+func SupportsToolSearch(model string) bool { return supportsToolSearch(model) }
+
+// SupportsSampling reports whether the model accepts temperature and top_p;
+// Opus 4.7+ and Claude 5 reject them.
+func SupportsSampling(model string) bool { return supportsSampling(model) }
 
 // Provider implements core.Model for Anthropic's Messages API.
 type Provider struct {

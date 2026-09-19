@@ -13366,6 +13366,37 @@
         "model": {
           "type": "string"
         },
+        "pricing": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "cachedInputPer1M": {
+                  "type": "number"
+                },
+                "cachedOutputPer1M": {
+                  "type": "number"
+                },
+                "inputPer1M": {
+                  "type": "number"
+                },
+                "outputPer1M": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "inputPer1M",
+                "outputPer1M",
+                "cachedInputPer1M",
+                "cachedOutputPer1M"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "providerId": {
           "type": "string"
         },
